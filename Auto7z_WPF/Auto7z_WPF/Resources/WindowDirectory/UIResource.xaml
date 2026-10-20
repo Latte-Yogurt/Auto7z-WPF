@@ -1,0 +1,387 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:local="clr-namespace:Auto7z_WPF">
+
+    <Style TargetType="TabItem">
+        <Setter Property="Height" Value="35"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        <Setter Property="VerticalAlignment" Value="Stretch"/>
+        <Setter Property="Foreground" Value="Black"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabItem">
+                    <Grid x:Name="Grid_SidePanel" Background="Transparent" Cursor="Hand">
+                        <Border x:Name="Border_Grid_SidePanel" 
+                                            Background="Transparent" 
+                                            BorderThickness="0,0,0,2" 
+                                            BorderBrush="Transparent"/>
+                        <ContentPresenter x:Name="HeaderContent" 
+                                                              ContentSource="Header" 
+                                                              HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Border_Grid_SidePanel" Property="BorderBrush" Value="#0078D7"/>
+                            <Setter TargetName="HeaderContent" Property="TextElement.Foreground" Value="#0078D7"/>
+                            <Setter Property="FontWeight" Value="Bold"/>
+                        </Trigger>
+
+                        <Trigger SourceName="Grid_SidePanel" Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Grid_SidePanel" Property="Background" Value="#F0F0F0"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="TabControl">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabControl">
+                    <Grid KeyboardNavigation.TabNavigation="Local">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <Border Background="Transparent" Grid.Row="0">
+                            <ItemsPresenter x:Name="PART_SelectedContentHost" SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                        </Border>
+
+                        <ContentPresenter Grid.Row="1" x:Name="PART_SelectedContent" ContentSource="SelectedContent" Margin="{TemplateBinding Padding}" SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="ScrollViewer">
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ScrollViewer">
+                    <Grid Background="{TemplateBinding Background}">
+                        <ScrollContentPresenter x:Name="PART_ScrollContentPresenter" Margin="{TemplateBinding Padding}" CanContentScroll="{TemplateBinding CanContentScroll}"/>
+                        <ScrollBar x:Name="PART_VerticalScrollBar" HorizontalAlignment="Right" Value="{TemplateBinding VerticalOffset}" Maximum="{TemplateBinding ScrollableHeight}" ViewportSize="{TemplateBinding ViewportHeight}" Visibility="{TemplateBinding ComputedVerticalScrollBarVisibility}" Width="10" Opacity="0.2" Margin="0,2,2,2">
+                            <ScrollBar.Resources>
+                                <Style TargetType="RepeatButton">
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="RepeatButton">
+                                                <Border Background="Transparent" />
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                                <Style TargetType="Thumb">
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <!-- 通过调整Border的Margin来调整视觉宽窄比调整ScrollBar的Width更为省力 -->
+                                                <Border Background="#666" CornerRadius="3" Margin="6,0"/>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </ScrollBar.Resources>
+                            <ScrollBar.Template>
+                                <ControlTemplate TargetType="ScrollBar">
+                                    <Grid x:Name="Bg" SnapsToDevicePixels="true">
+                                        <Track x:Name="PART_Track" IsDirectionReversed="true" IsEnabled="{TemplateBinding IsEnabled}">
+                                            <Track.DecreaseRepeatButton>
+                                                <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}"/>
+                                            </Track.DecreaseRepeatButton>
+                                            <Track.IncreaseRepeatButton>
+                                                <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}"/>
+                                            </Track.IncreaseRepeatButton>
+                                            <Track.Thumb>
+                                                <Thumb/>
+                                            </Track.Thumb>
+                                        </Track>
+                                    </Grid>
+                                </ControlTemplate>
+                            </ScrollBar.Template>
+                        </ScrollBar>
+                    </Grid>
+
+                    <ControlTemplate.Triggers>
+                        <Trigger SourceName="PART_VerticalScrollBar" Property="IsMouseOver" Value="true">
+                            <Setter TargetName="PART_VerticalScrollBar" Property="Opacity" Value="0.8"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="MainWindowImageStyle" TargetType="Image">
+        <Setter Property="Source" Value="pack://application:,,,/Resources/Images/Layla256.png" />
+        <Style.Triggers>
+
+            <DataTrigger Binding="{Binding CurrentOperationModeName}" Value="Zip">
+                <Setter Property="Source" Value="pack://application:,,,/Resources/Images/Columbina256.png"/>
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding CurrentOperationModeName}" Value="UnZip">
+                <Setter Property="Source" Value="pack://application:,,,/Resources/Images/Yoimiya256-2.png" />
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding Tag, ElementName=SettingButton}" Value="Expanded">
+                <Setter Property="Source" Value="pack://application:,,,/Resources/Images/Chiori256.png" />
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding IsMouseOver, ElementName = Auto7zTitle}" Value="True">
+                <Setter Property="Source" Value="pack://application:,,,/Resources/Images/Shenhe256-1.png" />
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding IsMouseOver, ElementName = MinimizeButton}" Value="True">
+                <Setter Property="Source" Value="pack://application:,,,/Resources/Images/Yoimiya256.png" />
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding IsMouseOver, ElementName = CloseButton}" Value="True">
+                <Setter Property="Source" Value="pack://application:,,,/Resources/Images/Yoimiya256-1.png" />
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding IsMouseOver, ElementName = AboutButton}" Value="True">
+                <Setter Property="Source" Value="pack://application:,,,/Resources/Images/Escoffier256.png" />
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding IsMouseOver, ElementName=SettingButton}" Value="True">
+                <Setter Property="Source" Value="pack://application:,,,/Resources/Images/Shenhe256.png" />
+            </DataTrigger>
+
+        </Style.Triggers>
+    </Style>
+
+    <!-- 默认文本来自视图模型（模式默认提示 / 任务进度），
+         悬停与展开状态仍由下面的触发器覆盖，保持原有视觉行为 -->
+    <Style x:Key="MainWindowTextStyle" TargetType="TextBlock">
+        <Setter Property="Text" Value="{Binding MainText}"/>
+        <Style.Triggers>
+
+            <DataTrigger Binding="{Binding Tag, ElementName = SettingButton}" Value="Expanded">
+                <Setter Property="Text" Value="{DynamicResource SettingText}" />
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding IsMouseOver, ElementName = Auto7zTitle}" Value="True">
+                <Setter Property="Text" Value="{DynamicResource TitleText}" />
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding IsMouseOver, ElementName = MinimizeButton}" Value="True">
+                <Setter Property="Text" Value="{DynamicResource MinimizeText}" />
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding IsMouseOver, ElementName = CloseButton}" Value="True">
+                <Setter Property="Text" Value="{DynamicResource CloseText}" />
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding IsMouseOver, ElementName = AboutButton}" Value="True">
+                <Setter Property="Text" Value="{DynamicResource AboutText}" />
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding IsMouseOver, ElementName = SettingButton}" Value="True">
+                <Setter Property="Text" Value="{DynamicResource SettingText}" />
+            </DataTrigger>
+
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="SettingBtnContentStyle" TargetType="Button">
+        <Setter Property="Content" Value="{DynamicResource SettingButton}"/>
+        <Style.Triggers>
+
+            <DataTrigger Binding="{Binding Tag, ElementName = SettingButton}" Value="Expanded">
+                <Setter Property="Content" Value="{DynamicResource HideSettingButton}" />
+            </DataTrigger>
+
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="AboutWindowImageStyle" TargetType="Image">
+        <Setter Property="Source" Value="pack://application:,,,/Resources/Images/Escoffier256.png" />
+        <Style.Triggers>
+
+            <DataTrigger Binding="{Binding IsMouseOver, ElementName=Auto7zTitle}" Value="True">
+                <Setter Property="Source" Value="pack://application:,,,/Resources/Images/Yoimiya256.png" />
+            </DataTrigger>
+
+            <DataTrigger Binding="{Binding IsEggMode}" Value="True">
+                <Setter Property="Source" Value="pack://application:,,,/Resources/Images/Layla256.png" />
+            </DataTrigger>
+
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="Black2BlueTextBlockStyle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="Black" />
+        <Setter Property="Cursor" Value="Hand"/>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Foreground" Value="Blue" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="RedPathStyle" TargetType="Path">
+        <Setter Property="Stroke" Value="Black" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=Grid}}" Value="True">
+                <Setter Property="Stroke" Value="Red" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="YellowGreenPathStyle" TargetType="Path">
+        <Setter Property="Stroke" Value="Black" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=Grid}}" Value="True">
+                <Setter Property="Stroke" Value="YellowGreen" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="Blue2RedTextBlockStyle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="blue" />
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Foreground" Value="Red" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="GrayTextBlockStyle" TargetType="TextBlock">
+        <Setter Property="Foreground" Value="Gray"/>
+    </Style>
+
+    <Style x:Key="StackPanelAddonStyle" TargetType="StackPanel">
+        <Setter Property="Visibility" Value="Visible"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding SelectedItem.Content, ElementName=ComboBox_Format}" Value="zip">
+                <Setter Property="Visibility" Value="Collapsed"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="StackPanelAddon2Style" TargetType="StackPanel">
+        <Setter Property="Visibility" Value="Collapsed"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding SelectedItem.Content, ElementName=ComboBox_Format}" Value="7z">
+                <Setter Property="Visibility" Value="Visible"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="SolidModeCheckBoxStyle" TargetType="CheckBox">
+        <Setter Property="Height" Value="24"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Visibility" Value="Collapsed"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding SelectedItem.Content, ElementName=ComboBox_Format}" Value="7z">
+                <Setter Property="Visibility" Value="Visible"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="ZstdCheckBoxStyle" TargetType="CheckBox">
+        <Setter Property="Height" Value="24"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Visibility" Value="Collapsed"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding SelectedItem.Content, ElementName=ComboBox_Format}" Value="tar">
+                <Setter Property="Visibility" Value="Visible"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="EncFileNameCheckBoxStyle" TargetType="CheckBox">
+        <Setter Property="Height" Value="24"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="Visibility" Value="Collapsed"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding SelectedItem.Content, ElementName=ComboBox_Format}" Value="7z">
+                <Setter Property="Visibility" Value="Visible"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="PasswordBoxZipStyle" TargetType="TextBox">
+        <Setter Property="Height" Value="24"/>
+        <Setter Property="Margin" Value="0,0,4,0"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="IsEnabled" Value="True"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding SelectedItem.Content, ElementName=ComboBox_Format}" Value="tar">
+                <Setter Property="IsEnabled" Value="False"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="ZipLevelComboBoxStyle" TargetType="ComboBox">
+        <Setter Property="Height" Value="24"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="IsEnabled" Value="True"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding SelectedItem.Content, ElementName=ComboBox_Format}" Value="tar">
+                <Setter Property="IsEnabled" Value="False"/>
+            </DataTrigger>
+            <MultiDataTrigger>
+                <MultiDataTrigger.Conditions>
+                    <Condition Binding="{Binding SelectedItem.Content, ElementName=ComboBox_Format}" Value="tar"/>
+                    <Condition Binding="{Binding IsChecked, ElementName=CheckBox_Zstd}" Value="True"/>
+                </MultiDataTrigger.Conditions>
+                <Setter Property="IsEnabled" Value="True"/>
+            </MultiDataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="ModePanelStyle" TargetType="StackPanel">
+        <Setter Property="Visibility" Value="Collapsed"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsModePanelVisible}" Value="True">
+                <Setter Property="Visibility" Value="Visible"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="ImagePanelStyle" TargetType="StackPanel">
+        <Setter Property="Visibility" Value="Visible"/>
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsModePanelVisible}" Value="True">
+                <Setter Property="Visibility" Value="Collapsed"/>
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style x:Key="OperationMenuButtonStyle" TargetType="RadioButton">
+        <Setter Property="Width" Value="150"/>
+        <Setter Property="Height" Value="36"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderBrush" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="RadioButton">
+                    <Border x:Name="BtnBorder" 
+                            Background="{TemplateBinding Background}" 
+                            BorderBrush="{TemplateBinding BorderBrush}" 
+                            BorderThickness="{TemplateBinding BorderThickness}" 
+                            CornerRadius="4">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="BtnBorder" Property="Background" Value="#10000000"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="BtnBorder" Property="Background" Value="#20000000"/>
+                            <Setter TargetName="BtnBorder" Property="BorderBrush" Value="#66000000"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>

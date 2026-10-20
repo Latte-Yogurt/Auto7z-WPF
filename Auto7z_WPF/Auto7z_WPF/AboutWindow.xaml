@@ -1,0 +1,135 @@
+<Window x:Name="Auto7z_About"  x:Class="Auto7z_WPF.AboutWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:Auto7z_WPF"
+        mc:Ignorable="d"
+        d:DataContext="{d:DesignInstance Type=local:Auto7zViewModel}"
+        Title="{DynamicResource AboutTitle}"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None"
+        AllowsTransparency="True"      
+        Background="Transparent"
+        Width="520" Height="260"
+        KeyboardNavigation.TabNavigation="Cycle">
+
+    <WindowChrome.WindowChrome>
+        <WindowChrome GlassFrameThickness="0" CornerRadius="0" CaptionHeight="{Binding ElementName=Auto7z_About, Path=ActualHeight}" UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
+
+    <Border x:Name="WindowBorder" 
+            Background="White" 
+            BorderBrush="#33000000" 
+            BorderThickness="2">
+
+        <Grid Margin="8" WindowChrome.IsHitTestVisibleInChrome="True">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="60"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="20"/>
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0">
+                <StackPanel HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0">
+                    <TextBlock x:Name="Auto7zTitle" Text="{Binding FullTitle}" 
+                               FontFamily="Microsoft YaHei Bold, DengXian Light" FontSize="13"
+                               Style="{DynamicResource Black2BlueTextBlockStyle}">
+                        <TextBlock.InputBindings>
+                            <MouseBinding MouseAction="LeftClick" Command="{Binding EggClickCommand}" CommandParameter="{Binding RelativeSource={RelativeSource AncestorType=Window}}"/>
+                            <MouseBinding MouseAction="LeftDoubleClick" Command="{Binding EggClickCommand}" CommandParameter="{Binding RelativeSource={RelativeSource AncestorType=Window}}"/>
+                        </TextBlock.InputBindings>
+                    </TextBlock>
+                </StackPanel>
+
+                <StackPanel HorizontalAlignment="Right" VerticalAlignment="Top" Orientation="Horizontal" Margin="0">
+                    <Grid x:Name="MinimizeButton"
+                          Background="Transparent"
+                          Width="15" Height="15"
+                          Cursor="Hand" >
+
+                        <Grid.InputBindings>
+                            <MouseBinding MouseAction="LeftClick" Command="{Binding MinimizeCommand}" CommandParameter="{Binding RelativeSource={RelativeSource AncestorType=Window}}"/>
+                        </Grid.InputBindings>
+
+                        <Path Data="M0,8 L9,8" StrokeThickness="2" Style="{DynamicResource YellowGreenPathStyle}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Grid>
+
+                    <Grid Width="10"/>
+                    <!--Data的意思是:移动到(0,0)画线到(9,9)，再移动到(0,9)画线到(9,0)-->
+                    <Grid x:Name="CloseButton"
+                          Background="Transparent"
+                          Width="15" Height="15"
+                          Cursor="Hand">
+
+                        <Grid.InputBindings>
+                            <MouseBinding MouseAction="LeftClick" Command="{Binding CloseCommand}" CommandParameter="{Binding RelativeSource={RelativeSource AncestorType=Window}}"/>
+                        </Grid.InputBindings>
+
+                        <Path Data="M0,0 L9,9 M0,9 L9,0" StrokeThickness="2" Style="{DynamicResource RedPathStyle}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Grid>
+                </StackPanel>
+            </Grid>
+
+            <Grid Grid.Row="1" HorizontalAlignment="Center">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="10"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Image x:Name="MainImage" Grid.Column="0" Style="{DynamicResource AboutWindowImageStyle}" Width="Auto"/>
+                <Grid Grid.Column="1" Width="10"/>
+                <TextBlock Grid.Column="2" Text="{DynamicResource Title}" VerticalAlignment="Center" FontFamily="Ink Free, Segoe UI, Arial" FontWeight="Bold" FontSize="30"/>
+            </Grid>
+
+            <Grid Grid.Row="2">
+                <TextBlock Text="{DynamicResource GithubText}"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Bottom"
+                           FontSize="16"
+                           MouseLeftButtonDown="GithubLink_Click"
+                           Cursor="Hand"
+                           Style="{DynamicResource Blue2RedTextBlockStyle}"
+                           FontFamily="Microsoft YaHei Light, DengXian Light, Microsoft YaHei">
+                </TextBlock>
+            </Grid>
+
+            <Grid Grid.Row="3" VerticalAlignment="Center" HorizontalAlignment="Center">
+                <TextBlock Text="{DynamicResource LicenseText}"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Top"
+                           FontSize="16"
+                           MouseLeftButtonDown="LicenseLink_Click"
+                           Cursor="Hand"
+                           Style="{DynamicResource Blue2RedTextBlockStyle}"
+                           FontFamily="Microsoft YaHei Light, DengXian Light, Microsoft YaHei">
+                </TextBlock>
+            </Grid>
+
+            <Grid Grid.Row="4">
+                <Button x:Name="ConfirmButton" Content="{DynamicResource ConfirmButton}" Width="90" Height="24" Background="Transparent"
+                        TabIndex="0" IsDefault="True">
+                    <Button.InputBindings>
+                        <MouseBinding MouseAction="LeftClick" Command="{Binding CloseCommand}" CommandParameter="{Binding RelativeSource={RelativeSource AncestorType=Window}}"/>
+                    </Button.InputBindings>
+                </Button>
+            </Grid>
+
+            <Grid Grid.Row="5">
+                <TextBlock x:Name="CopyRightText" Text="{Binding CopyRightText}"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           TextAlignment="Center"
+                           Style="{DynamicResource GrayTextBlockStyle}"
+                           FontSize="12"
+                           FontFamily="Ink Free, Segoe UI, Arial"
+                           TextWrapping="Wrap" Padding="15,0">
+                </TextBlock>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>
