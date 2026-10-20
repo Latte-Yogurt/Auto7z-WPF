@@ -1,0 +1,10 @@
+LIBRARY Auto7zShell
+
+EXPORTS
+    DllGetClassObject
+    DllCanUnloadNow
+    DllRegisterServer
+    DllUnregisterServer
+    DllSetMainExePath
+    DllRemoveMainExePath
+    DllSetLanguage
