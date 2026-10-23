@@ -1,14 +1,14 @@
 // ShellExtension.cpp
 // Auto7z 的资源管理器右键菜单扩展。
 //
-// 选中一个或多个文件/文件夹后, 右键菜单里会出现
-// "用 Auto7z 压缩" 与 "用 Auto7z 解压" 两项,
+// 选中一个或多个文件/文件夹后， 右键菜单里会出现
+// "用 Auto7z 压缩" 与 "用 Auto7z 解压" 两项，
 // 文字跟着主程序的界面语言走。
 // 点击后把选中的所有路径一次性交给 Auto7z.exe 处理。
 //
-// 挂在 shellex\ContextMenuHandlers 下, 资源管理器会把整个选区
-// 一次性交过来, 由本组件收集路径后启动单个 Auto7z 进程。
-// 换成 shell\command 那种注册方式, 资源管理器会对每个文件各起一个进程。
+// 挂在 shellex\ContextMenuHandlers 下， 资源管理器会把整个选区
+// 一次性交过来， 由本组件收集路径后启动单个 Auto7z 进程。
+// 换成 shell\command 那种注册方式， 资源管理器会对每个文件各起一个进程。
 
 #include "ShellProtocol.h"
 
@@ -34,11 +34,11 @@ const CLSID kClassId = {
 
 const wchar_t kClassName[] = L"Auto7z Shell Extension";
 
-// 菜单项的动词。GetCommandString 返回它, 资源管理器点击时会把动词传回来。
+// 菜单项的动词。GetCommandString 返回它， 资源管理器点击时会把动词传回来。
 const wchar_t kVerbCompress[] = L"Auto7z.Compress";
 const wchar_t kVerbExtract[] = L"Auto7z.Extract";
 
-// 菜单项文字的资源 id。三种语言各一套, 100 的倍数区分。
+// 菜单项文字的资源 id。三种语言各一套， 100 的倍数区分。
 const int kStringCompressZhCN = 101;
 const int kStringExtractZhCN = 102;
 const int kStringCompressZhTW = 201;
@@ -54,8 +54,14 @@ const int kStringExtractDefault = kStringExtractEnUS;
 const UINT kCmdCompress = 0;
 const UINT kCmdExtract = 1;
 
-// 主程序文件名, 与本 dll 放在同一个目录
+// 主程序文件名， 与本 dll 放在同一个目录
 const wchar_t kMainExeName[] = L"Auto7z.exe";
+
+// 图形入口的程序名
+//
+// 同一个工程编出两个可执行体： Auto7z.exe 是 Console 子系统(cmd 会等它跑完),
+// Auto7zGUI.exe 是 GUI 子系统（双击/右键/拖拽用， 全程不创建控制台）。
+const wchar_t kGuiExeName[] = L"Auto7zGUI.exe";
 
 // 注册表里菜单项的键名
 const wchar_t kHandlerKeyName[] = L"Auto7z";
@@ -78,15 +84,15 @@ void FormatClassId(wchar_t *buffer, size_t bufferChars)
                  kClassId.Data4[4], kClassId.Data4[5], kClassId.Data4[6], kClassId.Data4[7]);
 }
 
-// 正式注册写在 HKEY_CLASSES_ROOT 下, 也就是 HKLM\Software\Classes。
-// COM 查 CLSID 只认这个位置, 写 HKEY_CURRENT_USER\Software\Classes 是没用的。
-// 所以注册要管理员权限, 主程序会用 UAC 提权跑一次。
-// 用户级那份只作为记录, Explorer 不会用。
+// 正式注册写在 HKEY_CLASSES_ROOT 下， 也就是 HKLM\Software\Classes。
+// COM 查 CLSID 只认这个位置， 写 HKEY_CURRENT_USER\Software\Classes 是没用的。
+// 所以注册要管理员权限， 主程序会用 UAC 提权跑一次。
+// 用户级那份只作为记录， Explorer 不会用。
 const HKEY kClassesRoot = HKEY_CLASSES_ROOT;
 
 // 菜单挂载点要写 HKEY_LOCAL_MACHINE\Software\Classes 这一份。
 // 往 HKEY_CLASSES_ROOT 的 "*" 底下写会被系统拒掉(错误 5):
-// 那个键只认 HKLM 那一份, 合并视图不给写。
+// 那个键只认 HKLM 那一份， 合并视图不给写。
 const HKEY kMachineClasses = HKEY_LOCAL_MACHINE;
 
 // 组件在注册表里的主程序路径键
@@ -111,8 +117,8 @@ bool GetModuleDirectory(wchar_t *buffer, size_t bufferChars)
 
 // 从注册表里读主程序路径
 //
-// 主程序每次启动都会把自己的位置写进来,
-// 这样即使 exe 被挪走, 右键菜单仍然能找到它。
+// 主程序每次启动都会把自己的位置写进来，
+// 这样即使 exe 被挪走， 右键菜单仍然能找到它。
 bool ReadRegisteredExePath(std::wstring &path)
 {
     HKEY key = nullptr;
@@ -161,15 +167,15 @@ std::wstring ReadLanguageFromConfig(const std::wstring &path);
 
 // 从主程序的配置文件里读当前用的语言
 //
-// 语言存在 Auto7z.xml 的 Language 键里。配置的位置有两种:
+// 语言存在 Auto7z.xml 的 Language 键里。配置的位置有两种：
 //   普通模式 %LOCALAPPDATA%\Auto7z\Auto7z.xml
 //   便携模式 程序目录\.config\Auto7z\Auto7z.xml
-// 两种都试一下, 读到就用。
+// 两种都试一下， 读到就用。
 //
-// 不走注册表: 那是管理员才能写的, 主程序平时没那个权限。
+// 不走注册表： 那是管理员才能写的， 主程序平时没那个权限。
 std::wstring ReadConfiguredLanguage()
 {
-    // 主程序把语言写在 HKCU 里, 那是它最准的来源
+    // 主程序把语言写在 HKCU 里， 那是它最准的来源
     std::wstring fromRegistry = ReadLanguageFromRegistry();
     if (!fromRegistry.empty()) return fromRegistry;
 
@@ -223,7 +229,7 @@ std::wstring ReadLanguageFromConfig(const std::wstring &path)
     CloseHandle(file);
     buffer[read] = 0;
 
-    // 先按 utf-8 找一遍, 找不到再按 utf-16 找
+    // 先按 utf-8 找一遍， 找不到再按 utf-16 找
     std::string text(buffer.data(), read);
     size_t begin = text.find("<Language>");
     if (begin != std::string::npos)
@@ -288,7 +294,7 @@ std::wstring ReadLanguageFromConfig(const std::wstring &path)
 
 // 取主程序 Auto7z.exe 的完整路径
 //
-// 优先用注册表里登记的位置, 没有就用 dll 同目录下的。
+// 优先用注册表里登记的位置， 没有就用 dll 同目录下的。
 bool GetMainExePath(wchar_t *buffer, size_t bufferChars)
 {
     std::wstring registered;
@@ -308,13 +314,28 @@ bool GetMainExePath(wchar_t *buffer, size_t bufferChars)
     return wcscpy_s(buffer, bufferChars, path) == 0;
 }
 
-// ---------- 图标 ----------
+// 由命令行入口推出同目录下的图形入口
+//
+// 返回 false 表示路径拼不出来（没有目录部分或缓冲区不够）。
+bool BuildGuiExePath(const wchar_t *consoleExe, wchar_t *buffer, size_t bufferChars)
+{
+    const wchar_t *slash = wcsrchr(consoleExe, L'\\');
+    if (slash == nullptr) return false;
 
+    size_t directoryChars = static_cast<size_t>(slash - consoleExe) + 1;
+    if (directoryChars + (sizeof(kGuiExeName) / sizeof(wchar_t)) > bufferChars) return false;
+
+    wmemcpy(buffer, consoleExe, directoryChars);
+    buffer[directoryChars] = L'\0';
+    return wcscat_s(buffer, bufferChars, kGuiExeName) == 0;
+}
+
+// ---------- 图标 ----------
 // 从主程序 exe 里取图标。
 //
-// 主程序的位置记在注册表 CLSID\{...}\Auto7z\MainExePath 下,
-// 从那儿取图标, 免得跟主程序对不上。
-// 取不到就返回空, 菜单项还是没有图标, 但不影响用。
+// 主程序的位置记在注册表 CLSID\{...}\Auto7z\MainExePath 下，
+// 从那儿取图标， 免得跟主程序对不上。
+// 取不到就返回空， 菜单项还是没有图标， 但不影响用。
 HICON LoadMainIcon()
 {
     // 已经取过就直接复用
@@ -354,7 +375,7 @@ HICON LoadMainIcon()
     return nullptr;
 }
 
-// 把图标画成位图, 菜单项要的是位图不是图标
+// 把图标画成位图， 菜单项要的是位图不是图标
 HBITMAP IconToBitmap(HICON icon, int size)
 {
     if (icon == nullptr) return nullptr;
@@ -373,7 +394,7 @@ HBITMAP IconToBitmap(HICON icon, int size)
         {
             oldBitmap = SelectObject(memory, bitmap);
 
-            // 菜单项图标是叠在底色上的, 先铺个白底再画
+            // 菜单项图标是叠在底色上的， 先铺个白底再画
             RECT rect = {0, 0, size, size};
             FillRect(memory, &rect, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
@@ -392,10 +413,10 @@ HBITMAP IconToBitmap(HICON icon, int size)
 
 // 判断路径是不是磁盘上真实存在的文件或目录。
 //
-// 回收站里的项目路径长这样: C:\$Recycle.Bin\S-1-5-21-...\$RXXXX.ext
-// 它们是回收站自己的内部文件, 压缩没有意义。
-// 桌面背景、此电脑这些地方拿到的则是虚拟路径, 磁盘上并不存在。
-// 这两种都要挡掉, 不然在那些地方右键也会冒出菜单项。
+// 回收站里的项目路径长这样： C:\$Recycle.Bin\S-1-5-21-...\$RXXXX.ext
+// 它们是回收站自己的内部文件， 压缩没有意义。
+// 桌面背景、此电脑这些地方拿到的则是虚拟路径， 磁盘上并不存在。
+// 这两种都要挡掉， 不然在那些地方右键也会冒出菜单项。
 bool IsRealFileOrFolder(const wchar_t *path)
 {
     if (path == nullptr || path[0] == 0) return false;
@@ -410,7 +431,7 @@ bool IsRealFileOrFolder(const wchar_t *path)
     if (attributes & FILE_ATTRIBUTE_DEVICE) return false;
 
     // 盘符根目录(C:\ 、 D:\)也要排除。
-    // 它在磁盘上确实存在, 但压缩整个盘没有意义,
+    // 它在磁盘上确实存在， 但压缩整个盘没有意义，
     // 在"此电脑"里右键磁盘时不该冒出菜单项。
     if (attributes & FILE_ATTRIBUTE_DIRECTORY)
     {
@@ -436,7 +457,7 @@ bool IsRealFileOrFolder(const wchar_t *path)
 
 // 从 IDataObject 里取出被选中的全部路径
 //
-// 优先用 CF_HDROP, 那是资源管理器在选区是普通文件/文件夹时给的标准格式;
+// 优先用 CF_HDROP, 那是资源管理器在选区是普通文件/文件夹时给的标准格式；
 // 取不到再退回 CFSTR_SHELLIDLIST。
 bool ReadSelectedPaths(IDataObject *dataObject, std::vector<std::wstring> &paths)
 {
@@ -467,7 +488,7 @@ bool ReadSelectedPaths(IDataObject *dataObject, std::vector<std::wstring> &paths
         if (!paths.empty()) return true;
     }
 
-    // CF_HDROP 拿不到时, 尝试 shell idlist
+    // CF_HDROP 拿不到时， 尝试 shell idlist
     FORMATETC idListFormat = {static_cast<CLIPFORMAT>(reinterpret_cast<ULONG_PTR>(CFSTR_SHELLIDLIST)),
                                nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
     if (SUCCEEDED(dataObject->GetData(&idListFormat, &medium)))
@@ -475,11 +496,11 @@ bool ReadSelectedPaths(IDataObject *dataObject, std::vector<std::wstring> &paths
         PIDLIST_ABSOLUTE idList = static_cast<PIDLIST_ABSOLUTE>(GlobalLock(medium.hGlobal));
         if (idList != nullptr)
         {
-            // idlist 的头两项是固定的, 真正的文件项从第三项开始。
-            // 逐项按 ITEMIDLIST 的长度往后走, 不用 ILGetNext,
+            // idlist 的头两项是固定的， 真正的文件项从第三项开始。
+            // 逐项按 ITEMIDLIST 的长度往后走， 不用 ILGetNext,
             // 那个函数在不同 SDK 里的返回类型不一样。
             const BYTE *base = reinterpret_cast<const BYTE *>(idList);
-            UINT offset = sizeof(ITEMIDLIST) + 2;  // 头两项: 桌面 + 根目录
+            UINT offset = sizeof(ITEMIDLIST) + 2;  // 头两项： 桌面 + 根目录
             UINT totalSize = ILGetSize(idList);
 
             while (offset + sizeof(ITEMIDLIST) <= totalSize)
@@ -508,7 +529,7 @@ bool ReadSelectedPaths(IDataObject *dataObject, std::vector<std::wstring> &paths
 
 // ---------- 共享内存 ----------
 
-// 造一个随机名字, 避免共享内存重名
+// 造一个随机名字， 避免共享内存重名
 void MakeRandomName(wchar_t *buffer, size_t bufferChars, const wchar_t *prefix)
 {
     static LONG counter = 0;
@@ -521,11 +542,11 @@ void MakeRandomName(wchar_t *buffer, size_t bufferChars, const wchar_t *prefix)
                  prefix, guid, GetCurrentProcessId(), serial);
 }
 
-// 把路径列表写进共享内存, 并给出映射名与事件名
+// 把路径列表写进共享内存， 并给出映射名与事件名
 //
-// 映射句柄不能在写完就关掉: 命名映射对象靠句柄存活,
-// 最后一个句柄一关, 对象就没了, 子进程再去打开会失败。
-// 所以这里把句柄交给调用方一直握着, 等子进程读完了再关。
+// 映射句柄不能在写完就关掉： 命名映射对象靠句柄存活，
+// 最后一个句柄一关， 对象就没了， 子进程再去打开会失败。
+// 所以这里把句柄交给调用方一直握着， 等子进程读完了再关。
 bool CreatePathMap(const std::vector<std::wstring> &paths,
                    std::wstring &mapName, std::wstring &eventName, size_t &totalBytes,
                    HANDLE &mappingHandle, HANDLE &eventHandle)
@@ -575,7 +596,7 @@ bool CreatePathMap(const std::vector<std::wstring> &paths,
     mapName.assign(rawMapName);
     eventName.assign(rawEventName);
 
-    // 句柄交给调用方保管, 子进程读完之前不能关
+    // 句柄交给调用方保管， 子进程读完之前不能关
     mappingHandle = mapping;
     eventHandle = event;
     return true;
@@ -589,6 +610,16 @@ bool LaunchAuto7z(const std::vector<std::wstring> &paths, const wchar_t *modeSwi
     wchar_t exePath[MAX_PATH];
     if (!GetMainExePath(exePath, MAX_PATH)) return false;
 
+    // 图形入口优先： 同目录下有 Auto7zGUI.exe 就用它。
+    // 主程序是 Console 子系统， 那是为了 cmd 会等它跑完；
+    // 右键菜单/拖拽属于图形入口， 走 GUI 子系统那一份才不会凭空开一个控制台窗口。
+    wchar_t guiPath[MAX_PATH];
+    if (BuildGuiExePath(exePath, guiPath, MAX_PATH) &&
+        GetFileAttributesW(guiPath) != INVALID_FILE_ATTRIBUTES)
+    {
+        wcscpy_s(exePath, MAX_PATH, guiPath);
+    }
+
     std::wstring mapName;
     std::wstring eventName;
     size_t totalBytes = 0;
@@ -597,7 +628,7 @@ bool LaunchAuto7z(const std::vector<std::wstring> &paths, const wchar_t *modeSwi
     if (!CreatePathMap(paths, mapName, eventName, totalBytes, mappingHandle, eventHandle))
         return false;
 
-    // 命令行: #映射名:字节数:事件名
+    // 命令行： #映射名：字节数：事件名
     wchar_t sizeText[32];
     _snwprintf_s(sizeText, 32, _TRUNCATE, L"%llu", static_cast<unsigned long long>(totalBytes));
 
@@ -638,11 +669,11 @@ bool LaunchAuto7z(const std::vector<std::wstring> &paths, const wchar_t *modeSwi
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
 
-    // 等子进程把路径取走。它读完会发信号, 收到后映射才能释放。
-    // 最多等 30 秒, 超时就直接放掉, 免得一直占着。
+    // 等子进程把路径取走。它读完会发信号， 收到后映射才能释放。
+    // 最多等 30 秒， 超时就直接放掉， 免得一直占着。
     if (WaitForSingleObject(eventHandle, 30000) == WAIT_TIMEOUT)
     {
-        // 子进程没来取, 映射留着也没用
+        // 子进程没来取， 映射留着也没用
     }
 
     CloseHandle(eventHandle);
@@ -672,8 +703,8 @@ public:
         if (object == nullptr) return E_POINTER;
         *object = nullptr;
 
-        // 各接口在对象里的位置不一样, 要分别转成对应那个接口的指针。
-        // 都返回 IContextMenu 的地址的话, 资源管理器拿 IShellExtInit 去用就会调错函数。
+        // 各接口在对象里的位置不一样， 要分别转成对应那个接口的指针。
+        // 都返回 IContextMenu 的地址的话， 资源管理器拿 IShellExtInit 去用就会调错函数。
         if (IsEqualIID(interfaceId, IID_IUnknown))
         {
             *object = static_cast<IContextMenu *>(this);
@@ -717,8 +748,8 @@ public:
         if (dataObject != nullptr)
             ReadSelectedPaths(dataObject, m_paths);
 
-        // 一直返回 S_OK。资源管理器拿到失败会静默禁用整个扩展,
-        // 右键菜单就不出现了。路径取不到就当没有, 到 InvokeCommand 再说。
+        // 一直返回 S_OK。资源管理器拿到失败会静默禁用整个扩展，
+        // 右键菜单就不出现了。路径取不到就当没有， 到 InvokeCommand 再说。
         return S_OK;
     }
 
@@ -727,12 +758,12 @@ public:
     {
         if (menu == nullptr) return E_INVALIDARG;
 
-        // 返回值要说明加了几个菜单项, 资源管理器按这个数决定菜单项是否有效。
+        // 返回值要说明加了几个菜单项， 资源管理器按这个数决定菜单项是否有效。
         // 返回 0 就等于告诉它没有菜单项。
         if (idCmdFirst > idCmdLast) return E_INVALIDARG;
 
         // 路径必须是磁盘上真实存在的文件或目录。
-        // 回收站、桌面背景、此电脑这些地方拿到的路径都不是真文件, 要挡掉。
+        // 回收站、桌面背景、此电脑这些地方拿到的路径都不是真文件， 要挡掉。
         std::vector<std::wstring> usable;
         for (const std::wstring &path : m_paths)
         {
@@ -741,7 +772,7 @@ public:
         if (usable.empty()) return static_cast<HRESULT>(0);
         m_paths.swap(usable);
 
-        // 这些标志表示这次调用不是来取完整菜单的, 加了也不会被显示。
+        // 这些标志表示这次调用不是来取完整菜单的， 加了也不会被显示。
         if ((flags & 0x000F) != CMF_NORMAL
             && (flags & CMF_VERBSONLY) == 0
             && (flags & CMF_EXPLORE) == 0)
@@ -781,8 +812,8 @@ public:
             item.hbmpItem = IconToBitmap(icon, 16);
         }
 
-        // 两项都要用同一个位置插入, 但第二项要往下挪一格,
-        // 否则它会插到第一项前面去, 顺序就反了。
+        // 两项都要用同一个位置插入， 但第二项要往下挪一格，
+        // 否则它会插到第一项前面去， 顺序就反了。
         item.wID = idCmdFirst + kCmdCompress;
         item.dwTypeData = compress;
         if (InsertMenuItemW(menu, indexMenu, TRUE, &item)) used++;
@@ -791,7 +822,7 @@ public:
         item.dwTypeData = extract;
         if (InsertMenuItemW(menu, indexMenu + 1, TRUE, &item)) used++;
 
-        // 位图不能在这里删。MIIM_BITMAP 不会复制它, 菜单项一直引用着那个句柄,
+        // 位图不能在这里删。MIIM_BITMAP 不会复制它， 菜单项一直引用着那个句柄，
         // 删掉之后菜单里就变成空白图标了。留着让系统回收。
 
         // 返回加进去的菜单项个数
@@ -828,7 +859,7 @@ public:
 private:
     // 从 InvokeCommand 的参数里找出用户点的是哪一项
     //
-    // 资源管理器有两种传法:
+    // 资源管理器有两种传法：
     //   lpVerb 是整数     —— 直接取低位当命令序号
     //   lpVerb 是动词字符串 —— 拿 GetCommandString 里给的动词来比对
     HRESULT FindCommandSlot(LPCMINVOKECOMMANDINFO info, UINT *slot)
@@ -855,7 +886,7 @@ private:
             }
         }
 
-        // 整数形式: 低位就是命令序号
+        // 整数形式： 低位就是命令序号
         if (!IS_INTRESOURCE(info->lpVerb)) return E_FAIL;
 
         UINT value = LOWORD(reinterpret_cast<ULONG_PTR>(info->lpVerb));
@@ -947,7 +978,7 @@ bool WriteStringValue(HKEY root, const wchar_t *path, const wchar_t *name, const
     return result == ERROR_SUCCESS;
 }
 
-// 删一个注册表键(连同子键)
+// 删一个注册表键（连同子键）
 void DeleteKeyTree(HKEY root, const wchar_t *path)
 {
     HKEY key = nullptr;
@@ -972,10 +1003,10 @@ void DeleteRegValue(HKEY root, const wchar_t *subKeyPath, const wchar_t *valueNa
     RegCloseKey(key);
 }
 
-// 把菜单项挂到各个文件类型上, 或者摘掉
+// 把菜单项挂到各个文件类型上， 或者摘掉
 void RegisterHandlers(bool set)
 {
-    // Directory 是目录项, Directory\Background 是在文件夹空白处右键
+    // Directory 是目录项， Directory\Background 是在文件夹空白处右键
     static const wchar_t *kTypes[] = {L"*", L"Directory", L"Folder", L"Directory\Background"};
 
     wchar_t clsid[64];
@@ -987,7 +1018,7 @@ void RegisterHandlers(bool set)
             + type + L"\\shellex\\ContextMenuHandlers\\" + kHandlerKeyName;
         if (set)
         {
-            // 有的挂载点所在键受保护, 写不进去就跳过, 不影响其他几个
+            // 有的挂载点所在键受保护， 写不进去就跳过， 不影响其他几个
             if (!WriteStringValue(kMachineClasses, path.c_str(), nullptr, clsid))
             {
                 OutputDebugStringW(L"Auto7z: 菜单挂载点写入失败\r\n");
@@ -1016,8 +1047,8 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved
     return TRUE;
 }
 
-// DllGetClassObject / DllCanUnloadNow 在 combaseapi.h 里已有声明,
-// 这里只给链接器看导出表, 不要再加 dllexport, 否则会重复定义。
+// DllGetClassObject / DllCanUnloadNow 在 combaseapi.h 里已有声明，
+// 这里只给链接器看导出表， 不要再加 dllexport, 否则会重复定义。
 extern "C" HRESULT STDAPICALLTYPE DllGetClassObject(REFCLSID classId, REFIID interfaceId, void **object)
 {
     if (object == nullptr) return E_POINTER;
@@ -1056,8 +1087,8 @@ extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
     WriteStringValue(kClassesRoot, inprocPath.c_str(), L"ThreadingModel", L"Apartment");
 
     // Win7 以后要在这里登记才不会被拦下。
-    // 必须写 HKEY_LOCAL_MACHINE: 资源管理器只认这一份,
-    // 写在 HKEY_CURRENT_USER 下会被静默拦掉, 菜单根本不显示。
+    // 必须写 HKEY_LOCAL_MACHINE: 资源管理器只认这一份，
+    // 写在 HKEY_CURRENT_USER 下会被静默拦掉， 菜单根本不显示。
     WriteStringValue(HKEY_LOCAL_MACHINE,
                      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
                      clsid, kClassName);
@@ -1065,8 +1096,8 @@ extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
     RegisterHandlers(true);
 
     // 顺手把主程序路径也写上。
-    // dll 与主程序放在同一个目录, 这里能直接算出 exe 的位置。
-    // 菜单图标要用这个路径, 少写一步就少一个出错的可能。
+    // dll 与主程序放在同一个目录， 这里能直接算出 exe 的位置。
+    // 菜单图标要用这个路径， 少写一步就少一个出错的可能。
     wchar_t exePath[MAX_PATH] = {};
     if (GetMainExePath(exePath, MAX_PATH))
     {
@@ -1087,13 +1118,16 @@ extern "C" HRESULT STDAPICALLTYPE DllUnregisterServer()
     DeleteKeyTree(kClassesRoot, (classPath + L"\\InprocServer32").c_str());
     DeleteKeyTree(kClassesRoot, classPath.c_str());
 
-    DeleteRegValue(HKEY_CURRENT_USER,
-                   L"Software\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
+    // 删除 Approved 里的登记项。要删的必须是注册时写入的那一份：
+    // 注册写在 HKEY_LOCAL_MACHINE, 原来这里删的是 HKEY_CURRENT_USER,
+    // 两边对不上， HKLM 下那份会一直留着。
+    DeleteRegValue(HKEY_LOCAL_MACHINE,
+                   L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
                    clsid);
     return S_OK;
 }
 
-// 让主程序调用: 把主程序路径写进注册表,
+// 让主程序调用： 把主程序路径写进注册表，
 // 这样即使 dll 被移动过也能找到 exe。
 extern "C" HRESULT STDAPICALLTYPE DllSetMainExePath(LPCWSTR path)
 {
@@ -1107,8 +1141,8 @@ extern "C" HRESULT STDAPICALLTYPE DllSetMainExePath(LPCWSTR path)
 // 记下主程序当前用的语言。
 //
 // 组件建菜单时按这个语言挑文字。
-// 写在 HKEY_CURRENT_USER 下, 用户自己就能写, 不需要管理员权限,
-// 跟程序装在哪儿也没有关系, 便携模式切换不影响。
+// 写在 HKEY_CURRENT_USER 下， 用户自己就能写， 不需要管理员权限，
+// 跟程序装在哪儿也没有关系， 便携模式切换不影响。
 extern "C" HRESULT STDAPICALLTYPE DllSetLanguage(LPCWSTR language)
 {
     if (language == nullptr || *language == L'\0') return E_INVALIDARG;

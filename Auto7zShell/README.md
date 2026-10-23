@@ -4,6 +4,10 @@ Windows 资源管理器右键菜单扩展。右键文件或文件夹时提供「
 
 用 C++ 写成独立的 COM 组件（`Auto7zShell.dll`），由主程序 `Auto7z.exe` 在命令行下注册。
 
+> 这份文档只讲 C++ 组件这一侧。组件被拉起之后主程序怎么表现
+> （不弹主窗口、进度显示在小进度窗口、提问用小对话框），
+> 见 [`Auto7z_WPF`](../Auto7z_WPF/README.md) 与[根 README](../README.md)。
+
 ## 目录结构
 
 ```
@@ -30,10 +34,12 @@ Auto7zShell/
 
 ```bat
 buildtool\buildtool.bat
-buildtool\buildtool.exe
+buildtool\buildtool.exe --vcvars "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
 ```
 
 第一个用 `BuildTool.cpp` 编译构建工具本身，第二个构建组件。产物在 `build\Auto7zShell.dll`，要拷到主程序旁边 —— 组件按同目录找主程序。
+
+`buildtool.bat` 里写死的 `VCVARS` 指向 VS 18 BuildTools 的位置，一般不存在 —— VS 2022 的机器上按上面的样子用 `--vcvars` 传入真实的 `vcvars64.bat`，或者改掉 bat 里的 `VCVARS` 常量。
 
 组件的 `buildtool.exe` 支持 `--clean` 先清空 `build\` 目录再构建。
 
@@ -141,7 +147,10 @@ IShellExtInit  接收资源管理器传来的选中项
 
 ## 注册表
 
-COM 类走 `HKEY_CLASSES_ROOT`（等价于 `HKLM\Software\Classes`），菜单挂载点**显式**写 `HKLM\Software\Classes`，Approved 列表写 `HKLM`（这三处都需要管理员权限）：
+COM 类走 `HKEY_CLASSES_ROOT`（等价于 `HKLM\Software\Classes`），菜单挂载点**显式**写 `HKLM\Software\Classes`，Approved 列表写 `HKLM`（这三处都需要管理员权限）。
+
+`MainExePath` 记的是执行 `-r` 的那个程序。启动时组件会先看同目录有没有 `Auto7zGUI.exe`，有就用它（图形入口不开控制台）；
+所以 `-r` 用哪个 exe 执行都可以，注册表里那一条不必手工改。
 
 ```
 HKLM\Software\Classes\CLSID\{6C3F8A21-...}
@@ -169,7 +178,9 @@ HKCU\Software\Auto7z
     Language              = zh-CN
 ```
 
-注意 `DllUnregisterServer` 删 Approved 时删的是 `HKEY_CURRENT_USER` 那一份，而注册时写的是 `HKLM` 那一份 —— 所以卸载后 `HKLM` 下的 Approved 条目会留下。它不指向任何已注册的 dll，Explorer 会忽略，不影响使用。
+`DllUnregisterServer` 删 Approved 时删的也是 `HKEY_LOCAL_MACHINE` 那一份 —— 与注册时写入的同一个键，两边对得上，卸载后不会留下残留条目。
+
+（早期版本这里删的是 `HKEY_CURRENT_USER`，与注册写入的 `HKLM` 对不上，导致 `HKLM` 下的 Approved 条目永远留着。已修正。）
 
 ### 四个容易踩的坑
 
@@ -209,6 +220,12 @@ HKCU\Software\Auto7z
 图标取主程序的图标：组件从注册表 `CLSID\...\Auto7z\MainExePath` 找到 `Auto7z.exe`，用 `ExtractIconEx` 取小图标（菜单用 16 像素那个），再画成位图给菜单项。取不到就菜单项不带图标，不影响用。
 
 注册表里没有 `MainExePath` 时，组件回退到「dll 同目录下的 `Auto7z.exe`」来找主程序。
+
+## 启动哪一份主程序
+
+同一个工程编出两个可执行体：`Auto7z.exe`（Console 子系统，命令行专用，`cmd` 会等它跑完）与 `Auto7zGUI.exe`（GUI 子系统，图形入口，全程不创建控制台）。`cmd` 只等 Console 子系统的程序，而 PE 子系统又决定启动时给不给控制台，单文件无法兼得。
+
+组件启动主程序时**优先用同目录下的 `Auto7zGUI.exe`**，找不到才退回注册表里登记的 `Auto7z.exe`：右键菜单不需要控制台，用 GUI 那一份才不会为一次点击凭空开出一个黑窗。
 
 ## 传参方式
 
@@ -268,42 +285,30 @@ C++ 里 GUID 没有重载 `operator==`，比较的是地址，永远不相等。
 
 ## 检查组件是否正常
 
-工具在 `..\testtools\`，说明见那里的 README。下面的命令在 `Auto7zShell\` 目录下执行。
+工具在 `..\testtools\`，说明见那里的 README。工具二进制放在**各自的目录里**（`..\testtools\cs\shellcheck\shellcheck.exe` 这种），先编译再跑：
 
 ```powershell
+# 在 Auto7zShell\ 目录下执行
+cd ..\testtools
+python cs\build_all.py          # 或只编指定的: python cs\build_all.py shellcheck
+
 $bin = "..\Auto7z_WPF\Auto7z_WPF\bin\Debug"
-$csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-$refs = @(
-  "C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.7.2\PresentationFramework.dll",
-  "C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.7.2\PresentationCore.dll",
-  "C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.7.2\WindowsBase.dll",
-  "C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.7.2\System.Xaml.dll")
-
-function Build-Tool($name) {
-  $a = @("/nologo", "/out:$bin\$name.exe")
-  foreach ($r in $refs) { $a += "/r:$r" }
-  $a += "..\testtools\cs\$name\$name.cs"
-  & $csc @a
-}
-
 $clsid = "{6C3F8A21-4B7D-4E5A-9A2C-3D710E5B8841}"
 
 # 组件能不能建出菜单, 菜单项文字对不对
-Build-Tool "shellcheck"
-& "$bin\shellcheck.exe" "$bin\Auto7zShell.dll" $clsid "$env:TEMP\t.txt"
+& "cs\shellcheck\shellcheck.exe" "$bin\Auto7zShell.dll" $clsid "$env:TEMP\t.txt"
 
 # 哪些地方该出现菜单项
-Build-Tool "scopeprobe"
-& "$bin\scopeprobe.exe" "$bin\Auto7zShell.dll" $clsid $env:TEMP
+& "cs\scopeprobe\scopeprobe.exe" "$bin\Auto7zShell.dll" $clsid $env:TEMP
 
 # 完整链路: Initialize → InvokeCommand → 真的产出压缩包
-Build-Tool "dataprobe"
-& "$bin\dataprobe.exe" "$bin\Auto7zShell.dll" $clsid "$env:TEMP\t.txt"
+& "cs\dataprobe\dataprobe.exe" "$bin\Auto7zShell.dll" $clsid "$env:TEMP\t.txt"
 
 # 菜单图标
-Build-Tool "iconprobe"
-& "$bin\iconprobe.exe" "$bin\Auto7zShell.dll" $clsid "$env:TEMP\t.txt"
+& "cs\iconprobe\iconprobe.exe" "$bin\Auto7zShell.dll" $clsid "$env:TEMP\t.txt"
 ```
+
+这些工具都要 `Auto7zShell.dll` 跟 `Auto7z.exe` 在同一个目录（`$bin`），菜单图标要从主程序取。
 
 ## 排查清单
 
