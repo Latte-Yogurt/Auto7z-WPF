@@ -56,6 +56,8 @@ namespace Auto7z_WPF
 
             // 创建 ViewModel：先加载配置，再同步到控件（不再用硬编码值覆盖刚刚读出的设置）
             _vm = new Auto7zViewModel();
+            // 图形界面模式：进度显示在主窗口的提示区，需要确认时弹对话框
+            _vm.CurrentRunMode = RunMode.Gui;
             DataContext = _vm;
 
             _vm.RequestClose += (s, e) => Close();
@@ -91,9 +93,9 @@ namespace Auto7z_WPF
             InitializeFormSize();
             InitializeFormControlButton();
 
-            // MainText 走绑定, 不在这里赋值。
-            // XAML 里直接写的值优先级高于 Style 的 DataTrigger,
-            // 一旦赋值, 悬停时 Style 里的触发器就换不掉文本了。
+            // MainText 走绑定，不在这里赋值。
+            // XAML 里直接写的值优先级高于 Style 的 DataTrigger，
+            // 一旦赋值，悬停时 Style 里的触发器就换不掉文本了。
             _vm.PropertyChanged += (s, e) =>
             {
                 if (e.PropertyName == nameof(_vm.MainText))
@@ -104,7 +106,7 @@ namespace Auto7z_WPF
                 // 任务结果：显示彩色文本，5 秒后自动恢复
                 if (e.PropertyName == nameof(_vm.ResultText))
                 {
-                    // 任务跑在后台线程, 改控件要封送到界面线程
+                    // 任务跑在后台线程，改控件要封送到界面线程
                     string resultText = _vm.ResultText;
                     bool resultFailed = _vm.IsResultFailed;
                     Dispatcher.BeginInvoke(new Action(() => ShowResult(resultText, resultFailed)));
@@ -214,8 +216,8 @@ namespace Auto7z_WPF
             SetToolTip(CheckBox_ENCFileName, "Tip_EncFileName");
             SetToolTip(CheckBox_GenerateMD5, "Tip_GenerateMD5");
             SetToolTip(ComboBox_ZipLevel, "Tip_CompressionLevel");
-            SetToolTip(PasswordBox_Zip, "Tip_ZipPassword");
-            SetToolTip(PasswordBox_UnZip, "Tip_UnzipPassword");
+            SetToolTip(ZipPasswordInput, "Tip_ZipPassword");
+            SetToolTip(UnZipPasswordInput, "Tip_UnzipPassword");
         }
 
         /// <summary>
@@ -242,8 +244,6 @@ namespace Auto7z_WPF
 
             ToolTipService.SetToolTip(target, text);
         }
-
-
 
         #region 界面与交互
 
@@ -289,6 +289,10 @@ namespace Auto7z_WPF
             _vm.CancelCurrentTask();
             return true;
         }
+        #endregion
+
+        #region 窗口布局
+
 
         private void InitializeFormSize()
         {
@@ -314,7 +318,7 @@ namespace Auto7z_WPF
                 IntPtr hwnd = new WindowInteropHelper(this).Handle;
                 int currentStyle = GetWindowLong(hwnd, GWL_STYLE);
 
-                // 移除最大化按钮样式 , 核心作用是禁止拖拽吸附
+                // 移除最大化按钮样式  ，核心作用是禁止拖拽吸附
                 SetWindowLong(hwnd, GWL_STYLE, currentStyle & ~WS_MAXIMIZEBOX);
             };
         }
@@ -401,7 +405,8 @@ namespace Auto7z_WPF
 
         #endregion
 
-        #region 配置与控件同步
+        #region 配置回填
+
 
         /// <summary>
         /// 将视图模型的配置同步到设置面板控件。同步期间抑制回写，避免把程序默认值写回配置。
@@ -414,7 +419,7 @@ namespace Auto7z_WPF
                 // 压缩面板
                 TextBox_Volume.Text = _vm.Volume;
                 SelectComboBoxItem(ComboBox_Format, ArchiveFormatMap.ToSwitchValue(_vm.Format));
-                PasswordBox_Zip.Text = _vm.Password;
+                ZipPasswordInput.Text = _vm.Password;
                 CheckBox_Zstd.IsChecked = _vm.Zstd;
                 CheckBox_SolidMode.IsChecked = _vm.IsSolidMode;
                 CheckBox_ENCFileName.IsChecked = _vm.IsEncFileName;
@@ -429,10 +434,10 @@ namespace Auto7z_WPF
                 TextBox_FilePath.Text = _vm.OutputPath;
 
                 // 解压面板
-                PasswordBox_UnZip.Text = _vm.UnzipPassword;
+                UnZipPasswordInput.Text = _vm.UnzipPassword;
 
                 // 同步密码有效性（用于控制“完全加密”是否可用）
-                _vm.PasswordBox_Zip_Text = _vm.Password;
+                _vm.ZipPasswordInputText = _vm.Password;
             }
             finally
             {
@@ -456,6 +461,10 @@ namespace Auto7z_WPF
         {
             return (comboBox?.SelectedItem as ComboBoxItem)?.Content?.ToString();
         }
+        #endregion
+
+        #region 控件事件注册
+
 
         /// <summary>
         /// 注册控件事件。先解绑再绑定，保证不会重复注册。
@@ -468,8 +477,8 @@ namespace Auto7z_WPF
             ComboBox_Format.SelectionChanged -= ComboBox_Format_SelectionChanged;
             ComboBox_Format.SelectionChanged += ComboBox_Format_SelectionChanged;
 
-            PasswordBox_Zip.TextChanged -= PasswordBox_Zip_TextChanged;
-            PasswordBox_Zip.TextChanged += PasswordBox_Zip_TextChanged;
+            ZipPasswordInput.TextChanged -= ZipPasswordInput_TextChanged;
+            ZipPasswordInput.TextChanged += ZipPasswordInput_TextChanged;
 
             HookCheckBox(CheckBox_Zstd, CheckBox_Zstd_CheckedChanged);
             HookCheckBox(CheckBox_AutoSave, CheckBox_AutoSave_CheckedChanged);
@@ -488,8 +497,8 @@ namespace Auto7z_WPF
             TextBox_FilePath.TextChanged -= TextBox_FilePath_TextChanged;
             TextBox_FilePath.TextChanged += TextBox_FilePath_TextChanged;
 
-            PasswordBox_UnZip.TextChanged -= PasswordBox_UnZip_TextChanged;
-            PasswordBox_UnZip.TextChanged += PasswordBox_UnZip_TextChanged;
+            UnZipPasswordInput.TextChanged -= UnZipPasswordInput_TextChanged;
+            UnZipPasswordInput.TextChanged += UnZipPasswordInput_TextChanged;
         }
 
         private static void HookCheckBox(CheckBox checkBox, RoutedEventHandler handler)
@@ -499,6 +508,10 @@ namespace Auto7z_WPF
             checkBox.Checked += handler;
             checkBox.Unchecked += handler;
         }
+        #endregion
+
+        #region 设置项事件
+
 
         private void TextBox_Volume_TextChanged(object sender, TextChangedEventArgs e)
         {
@@ -529,12 +542,12 @@ namespace Auto7z_WPF
             if (format.HasValue) _vm.Format = format.Value;
         }
 
-        private void PasswordBox_Zip_TextChanged(object sender, TextChangedEventArgs e)
+        private void ZipPasswordInput_TextChanged(object sender, TextChangedEventArgs e)
         {
             if (_isSyncingControls) return;
 
-            _vm.Password = PasswordBox_Zip.Text;
-            _vm.PasswordBox_Zip_Text = PasswordBox_Zip.Text;
+            _vm.Password = ZipPasswordInput.Text;
+            _vm.ZipPasswordInputText = ZipPasswordInput.Text;
         }
 
         private void CheckBox_Zstd_CheckedChanged(object sender, RoutedEventArgs e)
@@ -600,11 +613,15 @@ namespace Auto7z_WPF
             if (!string.IsNullOrWhiteSpace(text)) _vm.CompressionLevel = EnumText.ParseCompressionLevel(text);
         }
 
-        private void PasswordBox_UnZip_TextChanged(object sender, TextChangedEventArgs e)
+        private void UnZipPasswordInput_TextChanged(object sender, TextChangedEventArgs e)
         {
             if (_isSyncingControls) return;
-            _vm.UnzipPassword = PasswordBox_UnZip.Text;
+            _vm.UnzipPassword = UnZipPasswordInput.Text;
         }
+        #endregion
+
+        #region 控件事件处理
+
 
         private void TextBox_FilePath_TextChanged(object sender, TextChangedEventArgs e)
         {
@@ -717,7 +734,7 @@ namespace Auto7z_WPF
         /// <summary>
         /// 把其他实例送来的文件排进队列。
         ///
-        /// 一次右键只处理一批, 连续右键时后面的批次排队等着,
+        /// 一次右键只处理一批，连续右键时后面的批次排队等着，
         /// 不跟正在跑的任务抢。
         /// </summary>
         /// <param name="files">文件路径。</param>

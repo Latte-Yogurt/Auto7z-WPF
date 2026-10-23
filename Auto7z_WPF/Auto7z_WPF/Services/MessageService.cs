@@ -57,7 +57,7 @@ namespace Auto7z_WPF.Services
                 app,
                 () =>
                 {
-                    var window = new MessageWindow { Owner = app.MainWindow };
+                    var window = new MessageWindow { Owner = ResolveOwner(app) };
                     window.ApplyYesNoButtons();
                     window.SetMessage(detail);
                     window.Closed += (s, e) => confirmed = window.Confirmed;
@@ -65,6 +65,21 @@ namespace Auto7z_WPF.Services
                 });
 
             return confirmed;
+        }
+
+        /// <summary>
+        /// 取对话框的宿主窗口。
+        ///
+        /// 没有主窗口时（右键菜单模式）返回 null，对话框独立显示。
+        /// 不能直接用 app.MainWindow：没有主窗口时 WPF 会把刚建好的对话框
+        /// 当成 MainWindow 返回，设置 Owner 会抛「无法将 Owner 属性设置为它本身」。
+        /// </summary>
+        private static Window ResolveOwner(Application app)
+        {
+            Window main = app.MainWindow;
+            if (main == null) return null;
+            if (main is MessageWindow) return null;
+            return main;
         }
 
         /// <summary>
@@ -82,7 +97,7 @@ namespace Auto7z_WPF.Services
                 app,
                 () =>
                 {
-                    var window = new MessageWindow { Owner = app.MainWindow };
+                    var window = new MessageWindow { Owner = ResolveOwner(app) };
                     window.SetTitle(EnumText.GetResourceText(titleKey, titleFallback));
 
                     // 单按钮模式：正文换成提示内容，只留“确定”
@@ -96,7 +111,7 @@ namespace Auto7z_WPF.Services
         /// <summary>
         /// 在界面线程上显示一个对话框，等它关闭后返回。
         ///
-        /// 对话框用 Show() 显示, 外面套一个嵌套的 DispatcherFrame 等它关掉。
+        /// 对话框用 Show() 显示，外面套一个嵌套的 DispatcherFrame 等它关掉。
         ///
         /// 不用 Dispatcher.Invoke 等待：
         /// Invoke 会把界面线程的调度优先级压到 Send，
@@ -107,6 +122,7 @@ namespace Auto7z_WPF.Services
         ///
         /// <param name="app">应用程序对象。</param>
         /// <param name="createWindow">在界面线程上创建对话框。</param>
+        /// </summary>
         private static void ShowDialogAndWait(Application app, Func<Window> createWindow)
         {
             // 后台线程在这里等，界面线程跑嵌套循环
@@ -161,7 +177,7 @@ namespace Auto7z_WPF.Services
                 }
                 else
                 {
-                    // 用 BeginInvoke 而不是 Invoke:
+                    // 用 BeginInvoke 而不是 Invoke：
                     // Invoke 会把界面线程的优先级压到 Send，渲染与输入都排不上队，
                     // 弹窗会显示得出但点不动。
                     app.Dispatcher.BeginInvoke(show);

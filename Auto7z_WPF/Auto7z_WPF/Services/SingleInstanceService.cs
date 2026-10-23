@@ -10,15 +10,15 @@ namespace Auto7z_WPF.Services
     /// <summary>
     /// 单实例控制。
     ///
-    /// 第二次启动时把要处理的文件交给已经在跑的那个实例, 自己直接退出。
-    /// 已经在跑的实例收到通知后把文件排进任务队列, 一个一个来。
+    /// 第二次启动时把要处理的文件交给已经在跑的那个实例，自己直接退出。
+    /// 已经在跑的实例收到通知后把文件排进任务队列，一个一个来。
     ///
-    /// 交接走的是命名管道, 不落盘:
-    /// 后来的实例把路径写进管道, 第一个实例读完就接着处理。
+    /// 交接走的是命名管道，不落盘：
+    /// 后来的实例把路径写进管道，第一个实例读完就接着处理。
     /// </summary>
     public class SingleInstanceService
     {
-        /// <summary>命名互斥体的名字。带上用户标识, 多个用户各开各的。</summary>
+        /// <summary>命名互斥体的名字。带上用户标识，多个用户各开各的。</summary>
         private const string MutexName = "Local\\Auto7z_WPF_SingleInstance";
 
         /// <summary>交接用的管道名。</summary>
@@ -32,7 +32,7 @@ namespace Auto7z_WPF.Services
         private volatile bool _running;
 
         /// <summary>
-        /// 已有实例在跑时, 用它把文件交过去。
+        /// 已有实例在跑时，用它把文件交过去。
         /// </summary>
         /// <param name="paths">要交给已有实例的文件路径。</param>
         /// <returns>交给成功返回 true。</returns>
@@ -55,7 +55,7 @@ namespace Auto7z_WPF.Services
             }
             catch (Exception)
             {
-                // 对方还没准备好就交不上, 只能自己接着做
+                // 对方还没准备好就交不上，只能自己接着做
                 return false;
             }
         }
@@ -95,7 +95,7 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>
-        /// 一直守着管道, 有人送来文件就交给上层。
+        /// 一直守着管道，有人送来文件就交给上层。
         /// </summary>
         private void ListenLoop(Action<string[]> onFiles)
         {
@@ -150,7 +150,7 @@ namespace Auto7z_WPF.Services
             }
             catch (Exception)
             {
-                // 没拿到过互斥体时释放会失败, 忽略
+                // 没拿到过互斥体时释放会失败，忽略
             }
         }
     }

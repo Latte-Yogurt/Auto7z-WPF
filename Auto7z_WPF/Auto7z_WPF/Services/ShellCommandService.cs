@@ -11,19 +11,19 @@ namespace Auto7z_WPF.Services
     /// <summary>
     /// 命令行参数的解析。
     ///
-    /// 除了直接给出文件路径, 还支持这些形式:
+    /// 除了直接给出文件路径，还支持这些形式：
     ///
-    ///   #映射名:字节数:事件名
-    ///       文件列表放在共享内存里, 由资源管理器的右键菜单扩展写入。
-    ///       一次选中上百个长路径时命令行装不下, 只能走这条路。
+    ///   #映射名：字节数：事件名
+    ///       文件列表放在共享内存里，由资源管理器的右键菜单扩展写入。
+    ///       一次选中上百个长路径时命令行装不下，只能走这条路。
     ///
     ///   -A / -Z / -U
-    ///       指定任务模式: 自动 / 压缩 / 解压。
-    ///       不给就用自动模式, 跟把文件拖进窗口一样。
+    ///       指定任务模式：自动 / 压缩 / 解压。
+    ///       不给就用自动模式，跟把文件拖进窗口一样。
     ///
     ///   -r / -ur
     ///       注册 / 注销右键菜单的外壳扩展。
-    ///       注册要管理员权限, 权限不够时会用 UAC 提权再试一次。
+    ///       注册要管理员权限，权限不够时会用 UAC 提权再试一次。
     ///
     ///   -h
     ///       显示命令行用法。
@@ -64,8 +64,12 @@ namespace Auto7z_WPF.Services
         /// <param name="unregister">是否要注销右键菜单。</param>
         /// <param name="help">是否要显示用法说明。</param>
         /// <param name="setMainExePath">是否只写主程序路径。</param>
+        /// <param name="fromShell">是否由资源管理器右键菜单发起。
+        /// 外壳扩展一律用共享内存传路径（见 <see cref="ReadPathMap"/>），
+        /// 命令行里直接写路径的不是。这个标记用来区分「要不要弹界面问用户」。</param>
         public static void Parse(string[] args, out List<string> paths, out string mode,
-            out bool register, out bool unregister, out bool help, out bool setMainExePath)
+            out bool register, out bool unregister, out bool help, out bool setMainExePath,
+            out bool fromShell)
         {
             paths = new List<string>();
             mode = null;
@@ -73,6 +77,7 @@ namespace Auto7z_WPF.Services
             unregister = false;
             help = false;
             setMainExePath = false;
+            fromShell = false;
 
             if (args == null) return;
 
@@ -82,9 +87,13 @@ namespace Auto7z_WPF.Services
 
                 if (arg.Length > 1 && arg[0] == MapPrefix)
                 {
-                    // 共享内存形式, 路径要从内存里取
+                    // 共享内存形式，路径要从内存里取
                     List<string> mapped = ReadPathMap(arg);
-                    if (mapped != null) paths.AddRange(mapped);
+                    if (mapped != null)
+                    {
+                        paths.AddRange(mapped);
+                        fromShell = true;
+                    }
                     continue;
                 }
 
@@ -131,8 +140,8 @@ namespace Auto7z_WPF.Services
         /// <summary>
         /// 从共享内存里读出路径列表。
         ///
-        /// 参数格式是 #映射名:字节数:事件名。
-        /// 读完后会打开事件通知写入方, 写入方据此可以释放自己那份句柄。
+        /// 参数格式是 #映射名：字节数：事件名。
+        /// 读完后会打开事件通知写入方，写入方据此可以释放自己那份句柄。
         /// </summary>
         /// <param name="argument">命令行里的那一项。</param>
         /// <returns>路径列表；读不到时返回 null。</returns>
@@ -163,7 +172,7 @@ namespace Auto7z_WPF.Services
                         byte[] buffer = new byte[byteCount];
                         view.ReadArray(0, buffer, 0, byteCount);
 
-                        // 第一个字符是标记, 后面是按 \0 分隔的 UTF-16 路径
+                        // 第一个字符是标记，后面是按 \0 分隔的 UTF-16 路径
                         int position = 2;
                         while (position + 2 <= buffer.Length)
                         {
@@ -178,11 +187,11 @@ namespace Auto7z_WPF.Services
             }
             catch (Exception)
             {
-                // 映射不存在或已被释放, 说明写入方没能建好
+                // 映射不存在或已被释放，说明写入方没能建好
                 return null;
             }
 
-            // 通知写入方: 路径已经取走, 可以释放内存了
+            // 通知写入方：路径已经取走，可以释放内存了
             try
             {
                 IntPtr handle = OpenEvent(EventModifyState, false, eventName);
@@ -200,7 +209,7 @@ namespace Auto7z_WPF.Services
             return paths;
         }
 
-        /// <summary>EVENT_MODIFY_STATE, 打开事件时需要写权限。</summary>
+        /// <summary>EVENT_MODIFY_STATE，打开事件时需要写权限。</summary>
         private const uint EventModifyState = 0x0002;
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

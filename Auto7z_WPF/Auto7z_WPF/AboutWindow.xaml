@@ -9,7 +9,7 @@
         Title="{DynamicResource AboutTitle}"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None"
-        AllowsTransparency="True"      
+        AllowsTransparency="True"
         Background="Transparent"
         Width="520" Height="260"
         KeyboardNavigation.TabNavigation="Cycle">
@@ -18,9 +18,9 @@
         <WindowChrome GlassFrameThickness="0" CornerRadius="0" CaptionHeight="{Binding ElementName=Auto7z_About, Path=ActualHeight}" UseAeroCaptionButtons="False" />
     </WindowChrome.WindowChrome>
 
-    <Border x:Name="WindowBorder" 
-            Background="White" 
-            BorderBrush="#33000000" 
+    <Border x:Name="WindowBorder"
+            Background="White"
+            BorderBrush="#33000000"
             BorderThickness="2">
 
         <Grid Margin="8" WindowChrome.IsHitTestVisibleInChrome="True">
@@ -36,7 +36,7 @@
 
             <Grid Grid.Row="0">
                 <StackPanel HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0">
-                    <TextBlock x:Name="Auto7zTitle" Text="{Binding FullTitle}" 
+                    <TextBlock x:Name="Auto7zTitle" Text="{Binding FullTitle}"
                                FontFamily="Microsoft YaHei Bold, DengXian Light" FontSize="13"
                                Style="{DynamicResource Black2BlueTextBlockStyle}">
                         <TextBlock.InputBindings>
@@ -60,7 +60,7 @@
                     </Grid>
 
                     <Grid Width="10"/>
-                    <!--Data的意思是:移动到(0,0)画线到(9,9)，再移动到(0,9)画线到(9,0)-->
+                    <!--Data的意思是：移动到(0,0)画线到(9,9)，再移动到(0,9)画线到(9,0)-->
                     <Grid x:Name="CloseButton"
                           Background="Transparent"
                           Width="15" Height="15"

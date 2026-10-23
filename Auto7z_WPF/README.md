@@ -12,7 +12,7 @@ Windows 图形化压缩工具，基于 7-Zip ZS 内核（7-Zip 22.01 ZS v1.5.5 R
 
 ### 图形界面
 
-双击 `Auto7z.exe`，把文件或文件夹拖进窗口。
+双击 `Auto7zGUI.exe`（图形入口），把文件或文件夹拖进窗口。
 
 - 选中压缩包 → 自动解压
 - 选中普通文件 → 自动压缩
@@ -45,7 +45,10 @@ Auto7z.exe [选项] [文件或目录...]
 
 多文件时「是否合并成一个压缩包」改成在控制台里问。读不到输入（管道、计划任务等场景）就按合并处理。
 
-把文件拖到 `Auto7z.exe` 图标上，走的也是这条路。
+**不带任何参数**直接跑 `Auto7z.exe` 时只打印用法并以退出码 2 结束 —— 它是命令行入口，
+不会再拉起主窗口；图形入口是 `Auto7zGUI.exe`。
+
+把文件拖到 `Auto7zGUI.exe` 图标上，走的也是这条路。
 
 另外还有一个内部用的开关 `--set-main-exe-path`：提权后的进程用它只把主程序路径写进注册表，写完就退出。正常使用碰不到。
 
@@ -54,23 +57,28 @@ Auto7z.exe [选项] [文件或目录...]
 需要 Visual Studio 2022 或更新版本，带 **.NET Framework 4.7.2** 桌面开发工作负载。
 
 ```powershell
-msbuild Auto7z_WPF.sln /t:Rebuild /p:Configuration=Release
+& "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" `
+    Auto7z_WPF.sln /t:Rebuild /p:Configuration=Release /p:Platform="Any CPU"
 ```
+
+`msbuild` 通常不在 `PATH` 上 —— 用完整路径，或从 Visual Studio 开发者命令行里跑。
 
 右键菜单组件是独立的 C++ 项目，见 [`Auto7zShell`](../Auto7zShell/README.md)。要出右键菜单功能，两个都要构建：
 
 ```bat
 ..\Auto7zShell\buildtool\buildtool.bat
-..\Auto7zShell\buildtool\buildtool.exe
+..\Auto7zShell\buildtool\buildtool.exe --vcvars "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
 ```
 
-第一条把 `buildtool.exe` 编译出来，第二条用它把组件编到 `..\Auto7zShell\build\Auto7zShell.dll`。把那个 dll 拷到主程序的输出目录（`bin\Release\` 或 `bin\Debug\`）里。
+第一条把 `buildtool.exe` 编译出来，第二条用它把组件编到 `..\Auto7zShell\build\Auto7zShell.dll`（`buildtool.bat` 里写死的 `VCVARS` 一般不存在，所以用 `--vcvars` 传真实路径）。把那个 dll 拷到主程序的输出目录（`bin\Release\` 或 `bin\Debug\`）里。
 
 构建完的目录里要有：
 
 ```
 Auto7z.exe
 Auto7z.exe.config
+Auto7zGUI.exe         ← 图形入口（GUI 子系统）
+Auto7zGUI.exe.config
 Auto7zShell.dll      ← 右键菜单组件
 ```
 
@@ -176,7 +184,7 @@ end;
 
 ## 7-Zip 组件
 
-`Resources\Modules\` 下带着 `7z.dll` 和 `7z.exe`（7-Zip 22.01 ZS v1.5.5 R3，x64），程序启动时会释放到数据目录。
+`Resources\Modules\` 下带着 `7z.dll` 和 `7z.exe`（7-Zip 22.01 ZS v1.5.5 R3，x64），**执行第一个压缩/解压任务时**释放到数据目录（不是启动时—— 所以干净环境下首次启动只生成配置文件，`7-Zip\` 目录是空的）。
 
 释放前会核对大小，跟资源对不上说明文件坏了，会重新释放一遍。
 
@@ -184,15 +192,18 @@ end;
 
 ```
 Auto7z_WPF/
-├── App.xaml / App.xaml.cs      启动流程：命令行分支、单实例
+├── Auto7z_WPF.csproj           Console 构建 → Auto7z.exe（命令行）
+├── Auto7z_WPF.Gui.csproj       GUI 构建 → Auto7zGUI.exe（双击 / 开始菜单 / 右键 / 拖拽）
+├── App.xaml / App.xaml.cs      启动流程：运行方式分流、单实例
 ├── App.config                  .NET 运行时与程序集绑定重定向
 ├── app.manifest                清单（执行级别、兼容性）
 ├── MainWindow.xaml(.cs)        主窗口：拖放、队列、界面交互
+├── ProcessWindow.xaml(.cs)     进度窗口（右键菜单 / 拖拽模式用，不出主窗口）
 ├── MessageWindow.xaml(.cs)     消息提示（无边框窗口）
 ├── PasswordWindow.xaml(.cs)    密码输入
 ├── AboutWindow.xaml(.cs)       关于窗口
 ├── Models/
-│   ├── Enums.cs                枚举定义
+│   ├── Enums.cs                枚举定义（含 RunMode 运行方式）
 │   ├── PendingFile.cs          待处理文件
 │   └── ProgressInfo.cs         进度信息
 ├── Services/
@@ -201,15 +212,18 @@ Auto7z_WPF/
 │   ├── AppState.cs             运行时状态
 │   ├── ArchiveFormatMap.cs     格式 ↔ 7-Zip -t 开关、按魔数识别格式
 │   ├── ConfigService.cs        配置读写
+│   ├── ConsoleAttach.cs        借用父进程(cmd)的控制台，并重建标准流绑定
 │   ├── ConsoleTaskRunner.cs    命令行模式的任务执行
-│   ├── EnumText.cs             枚举的多语言文本
+│   ├── EnumText.cs             枚举与界面文案的多语言文本
 │   ├── FileSystemHelper.cs     文件系统辅助
 │   ├── LanguageService.cs      语言切换
+│   ├── LaunchContext.cs        判定启动方式（拖拽 / 双击 / 命令行）
 │   ├── LogService.cs           日志
 │   ├── Md5Service.cs           MD5 计算
 │   ├── MessageService.cs       弹窗
 │   ├── SevenZipService.cs      调 7z.exe 的核心逻辑
 │   ├── ShellCommandService.cs  命令行解析
+│   ├── ShellMenuTaskRunner.cs  右键菜单 / 拖拽模式的任务执行（无主窗口）
 │   ├── ShellRegistrationService.cs  右键菜单注册
 │   ├── SingleInstanceService.cs    单实例与任务交接
 │   └── WindowHelper.cs         窗口辅助
@@ -230,22 +244,77 @@ Auto7z_WPF/
 
 ### 几个关键设计
 
+**同一份源码编两个 exe（图形入口零控制台）**：
+`Auto7z.exe` 是 Console 子系统，命令行专用 —— `cmd` 会等它跑完，
+`Y/N` 与密码输入才不会被提示符抢走。代价是双击它时 Windows 会先分配一个控制台窗口。
+`Auto7zGUI.exe` 是 GUI 子系统，双击 / 开始菜单 / 右键菜单 / 拖拽都用它，
+全程不创建控制台，连一帧闪烁都没有。
+PE 子系统这一个字段同时决定「cmd 等不等」与「启动时给不给控制台」，单文件无法兼得，
+所以编两份；两个工程共用同一份源码（`Auto7z_WPF.Gui.csproj` 只 import 主工程）。
+
+分工是硬性的，不是「看父进程猜」：
+
+- `Auto7z.exe` 不带参数时只打印用法并以退出码 2 退出，**不会**拉起主窗口；
+- `Auto7zGUI.exe` 不接控制台、也不处理 `-h` / `-r` / `-ur`，带路径就是右键/拖拽那套小窗口流程，不带路径就是主窗口。
+
 **单实例**：程序只跑一个实例。第二次启动时把文件列表交给已有实例（命名管道），已有实例排队处理。避免多个进程抢同一个 7z 组件。
 
-**命令行模式不弹界面**：命令行下完全不创建主窗口，进度写控制台，做完就退出。
+**三种运行方式**：`RunMode` 枚举区分 `Gui` / `Console` / `ShellMenu`。
+三者的差异不只是"有没有界面" —— 信息输出到哪、怎么问用户都不一样，
+所以显式区分，不靠"有没有主窗口"去反推。
 
-**传参走共享内存**：右键菜单选上百个文件时命令行装不下（32767 字符上限），所以文件列表走命名共享内存，命令行只带一个引用。协议见 [`Auto7zShell`](../Auto7zShell/README.md)。
+哪条入口能进哪种模式现在是编译期定死的：`Auto7z.exe` 只走 `Console`，
+`Auto7zGUI.exe` 只走 `Gui` 与 `ShellMenu`（`GUI_ENTRY` 编译开关，见 `App.xaml.cs`）。
 
-**数据目录分根与数据两层**：根目录普通模式是 `%LOCALAPPDATA%`，便携模式是程序目录下的 `.config`；数据目录一律叫 `Auto7z`，挂在根目录下面。目录搬动时按这个结构来，不会留下空壳目录。
+- `Gui`：双击启动。主窗口在场，进度显示在主窗口提示区，问用户用对话框。
+- `Console`：cmd 里敲命令。**借用父 cmd 的控制台**（`ConsoleAttach`），
+  进度写控制台，Y/N 和密码也在控制台里输入。
+- `ShellMenu`：右键菜单**和拖拽到 exe**。永远不建主窗口，
+  进度用 `ProcessWindow` 显示，问用户用小对话框。
 
-**便携模式会注销右键菜单**：便携程序在别的电脑上跑，不该在系统里留注册表痕迹。勾选便携模式时注销，取消时注册。
+**命令行模式不弹界面**：命令行下完全不创建主窗口，做完就退出。
+失败时也是往控制台写一行文字，**不弹窗** —— 弹窗会把用户的注意力
+从控制台拽走，还会把流程堵住。
+
+**密码框用 TextBox 不是 PasswordBox**：`PasswordBox` 不接受 IME 的组合输入，
+中文密码打不进去。压缩包的密码本来就允许中文，能输进去比看不见更重要。
+代价是密码在界面上是明文显示的。
+
+**传参走共享内存**：右键菜单选上百个文件时命令行装不下（32767 字符上限），
+所以文件列表走命名共享内存，命令行只带一个引用。
+程序也靠这个共享内存形式认出"这是右键菜单来的"。
+协议见 [`Auto7zShell`](../Auto7zShell/README.md)。
+
+**数据目录分根与数据两层**：根目录普通模式是 `%LOCALAPPDATA%`，
+便携模式是程序目录下的 `.config`；数据目录一律叫 `Auto7z`，挂在根目录下面。
+目录搬动时按这个结构来，不会留下空壳目录。
+
+**搬移目录的删除有边界校验**：搬移数据要递归删除源目录，
+删除前先校验路径 —— 源目录必须位于便携根或 `%LOCALAPPDATA%` 根**之下**、
+不等于根本身、目录名必须是 `Auto7z`（见 `Auto7zViewModel.IsSafeToDeleteRecursively`）。
+校验不过就不删，宁可搬移失败也不误删别的东西。
+这条守卫除了静态检查，还有一个运行时探针直接调用它、
+拿真实越界路径（根目录、`C:\Windows`、`..` 逃逸等）验证它真的拦得住 ——
+守卫「写了但不生效」也能查出来。
+
+**便携模式会注销右键菜单**：便携程序在别的电脑上跑，不该在系统里留注册表痕迹。
+勾选便携模式时注销，取消时注册。
 
 ## 测试
 
 测试工具在 [`testtools`](../testtools/README.md)，说明见那里的 README。
 
+一键跑（推荐）：
+
 ```powershell
 cd ..\testtools
+python run_regress.py         # 一键回归
+python run_system_test.py     # 一键系统测试
+```
+
+单跑主回归：
+
+```powershell
 python regress.py --app "..\Auto7z_WPF\Auto7z_WPF\bin\Debug\Auto7z.exe"
 ```
 
@@ -254,5 +323,7 @@ python regress.py --app "..\Auto7z_WPF\Auto7z_WPF\bin\Debug\Auto7z.exe"
 ## 已知限制
 
 - 命令行模式的合并询问要读控制台输入，管道环境读不到时按「合并」处理
+- 命令行模式解压加密包时，密码也在控制台里问；管道环境读不到会当作「用户取消」
 - 右键菜单是传统 `IContextMenu` 扩展，Windows 11 上在「显示更多选项」里
 - 右键菜单注册要管理员权限，普通用户运行时会弹 UAC
+- 密码框是明文显示的（为了支持中文输入，见「几个关键设计」）

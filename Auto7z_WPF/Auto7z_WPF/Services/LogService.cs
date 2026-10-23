@@ -17,11 +17,14 @@ namespace Auto7z_WPF.Services
     /// </summary>
     public class LogService
     {
-        private static readonly string _appName = Assembly.GetExecutingAssembly().GetName().Name;
+        // 日志文件名固定用产品名，不取程序集名。
+        // 图形入口的程序集叫 Auto7zGUI，取程序集名会把日志劈成两族
+        // （Auto7z_*.log 与 Auto7zGUI_*.log），过期日志清理也只认得自己那一族。
+        private static readonly string _appName = "Auto7z";
 
         private static readonly object _writeLock = new object();
 
-        private static readonly System.Text.Encoding Utf8NoBom = new System.Text.UTF8Encoding(false);
+        private static readonly System.Text.Encoding _utf8NoBom = new System.Text.UTF8Encoding(false);
 
         /// <summary>问题日志保留天数，超过天数的在启动时删除。</summary>
         private const int IssueLogRetentionDays = 7;
@@ -123,7 +126,7 @@ namespace Auto7z_WPF.Services
                 {
                     Directory.CreateDirectory(LogDirectory);
                     // 显式使用 UTF-8：默认编码受系统区域设置影响，会让中文日志在其它工具里变成乱码
-                    using (var writer = new StreamWriter(logPath, true, Utf8NoBom))
+                    using (var writer = new StreamWriter(logPath, true, _utf8NoBom))
                     {
                         string nowTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                         writer.WriteLine($"{nowTime} [{level.ToString().ToUpperInvariant()}]：{message}");

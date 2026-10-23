@@ -9,14 +9,14 @@ namespace Auto7z_WPF.Services
     /// <summary>
     /// 右键菜单外壳扩展的注册。
     ///
-    /// 注册由命令行触发: Auto7z.exe -r 注册, -ur 注销。
+    /// 注册由命令行触发：Auto7z.exe -r 注册，-ur 注销。
     /// 打包安装程序用这两个参数写 [Run] 与 UninstallRun 即可。
     ///
-    /// COM 查 CLSID 只认 HKEY_CLASSES_ROOT, 也就是 HKLM\Software\Classes\CLSID,
+    /// COM 查 CLSID 只认 HKEY_CLASSES_ROOT，也就是 HKLM\Software\Classes\CLSID，
     /// 写 HKEY_CURRENT_USER\Software\Classes\CLSID 是不生效的。
-    /// 所以注册要管理员权限: 权限不够时用 UAC 提权跑一次 regsvr32。
+    /// 所以注册要管理员权限：权限不够时用 UAC 提权跑一次 regsvr32。
     ///
-    /// 组件 dll 与主程序放在一起, 文件名固定。
+    /// 组件 dll 与主程序放在一起，文件名固定。
     /// </summary>
     public class ShellRegistrationService
     {
@@ -36,11 +36,11 @@ namespace Auto7z_WPF.Services
         private const string SetLanguageName = "DllSetLanguage";
 
 
-        /// <summary>无参导出函数: HRESULT DllRegisterServer()</summary>
+        /// <summary>无参导出函数：HRESULT DllRegisterServer()</summary>
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         private delegate int RegisterDelegate();
 
-        /// <summary>带一个字符串参数的导出函数: HRESULT DllSetMainExePath(LPCWSTR)</summary>
+        /// <summary>带一个字符串参数的导出函数：HRESULT DllSetMainExePath(LPCWSTR)</summary>
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         private delegate int SetPathDelegate([MarshalAs(UnmanagedType.LPWStr)] string path);
 
@@ -69,8 +69,8 @@ namespace Auto7z_WPF.Services
                 return ok;
             }
 
-            // 权限不够, 用 regsvr32 提权注册。
-            // 主程序路径由 dll 在注册时一并写好, 不用再起一个提权进程。
+            // 权限不够，用 regsvr32 提权注册。
+            // 主程序路径由 dll 在注册时一并写好，不用再起一个提权进程。
             bool registered = RunElevated(dllPath, true);
             if (registered) NotifyShellChanged();
             return registered;
@@ -100,8 +100,8 @@ namespace Auto7z_WPF.Services
         /// <summary>
         /// 用 regsvr32 提权注册或注销。
         ///
-        /// 不重新启动自己, 那样会被本程序的 manifest 执行级别压住。
-        /// regsvr32 是系统自带的, 用 runas 启动它就能拿到管理员权限。
+        /// 不重新启动自己，那样会被本程序的 manifest 执行级别压住。
+        /// regsvr32 是系统自带的，用 runas 启动它就能拿到管理员权限。
         /// </summary>
         /// <param name="dllPath">组件 dll 路径。</param>
         /// <param name="register">true 为注册，false 为注销。</param>
@@ -138,10 +138,10 @@ namespace Auto7z_WPF.Services
         /// <summary>
         /// 把当前语言告诉外壳扩展。
         ///
-        /// 右键菜单的文字按这个语言显示, 所以界面语言换了要通知组件一次。
-        /// 写在 HKEY_CURRENT_USER 下, 不需要管理员权限。
+        /// 右键菜单的文字按这个语言显示，所以界面语言换了要通知组件一次。
+        /// 写在 HKEY_CURRENT_USER 下，不需要管理员权限。
         /// </summary>
-        /// <param name="language">语言代码, 比如 zh-CN。</param>
+        /// <param name="language">语言代码，比如 zh-CN。</param>
         public static void SetLanguage(string language)
         {
             if (string.IsNullOrWhiteSpace(language)) return;
@@ -155,7 +155,7 @@ namespace Auto7z_WPF.Services
         /// <summary>
         /// 把主程序位置写进注册表。
         ///
-        /// 供提权后的进程调用, 写完就退出。
+        /// 供提权后的进程调用，写完就退出。
         /// </summary>
         public static void SetMainExePath()
         {
@@ -170,7 +170,7 @@ namespace Auto7z_WPF.Services
         /// </summary>
         private static bool RegisterNow(string dllPath)
         {
-            // 先注销再注册, 保证路径与当前实际位置一致
+            // 先注销再注册，保证路径与当前实际位置一致
             Invoke(dllPath, UnregisterServerName);
             if (Invoke(dllPath, RegisterServerName) != 0) return false;
 
@@ -181,7 +181,7 @@ namespace Auto7z_WPF.Services
         /// <summary>
         /// 把主程序位置写进注册表。
         ///
-        /// 这一步要写 HKEY_CLASSES_ROOT, 跟注册一样需要管理员权限。
+        /// 这一步要写 HKEY_CLASSES_ROOT，跟注册一样需要管理员权限。
         /// 提权那条路上是由 regsvr32 之外的另一个提权进程来做的。
         /// </summary>
         /// <param name="dllPath">组件 dll 路径。</param>
@@ -302,9 +302,9 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>
-        /// 通知资源管理器文件关联变了, 让它重新读一遍外壳扩展列表。
+        /// 通知资源管理器文件关联变了，让它重新读一遍外壳扩展列表。
         ///
-        /// 不发这个通知的话, 资源管理器会一直用启动时缓存的列表,
+        /// 不发这个通知的话，资源管理器会一直用启动时缓存的列表，
         /// 刚注册上的菜单不会出现。
         /// </summary>
         private static void NotifyShellChanged()

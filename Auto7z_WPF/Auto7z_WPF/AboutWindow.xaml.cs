@@ -94,7 +94,7 @@ namespace Auto7z_WPF
                 IntPtr hwnd = new WindowInteropHelper(this).Handle;
                 int currentStyle = GetWindowLong(hwnd, GWL_STYLE);
 
-                // 移除最大化按钮样式 , 核心作用是禁止拖拽吸附
+                // 移除最大化按钮样式  ，核心作用是禁止拖拽吸附
                 SetWindowLong(hwnd, GWL_STYLE, currentStyle & ~WS_MAXIMIZEBOX);
             };
         }

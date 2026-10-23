@@ -90,7 +90,7 @@ namespace Auto7z_WPF.Services
                     if (read >= 4 && header[0] == 0x4D && header[1] == 0x53 && header[2] == 0x57 && header[3] == 0x49)
                         return "wim";
 
-                    // tar: 偏移 257 处为 "ustar"
+                    // tar：偏移 257 处为 "ustar"
                     if (read >= 262 && header[257] == 0x75 && header[258] == 0x73 && header[259] == 0x74 && header[260] == 0x61 && header[261] == 0x72)
                         return "tar";
 

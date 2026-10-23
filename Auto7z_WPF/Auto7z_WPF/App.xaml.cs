@@ -16,11 +16,57 @@ namespace Auto7z_WPF
         /// <summary>单实例控制。</summary>
         private SingleInstanceService _singleInstance;
 
+        static App()
+        {
+            // Auto7z.exe 是 Console 子系统，双击运行时 Windows 会在托管代码开始
+            // 执行前就分配一个控制台窗口，应在托管代码中尽早把它隐藏掉，
+            // 避免一闪而过的黑窗口。只有控制台独占时（双击启动）才隐藏；
+            // 在 cmd 里启动时控制台是共享的（count > 1），不隐藏，避免把
+            // 用户的 cmd 窗口关掉而导致输入/输出异常（即 Bug 2 的根因）。
+            // Auto7zGUI.exe 是 GUI 子系统，根本没有控制台，这里直接返回。
+            ConsoleAttach.HideOwnConsoleWindow();
+        }
+
         private void Application_Startup(object sender, StartupEventArgs e)
         {
-            // 命令行参数: 文件路径、模式开关、注册与注销
+            // 命令行参数：文件路径、模式开关、注册与注销
             ShellCommandService.Parse(e.Args, out List<string> paths, out string mode,
-                out bool register, out bool unregister, out bool help, out bool setMainExePath);
+                out bool register, out bool unregister, out bool help, out bool setMainExePath,
+                out bool fromShell);
+
+            // 两个可执行体的分工见 Auto7z_WPF.Gui.csproj：
+            //   Auto7z.exe     命令行入口，只做命令行的事；
+            //   Auto7zGUI.exe  图形入口，只做图形的事。
+#if GUI_ENTRY
+            // 图形入口没有控制台，也不接控制台：-h / -r / -ur 属于命令行入口，
+            // 在这里一律不处理，免得图形进程往一个不存在的控制台里写东西。
+            bool dragAndDrop = paths.Count > 0;
+            ConsoleAttach.HideOwnConsoleWindow();
+#else
+            // 命令行模式：借父进程(cmd)的控制台。
+            //
+            // Auto7z.exe 是 Console 子系统，在 cmd 里启动时本来就有控制台，
+            // 标准句柄是好的，不需要借；双击它时 Windows 会分配一个没人看的黑窗口，
+            // 得藏掉 —— 判断依据是控制台里只挂着自己一个进程。
+            //
+            // 只在「用户自己敲命令」时接：
+            //   - 右键菜单 / 拖拽模式不接，父进程是 explorer，
+            //     它的控制台用户根本看不见；
+            //   - 双击运行不接，本来也没有控制台。
+            bool dragAndDrop = LaunchContext.IsDragAndDrop(paths.Count > 0);
+            bool consoleMode = paths.Count > 0 && !fromShell && !dragAndDrop;
+
+            if (consoleMode || help || register || unregister)
+            {
+                ConsoleAttach.TryAttachToParent();
+            }
+            else
+            {
+                // 非命令行模式：把程序自己分配的那个控制台藏掉，
+                // 免得双击运行或右键菜单时凭空多一个黑窗口。
+                ConsoleAttach.HideOwnConsoleWindow();
+            }
+#endif
 
             // 提权后只写主程序路径
             if (setMainExePath)
@@ -30,17 +76,28 @@ namespace Auto7z_WPF
                 return;
             }
 
-            // 注册 / 注销 / 显示用法, 都是命令行干完就退出
+#if !GUI_ENTRY
+            // 注册 / 注销 / 显示用法，都是命令行干完就退出
             if (register || unregister || help)
             {
                 RunCommandLineOnly(register, unregister, help);
                 return;
             }
 
+            // 没有路径、也没有任何开关：这是「双击了命令行版本」。
+            // 命令行入口不再拉起主窗口 —— 图形入口是 Auto7zGUI.exe。
+            if (paths.Count == 0 && !fromShell)
+            {
+                ShellRegistrationService.WriteUsage();
+                Shutdown(2);
+                return;
+            }
+#endif
+
             // 先清理过期日志，再做其余初始化
             LogService.CleanupOldLogs();
 
-            // 已经有实例在跑就把文件交过去, 自己退出
+            // 已经有实例在跑就把文件交过去，自己退出
             _singleInstance = new SingleInstanceService();
             if (!_singleInstance.TryAcquire())
             {
@@ -49,8 +106,15 @@ namespace Auto7z_WPF
                     bool handed = SingleInstanceService.SendToRunningInstance(paths.ToArray());
                     if (!handed)
                     {
-                        // 交不上(对方还没准备好), 只能自己接着做
-                        RunFromCommandLine(paths.ToArray(), mode);
+                        // 交不上（对方还没准备好），只能自己接着做
+                        if (fromShell || dragAndDrop)
+                        {
+                            RunFromShellMenu(paths.ToArray(), mode);
+                        }
+                        else
+                        {
+                            RunFromCommandLine(paths.ToArray(), mode);
+                        }
                         return;
                     }
                 }
@@ -63,17 +127,27 @@ namespace Auto7z_WPF
 
             if (paths.Count > 0)
             {
-                RunFromCommandLine(paths.ToArray(), mode);
+                // 右键菜单 与 拖拽到 exe：都用无主窗口模式
+                // （拖拽的父进程也是 explorer，路径参数跟右键一样是直接给路径，
+                //   区别只在于有没有 #共享内存 标记）
+                if (fromShell || dragAndDrop)
+                {
+                    RunFromShellMenu(paths.ToArray(), mode);
+                }
+                else
+                {
+                    RunFromCommandLine(paths.ToArray(), mode);
+                }
                 return;
             }
 
-            // 没有文件进来, 就是正常启动
+            // 没有文件进来，就是正常启动
             StartNormalMode();
         }
 
         /// <summary>
-        /// 只做命令行的事, 完事就退出, 不弹界面。
-        /// 注册要管理员权限, 权限不够时用 UAC 提权跑一次 regsvr32。
+        /// 只做命令行的事，完事就退出，不弹界面。
+        /// 注册要管理员权限，权限不够时用 UAC 提权跑一次 regsvr32。
         /// </summary>
         /// <param name="register">是否注册右键菜单。</param>
         /// <param name="unregister">是否注销右键菜单。</param>
@@ -111,7 +185,12 @@ namespace Auto7z_WPF
             }
         }
 
-        /// <summary>命令行模式。不建主窗口, 任务在控制台里跑, 完事就退出。</summary>
+        /// <summary>
+        /// 命令行模式。不建主窗口，任务在控制台里跑，完事就退出。
+        ///
+        /// 控制台看得见、也读得到输入，所以：进度写控制台，
+        /// 多文件合并用 Y/N 问答，加密压缩包解压时在控制台提示输入密码。
+        /// </summary>
         private void RunFromCommandLine(string[] paths, string mode)
         {
             var viewModel = new Auto7zViewModel();
@@ -123,15 +202,40 @@ namespace Auto7z_WPF
             var runner = new ConsoleTaskRunner(viewModel);
             runner.Run(paths, mode);
 
-            // 任务跑完直接退出, 不留在后台。
-            // 用 Shutdown 而不是 Environment.Exit, 让日志正常落盘。
+            // 任务跑完直接退出，不留在后台。
+            // 用 Shutdown 而不是 Environment.Exit，让日志正常落盘。
             _singleInstance.Dispose();
             Shutdown();
             return;
         }
 
         /// <summary>
-        /// 正常启动: 建主窗口并显示。
+        /// 右键菜单模式。永远不建主窗口。
+        ///
+        /// 从资源管理器右键进来时控制台是看不见的，读不到输入，
+        /// 所以：进度用独立的进度窗口显示，需要确认的地方
+        /// （合并询问、输入密码）弹小对话框。
+        ///
+        /// 绝不拉起主窗口 —— 右键压缩的预期是"点了就走"。
+        /// </summary>
+        private void RunFromShellMenu(string[] paths, string mode)
+        {
+            var viewModel = new Auto7zViewModel();
+            viewModel.LoadConfig();
+            viewModel.ApplyLanguage();
+
+            if (mode != null) viewModel.CurrentOperationMode = ParseMode(mode);
+
+            var runner = new ShellMenuTaskRunner(viewModel);
+            runner.Run(paths, mode);
+
+            _singleInstance.Dispose();
+            Shutdown();
+            return;
+        }
+
+        /// <summary>
+        /// 正常启动：建主窗口并显示。
         /// </summary>
         private void StartNormalMode()
         {
@@ -155,8 +259,8 @@ namespace Auto7z_WPF
 
         /// <summary>
         /// 检查程序目录能不能写。
-        /// 7-Zip 组件与配置都放在 %LOCALAPPDATA%\Auto7z, 程序目录本身不用可写,
-        /// 这里只记日志, 不拦着启动。
+        /// 7-Zip 组件与配置都放在 %LOCALAPPDATA%\Auto7z，程序目录本身不用可写，
+        /// 这里只记日志，不拦着启动。
         /// </summary>
         private void CheckInstallDirectory(string currentDir)
         {

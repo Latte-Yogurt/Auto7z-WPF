@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 图形入口工程：与 Auto7z_WPF.csproj 共用同一份源码，只把子系统换成 GUI。
+
+     为什么要有两个可执行体
+     ======================
+     PE 子系统这一个字段同时决定了两件事：
+       - Console 子系统：cmd 会等程序跑完（命令行问答、密码输入才不会被 cmd 抢走），
+         代价是双击运行时 Windows 会先分配一个控制台窗口；
+       - GUI 子系统（WinExe）：双击/右键/拖拽都不会出现控制台，
+         代价是 cmd 不等程序，提示符会立刻回来。
+     两者互斥，单文件做不到「图形入口零控制台 + 命令行仍阻塞」。
+
+     于是同一个工程编两份：
+       Auto7z.exe     Console 子系统，命令行入口，行为与以前完全一致；
+       Auto7zGUI.exe  GUI 子系统，双击 / 开始菜单 / 右键菜单 / 拖拽 用这一个。
+
+     两个 exe 共用同一套单实例互斥名与管道名（见 SingleInstanceService），
+     所以图形实例在跑时再右键，仍然是把路径交给已经在跑的那个实例。
+
+     不要在本文件里再列一遍源码：它 import 主工程，源码清单只有一份。 -->
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <GuiEntry>true</GuiEntry>
+    <ProjectGuid>{7E2F4C1A-9B3D-4A55-8C6E-1D2B3F4A5C60}</ProjectGuid>
+    <!-- 与主工程的 obj 分开，两个工程同时构建时不会互相踩中间文件 -->
+    <BaseIntermediateOutputPath>objgui\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+  <Import Project="Auto7z_WPF.csproj" />
+</Project>

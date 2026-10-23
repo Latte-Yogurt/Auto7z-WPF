@@ -40,6 +40,34 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>
+        /// 取带占位符的资源文本，并做格式化。
+        ///
+        /// 与 <see cref="GetErrorText"/> 的区别：那个是给错误消息用的，
+        /// 写日志时带着 "Err_" / "Log_" 前缀区分；这个是给界面上显示的
+        /// 普通文案用的，两边各管各的，避免一处改动牵连另一处。
+        /// </summary>
+        /// <param name="key">资源键。</param>
+        /// <param name="fallback">默认文本（可含 {0} 占位符）。</param>
+        /// <param name="arg">格式化参数。</param>
+        /// <returns>格式化后的文本。</returns>
+        public static string GetFormattedText(string key, string fallback, params object[] arg)
+        {
+            string text = GetResourceText(key, fallback);
+            if (string.IsNullOrEmpty(text)) return text;
+            if (arg == null || arg.Length == 0) return text;
+
+            try
+            {
+                return string.Format(text, arg);
+            }
+            catch
+            {
+                // 占位符不匹配时直接返回原文
+                return text;
+            }
+        }
+
+        /// <summary>
         /// 取带占位符的错误消息文本，并做格式化。
         /// 取不到资源时退回默认文本。
         /// </summary>
