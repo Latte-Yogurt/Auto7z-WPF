@@ -7,10 +7,14 @@ r"""审查弃用方法与废键值:
 import io
 import os
 import re
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-PROJECT = Path(r"C:\Users\Mocha\Desktop\VSProject\Auto7z Project\Auto7z_WPF\Auto7z_WPF")
+# 默认指向主工程目录；可以传一个路径参数来审查别的副本（变异测试要用）。
+# 写死绝对路径的问题是换个目录就失效，而失效时脚本会照常输出"看起来正常"的结果。
+_default = Path(r"C:\Users\Mocha\Desktop\VSProject\Auto7z Project\Auto7z_WPF\Auto7z_WPF")
+PROJECT = Path(sys.argv[1]) if len(sys.argv) > 1 else _default
 LANG_DIR = PROJECT / "Resources" / "Languages"
 CFG = Path(os.environ["LOCALAPPDATA"]) / "Auto7z" / "Auto7z.xml"
 
@@ -111,7 +115,9 @@ print("五、导出但没用的 C++ 导出函数")
 print("=" * 66)
 dll = PROJECT / "bin" / "Debug" / "Auto7zShell.dll"
 if dll.exists():
-    cs = Path(r"C:\Users\Mocha\Desktop\VSProject\Auto7z Project\Auto7zShell\src\ShellExtension.cpp")
+    cs = PROJECT.parent.parent / "Auto7zShell" / "src" / "ShellExtension.cpp"
+    if not cs.exists():
+        cs = Path(r"C:\Users\Mocha\Desktop\VSProject\Auto7z Project\Auto7zShell\src\ShellExtension.cpp")
     cpp = io.open(cs, encoding="utf-8").read()
     for m in re.finditer(r'extern "C"[^;{]*?(\w+)\s*\(', cpp):
         fn = m.group(1)

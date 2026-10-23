@@ -30,10 +30,10 @@ TAB_INDEX = {
     "CheckBox_SolidMode": 23,
     "CheckBox_Zstd": 24,
     "CheckBox_ENCFileName": 25,
-    "PasswordBox_Zip": 26,
+    "ZipPasswordInput": 26,
     "ComboBox_ZipLevel": 27,
     # 解压页
-    "PasswordBox_UnZip": 30,
+    "UnZipPasswordInput": 30,
 }
 
 text = io.open(XAML, encoding="utf-8").read()

@@ -109,8 +109,15 @@ class UiWidth
                 if (key.StartsWith("Tip_") || key.StartsWith("Log_") || key.StartsWith("Err_"))
                     continue;
 
+                // 控制台文案只打在 cmd 里, 不进任何固定宽度的控件, 同样不受宽度限制
+                if (key.StartsWith("Console_"))
+                    continue;
+
                 // 会换行显示的文案: 对话框正文与主窗口结果提示
-                if (key == "MultiFilePackQuery" || key == "Result_PartialWarning")
+                // PasswordPrompt / PasswordWrongAttempt 显示在 PasswordWindow 的提示区，
+                // 那里是 TextWrapping="Wrap"，会换行，不受单行宽度限制
+                if (key == "MultiFilePackQuery" || key == "Result_PartialWarning" ||
+                    key == "PasswordPrompt" || key == "PasswordWrongAttempt")
                     continue;
 
                 double width = MeasureWidth(value);
