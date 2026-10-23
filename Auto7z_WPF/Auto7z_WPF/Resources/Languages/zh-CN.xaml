@@ -22,7 +22,7 @@
     <sys:String x:Key="GithubText">GitHub主页</sys:String>
     <sys:String x:Key="LicenseText">许可证</sys:String>
     <sys:String x:Key="ConfirmButton">确定</sys:String>
-    <sys:String x:Key="PasswordWrongAttempt">密码错误，第 {0} 次尝试，重新询问密码</sys:String>
+<sys:String x:Key="PasswordWrongAttempt">密码错误，第 {0} 次尝试，重新询问密码：</sys:String>
     <sys:String x:Key="OkButton">确定</sys:String>
     <sys:String x:Key="NoButton">否</sys:String>
     <sys:String x:Key="YesButton">是</sys:String>
@@ -149,4 +149,25 @@
     <sys:String x:Key="Log_InnerTarFailed">解开中间 tar 失败：{0}</sys:String>
     <sys:String x:Key="Log_OutputPathInvalid">输出路径不存在，已清空：{0}</sys:String>
     <sys:String x:Key="Log_TaskCancelled">任务已取消</sys:String>
+    <sys:String x:Key="ProcessWindowTitle">正在处理</sys:String>
+    <sys:String x:Key="ProcessWaiting">准备中…</sys:String>
+    <sys:String x:Key="ProcessStageCompress">压缩中…</sys:String>
+    <sys:String x:Key="ProcessStageExtract">解压中…</sys:String>
+    <sys:String x:Key="ProcessStageMd5">计算 MD5 校验中…</sys:String>
+    <sys:String x:Key="ProcessStageFinished">处理完成</sys:String>
+    <sys:String x:Key="ProcessStageFailed">处理失败</sys:String>
+    <sys:String x:Key="ProcessStageCancelled">已取消</sys:String>
+    <sys:String x:Key="Console_CompressStart">开始压缩：{0}</sys:String>
+    <sys:String x:Key="Console_ExtractStart">开始解压：{0}</sys:String>
+    <sys:String x:Key="Console_MergeQuestion">检测到多个文件，是否合并为单个压缩包？(Y/N)</sys:String>
+    <sys:String x:Key="Console_PasswordPrompt">该压缩包已加密，请输入密码：</sys:String>
+    <sys:String x:Key="Console_PasswordWrong">密码错误，第 {0} 次尝试，重新询问密码：</sys:String>
+    <sys:String x:Key="Console_PasswordRetries">连续多次密码错误，已放弃解压</sys:String>
+    <sys:String x:Key="Console_TaskDone">完成：{0}</sys:String>
+    <sys:String x:Key="Console_TaskFailed">失败：{0}</sys:String>
+    <sys:String x:Key="Console_TaskCancelled">已取消</sys:String>
+    <sys:String x:Key="Console_ProgressCompress">7z 已处理...{0}%</sys:String>
+    <sys:String x:Key="Console_ProgressExtract">7z 已处理...{0}%</sys:String>
+    <sys:String x:Key="Console_ProgressMd5">MD5 已处理...{0}%</sys:String>
+    <sys:String x:Key="PasswordPrompt">该压缩包已加密，请输入密码：</sys:String>
 </ResourceDictionary>

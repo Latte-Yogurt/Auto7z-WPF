@@ -112,11 +112,10 @@ namespace Auto7z_WPF
 
             Title = text;
 
-            var titleText = this.FindName("PasswordTitle") as TextBlock;
+            var titleText = this.FindName("MessageTitle") as TextBlock;
             if (titleText != null) titleText.Text = text;
         }
 
-        /// <summary>用户是否点了“是”。</summary>
         /// <summary>用户是否点了“是”。</summary>
         public bool Confirmed { get; private set; }
 

@@ -12,12 +12,12 @@
             <Setter.Value>
                 <ControlTemplate TargetType="TabItem">
                     <Grid x:Name="Grid_SidePanel" Background="Transparent" Cursor="Hand">
-                        <Border x:Name="Border_Grid_SidePanel" 
-                                            Background="Transparent" 
-                                            BorderThickness="0,0,0,2" 
+                        <Border x:Name="Border_Grid_SidePanel"
+                                            Background="Transparent"
+                                            BorderThickness="0,0,0,2"
                                             BorderBrush="Transparent"/>
-                        <ContentPresenter x:Name="HeaderContent" 
-                                                              ContentSource="Header" 
+                        <ContentPresenter x:Name="HeaderContent"
+                                                              ContentSource="Header"
                                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Grid>
                     <ControlTemplate.Triggers>
@@ -363,10 +363,10 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="RadioButton">
-                    <Border x:Name="BtnBorder" 
-                            Background="{TemplateBinding Background}" 
-                            BorderBrush="{TemplateBinding BorderBrush}" 
-                            BorderThickness="{TemplateBinding BorderThickness}" 
+                    <Border x:Name="BtnBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="4">
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>

@@ -15,7 +15,7 @@ namespace Auto7z_WPF.Services
         private const string LanguagesFolder = "languages/";
 
         /// <summary>界面提供的语言。顺序即界面里的排列顺序。</summary>
-        private static readonly string[] SupportedLanguages = { "zh-CN", "zh-TW", "en-US" };
+        private static readonly string[] _supportedLanguages = { "zh-CN", "zh-TW", "en-US" };
 
         /// <summary>找不到匹配语言时的兜底语言。</summary>
         public const string FallbackLanguage = "en-US";
@@ -38,7 +38,7 @@ namespace Auto7z_WPF.Services
         public static bool IsSupported(string languageCode)
         {
             return !string.IsNullOrWhiteSpace(languageCode)
-                && Array.Exists(SupportedLanguages, l => l.Equals(languageCode.Trim(), StringComparison.OrdinalIgnoreCase));
+                && Array.Exists(_supportedLanguages, l => l.Equals(languageCode.Trim(), StringComparison.OrdinalIgnoreCase));
         }
 
         /// <summary>
@@ -46,7 +46,7 @@ namespace Auto7z_WPF.Services
         /// </summary>
         public static string[] GetSupportedLanguages()
         {
-            return (string[])SupportedLanguages.Clone();
+            return (string[])_supportedLanguages.Clone();
         }
 
         /// <summary>
@@ -63,7 +63,7 @@ namespace Auto7z_WPF.Services
             string cultureName = System.Globalization.CultureInfo.CurrentUICulture.Name;
             if (string.IsNullOrWhiteSpace(cultureName)) return FallbackLanguage;
 
-            foreach (string supported in SupportedLanguages)
+            foreach (string supported in _supportedLanguages)
             {
                 if (supported.Equals(cultureName, StringComparison.OrdinalIgnoreCase)) return supported;
             }
@@ -141,7 +141,7 @@ namespace Auto7z_WPF.Services
 
         /// <summary>
         /// 判断资源字典是否为语言资源字典。同时识别源程序集里的相对路径
-        /// 与 pack URI 两种写法（后者需要忽略大小写与 ;component/ 前缀差异）。
+        /// 与 pack URI 两种写法（后者需要忽略大小写与  ；component/ 前缀差异）。
         /// </summary>
         private static bool IsLanguageDictionary(ResourceDictionary dict)
         {

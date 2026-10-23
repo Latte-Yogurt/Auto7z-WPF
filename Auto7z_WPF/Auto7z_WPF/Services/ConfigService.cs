@@ -18,7 +18,7 @@ namespace Auto7z_WPF.Services
         /// 配置文件路径。
         ///
         /// 每次都按 <see cref="AppPaths"/> 当前的数据目录重新取。
-        /// 切换便携模式后配置会搬到新位置, 缓存下来的路径就失效了。
+        /// 切换便携模式后配置会搬到新位置，缓存下来的路径就失效了。
         /// </summary>
         public string ConfigPath => AppPaths.ConfigFilePath;
 
@@ -237,6 +237,10 @@ namespace Auto7z_WPF.Services
 
             return value;
         }
+        #endregion
+
+        #region 配置值解析
+
 
         private static bool ParseBool(XDocument doc, string elementName, bool defaultValue)
         {
@@ -369,6 +373,10 @@ namespace Auto7z_WPF.Services
 
             return EnumText.ParseCompressionLevel(text);
         }
+        #endregion
+
+        #region 配置写回
+
 
         private static void UpdateElement(XDocument doc, string elementName, string value)
         {
@@ -393,7 +401,7 @@ namespace Auto7z_WPF.Services
         /// ZipLevel：旧版压缩等级的键名，现为 CompressionLevel，读取时已做兼容。
         /// MainText：旧版主提示文本的键名，现由界面绑定视图模型提供。
         /// </summary>
-        private static readonly string[] DeprecatedKeys =
+        private static readonly string[] _deprecatedKeys =
         {
             "ScreenWidth",
             "ScreenHeight",
@@ -415,7 +423,7 @@ namespace Auto7z_WPF.Services
             var root = doc.Root;
             if (root == null) return;
 
-            foreach (var key in DeprecatedKeys)
+            foreach (var key in _deprecatedKeys)
             {
                 var element = root.Element(key);
                 element?.Remove();

@@ -50,7 +50,7 @@
     <sys:String x:Key="GithubText">GitHub Page</sys:String>
     <sys:String x:Key="LicenseText">License</sys:String>
     <sys:String x:Key="ConfirmButton">Confirm</sys:String>
-    <sys:String x:Key="PasswordWrongAttempt">Wrong password, attempt {0}. Please try again.</sys:String>
+<sys:String x:Key="PasswordWrongAttempt">Wrong password, attempt {0}. Please enter it again:</sys:String>
     <sys:String x:Key="OkButton">OK</sys:String>
     <sys:String x:Key="NoButton">No</sys:String>
     <sys:String x:Key="YesButton">Yes</sys:String>
@@ -139,4 +139,25 @@
     <sys:String x:Key="Log_InnerTarFailed">Failed to extract the inner tar: {0}</sys:String>
     <sys:String x:Key="Log_OutputPathInvalid">The output path does not exist and was cleared: {0}</sys:String>
     <sys:String x:Key="Log_TaskCancelled">Task cancelled</sys:String>
+    <sys:String x:Key="ProcessWindowTitle">Processing</sys:String>
+    <sys:String x:Key="ProcessWaiting">Preparing…</sys:String>
+    <sys:String x:Key="ProcessStageCompress">Compressing…</sys:String>
+    <sys:String x:Key="ProcessStageExtract">Extracting…</sys:String>
+    <sys:String x:Key="ProcessStageMd5">Calculating MD5…</sys:String>
+    <sys:String x:Key="ProcessStageFinished">Done</sys:String>
+    <sys:String x:Key="ProcessStageFailed">Failed</sys:String>
+    <sys:String x:Key="ProcessStageCancelled">Cancelled</sys:String>
+    <sys:String x:Key="Console_CompressStart">Compressing: {0}</sys:String>
+    <sys:String x:Key="Console_ExtractStart">Extracting: {0}</sys:String>
+    <sys:String x:Key="Console_MergeQuestion">Multiple files detected. Pack into a single archive? (Y/N)</sys:String>
+    <sys:String x:Key="Console_PasswordPrompt">This archive is encrypted. Please enter the password:</sys:String>
+    <sys:String x:Key="Console_PasswordWrong">Wrong password, attempt {0}. Please enter it again:</sys:String>
+    <sys:String x:Key="Console_PasswordRetries">Too many wrong passwords, extraction abandoned</sys:String>
+    <sys:String x:Key="Console_TaskDone">Done: {0}</sys:String>
+    <sys:String x:Key="Console_TaskFailed">Failed: {0}</sys:String>
+    <sys:String x:Key="Console_TaskCancelled">Cancelled</sys:String>
+    <sys:String x:Key="Console_ProgressCompress">7z processed...{0}%</sys:String>
+    <sys:String x:Key="Console_ProgressExtract">7z processed...{0}%</sys:String>
+    <sys:String x:Key="Console_ProgressMd5">MD5 processed...{0}%</sys:String>
+    <sys:String x:Key="PasswordPrompt">This archive is encrypted. Please enter the password:</sys:String>
 </ResourceDictionary>

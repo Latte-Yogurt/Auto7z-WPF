@@ -6,14 +6,14 @@
         xmlns:local="clr-namespace:Auto7z_WPF"
         d:DataContext="{d:DesignInstance Type=local:Auto7zViewModel}"
         mc:Ignorable="d"
-        Title="{DynamicResource Title}" 
+        Title="{DynamicResource Title}"
         WindowStyle="None"
         ResizeMode="NoResize"
-        AllowsTransparency="True"      
+        AllowsTransparency="True"
         Background="Transparent"
         WindowStartupLocation="CenterScreen"
         UseLayoutRounding="True"
-        AllowDrop="True" 
+        AllowDrop="True"
         Width="520" Height="260"
         KeyboardNavigation.TabNavigation="Cycle">
 
@@ -21,9 +21,9 @@
         <WindowChrome GlassFrameThickness="0" CornerRadius="0" CaptionHeight="{Binding ElementName=Auto7z, Path=ActualHeight}" UseAeroCaptionButtons="False" />
     </WindowChrome.WindowChrome>
 
-    <Border x:Name="WindowBorder" 
-            Background="White" 
-            BorderBrush="#33000000" 
+    <Border x:Name="WindowBorder"
+            Background="White"
+            BorderBrush="#33000000"
             BorderThickness="2">
 
         <Grid x:Name="RootGrid" ClipToBounds="True" WindowChrome.IsHitTestVisibleInChrome="True">
@@ -34,7 +34,7 @@
 
             <Grid x:Name="MainGrid" Grid.Column="0" Margin="8">
                 <StackPanel HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0">
-                    <TextBlock x:Name="Auto7zTitle" Text="{DynamicResource Title}" 
+                    <TextBlock x:Name="Auto7zTitle" Text="{DynamicResource Title}"
                                FontFamily="Microsoft YaHei Bold, DengXian Light" FontSize="13"
                                Style="{DynamicResource Black2BlueTextBlockStyle}" Cursor="Hand">
                         <TextBlock.InputBindings>
@@ -58,7 +58,7 @@
                     </Grid>
 
                     <Grid Width="10"/>
-                    <!--Data的意思是:移动到(0,0)画线到(9,9)，再移动到(0,9)画线到(9,0)-->
+                    <!--Data的意思是：移动到(0,0)画线到(9,9)，再移动到(0,9)画线到(9,0)-->
                     <Grid x:Name="CloseButton"
                           Background="Transparent"
                           Width="15" Height="15"
@@ -78,19 +78,19 @@
                 </StackPanel>
 
                 <StackPanel x:Name="ModePanel" Style="{DynamicResource ModePanelStyle}" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0">
-                    <RadioButton x:Name="RadioButton_Auto" TabIndex="0" Content="{DynamicResource AutoModeButton}" 
+                    <RadioButton x:Name="RadioButton_Auto" TabIndex="0" Content="{DynamicResource AutoModeButton}"
                                  Style="{StaticResource OperationMenuButtonStyle}"
                                  IsChecked="{Binding IsAutoModeSelected, Mode=OneWay}"
                                  Command="{Binding SelectOperationModeCommand}"
                                  CommandParameter="Auto"/>
                     <Grid Height="10"/>
-                    <RadioButton x:Name="RadioButton_Zip" TabIndex="1" Content="{DynamicResource ZipModeButton}" 
+                    <RadioButton x:Name="RadioButton_Zip" TabIndex="1" Content="{DynamicResource ZipModeButton}"
                                  Style="{StaticResource OperationMenuButtonStyle}"
                                  IsChecked="{Binding IsZipModeSelected, Mode=OneWay}"
                                  Command="{Binding SelectOperationModeCommand}"
                                  CommandParameter="Zip"/>
                     <Grid Height="10"/>
-                    <RadioButton x:Name="RadioButton_UnZip" TabIndex="2" Content="{DynamicResource UnZipModeButton}" 
+                    <RadioButton x:Name="RadioButton_UnZip" TabIndex="2" Content="{DynamicResource UnZipModeButton}"
                                  Style="{StaticResource OperationMenuButtonStyle}"
                                  IsChecked="{Binding IsUnZipModeSelected, Mode=OneWay}"
                                  Command="{Binding SelectOperationModeCommand}"
@@ -220,7 +220,7 @@
 
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
                                         <TextBlock Text="{DynamicResource AddPasswordLabel}" Width="60"/>
-                                        <TextBox x:Name="PasswordBox_Zip" TabIndex="26" Width="100" Text="{Binding PasswordBox_Zip_Text, UpdateSourceTrigger=PropertyChanged}" Style="{DynamicResource PasswordBoxZipStyle}"/>
+                                        <TextBox x:Name="ZipPasswordInput" TabIndex="26" Width="100" Text="{Binding ZipPasswordInputText, UpdateSourceTrigger=PropertyChanged}" Style="{DynamicResource PasswordBoxZipStyle}"/>
                                     </StackPanel>
 
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
@@ -241,7 +241,7 @@
                                 <StackPanel Margin="5,5">
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
                                         <TextBlock Text="{DynamicResource UnzipPasswordLabel}" Width="60"/>
-                                        <TextBox x:Name="PasswordBox_UnZip" TabIndex="30" Width="100"/>
+                                        <TextBox x:Name="UnZipPasswordInput" TabIndex="30" Width="100"/>
                                     </StackPanel>
                                 </StackPanel>
                             </ScrollViewer>

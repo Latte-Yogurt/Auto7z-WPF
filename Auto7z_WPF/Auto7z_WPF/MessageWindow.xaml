@@ -18,7 +18,7 @@
         KeyboardNavigation.TabNavigation="Cycle">
 
     <WindowChrome.WindowChrome>
-        <WindowChrome GlassFrameThickness="0" CornerRadius="0" CaptionHeight="{Binding ElementName=PasswordTitle, Path=ActualHeight}" UseAeroCaptionButtons="False" />
+        <WindowChrome GlassFrameThickness="0" CornerRadius="0" CaptionHeight="{Binding ElementName=MessageTitle, Path=ActualHeight}" UseAeroCaptionButtons="False" />
     </WindowChrome.WindowChrome>
 
     <Border x:Name="WindowBorder"
@@ -28,7 +28,7 @@
 
         <Grid x:Name="MainGrid" Grid.Column="0" Margin="8">
             <StackPanel HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0">
-                <TextBlock x:Name="PasswordTitle" Text="{DynamicResource InfoTitle}"
+                <TextBlock x:Name="MessageTitle" Text="{DynamicResource InfoTitle}"
                                FontFamily="Microsoft YaHei Bold, DengXian Light" FontSize="13"
                                Style="{DynamicResource Black2BlueTextBlockStyle}" Cursor="Hand"/>
             </StackPanel>
@@ -44,7 +44,7 @@
                 </Grid>
 
                 <Grid Width="10"/>
-                <!--Data的意思是:移动到(0,0)画线到(9,9)，再移动到(0,9)画线到(9,0)-->
+                <!--Data的意思是：移动到(0,0)画线到(9,9)，再移动到(0,9)画线到(9,0)-->
                 <Grid x:Name="CloseButton"
                               Background="Transparent"
                               Width="15" Height="15"

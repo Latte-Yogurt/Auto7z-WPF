@@ -13,6 +13,8 @@ namespace Auto7z_WPF
     /// “Enter password (will not be echoed):”并以退出码 255 结束。
     /// 此时由主窗口调起本窗口收集密码，再把密码回传给 7-Zip 重试。
     ///
+    /// 输入框用 TextBox：PasswordBox 不接受 IME 组合输入，中文密码打不进去。
+    ///
     /// 本窗口只负责收集密码，不直接执行任何 7-Zip 命令。
     /// </summary>
     public partial class PasswordWindow : Window
@@ -29,7 +31,7 @@ namespace Auto7z_WPF
             Loaded += (s, e) =>
             {
                 // 打开即聚焦输入框
-                var box = this.FindName("PasswordInput") as System.Windows.Controls.PasswordBox;
+                var box = this.FindName("PasswordInput") as TextBox;
                 if (box != null) box.Focus();
             };
 
@@ -107,11 +109,15 @@ namespace Auto7z_WPF
 
         /// <summary>
         /// 取回输入框里的密码并确认。
+        ///
+        /// 输入框用的是 TextBox 而不是 PasswordBox：PasswordBox 不接受 IME 的组合输入，
+        /// 中文密码打不进去。改成 TextBox 后密码是明文显示的，
+        /// 但压缩包的密码本来就允许中文，能输进去比看不见更重要。
         /// </summary>
         private void ConfirmWithInput()
         {
-            var box = this.FindName("PasswordInput") as PasswordBox;
-            Confirm(box == null ? string.Empty : box.Password);
+            var box = this.FindName("PasswordInput") as TextBox;
+            Confirm(box == null ? string.Empty : box.Text);
         }
 
         /// <summary>

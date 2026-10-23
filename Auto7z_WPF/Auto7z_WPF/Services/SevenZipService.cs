@@ -133,26 +133,42 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>
-        /// 匹配 7-Zip 的进度行（形如 " 23% + big.bin"）。
+        /// 匹配 7-Zip 的**解压进度**行（形如 " 23% + big.bin"）。
+        ///
         /// 锚定行首，避免把文件名里带 % 的内容误当成进度。
+        ///
+        /// 7-Zip 的 -bsp1 会输出好几种百分号行，其中三种**不是**解压进度：
+        ///
+        ///   "  0%"             —— 扫描存档阶段的起始行，每次解压都出现
+        ///   "  0M Scan C:\...\" —— 扫描阶段的进度（0M 表示扫了 0 个文件）
+        ///   "100% T a.txt"    —— 读取文件时出错（密码错就是这个）
+        ///
+        /// 前两种出现在**每次**解压的开头；第三种只在出错时出现。
+        /// 它们混在密码交互中间，会把流程搅乱：
+        /// 用户看到 "0%" 就以为开始解压了，其实程序正卡在等密码；
+        /// 看到 "100% T" 就以为快好了，其实刚失败。
+        ///
+        /// 真正的解压进度行是 " 23% + 文件名"：
+        ///   - 百分号后面必须有内容（否则是上面那三种空行）
+        ///   - 标记只能是 +（正常）；T 表示这个文件出错，不算进度
         /// </summary>
-        private static readonly Regex PercentRegex = new Regex(@"^\s*(\d{1,3})\s*%", RegexOptions.Compiled);
+        private static readonly Regex _percentRegex = new Regex(@"^\s*(\d{1,3})\s*%\s*\+", RegexOptions.Compiled);
 
         /// <summary>
         /// 正在运行的 7-Zip 进程。程序退出时统一结束，
         /// 否则关闭程序后 7z.exe 仍在后台运行，还可能锁住临时组件导致无法删除。
         /// </summary>
-        private static readonly List<Process> RunningProcesses = new List<Process>();
-        private static readonly object RunningProcessesLock = new object();
+        private static readonly List<Process> _runningProcesses = new List<Process>();
+        private static readonly object _runningProcessesLock = new object();
 
         /// <summary>
         /// 结束所有仍在运行的 7-Zip 进程（程序退出时调用）。
         /// </summary>
         public void KillRunningProcesses()
         {
-            lock (RunningProcessesLock)
+            lock (_runningProcessesLock)
             {
-                foreach (var p in RunningProcesses)
+                foreach (var p in _runningProcesses)
                 {
                     try
                     {
@@ -164,23 +180,23 @@ namespace Auto7z_WPF.Services
                     }
                 }
 
-                RunningProcesses.Clear();
+                _runningProcesses.Clear();
             }
         }
 
         private static void TrackProcess(Process process)
         {
-            lock (RunningProcessesLock)
+            lock (_runningProcessesLock)
             {
-                RunningProcesses.Add(process);
+                _runningProcesses.Add(process);
             }
         }
 
         private static void UntrackProcess(Process process)
         {
-            lock (RunningProcessesLock)
+            lock (_runningProcessesLock)
             {
-                RunningProcesses.Remove(process);
+                _runningProcesses.Remove(process);
             }
         }
 
@@ -300,10 +316,10 @@ namespace Auto7z_WPF.Services
 
         #endregion
 
-        #region 命令行生成
+        #region 压缩命令
 
         /// <summary>
-        /// 生成压缩命令。tar + zstd 要两条, 先打包再压缩。
+        /// 生成压缩命令。tar + zstd 要两条，先打包再压缩。
         /// </summary>
         /// <param name="sourcePaths">待压缩的源文件/文件夹。</param>
         /// <param name="config">压缩配置。</param>
@@ -338,7 +354,7 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>
-        /// 计算 tar+zstd 两步流程的中间产物路径（&lt;名字&gt;.tar）。
+        /// 计算 tar+zstd 两步流程的中间产物路径（&lt；名字&gt;.tar）。
         /// </summary>
         public static string BuildIntermediateTarPath(string outputArchivePath)
         {
@@ -404,6 +420,10 @@ namespace Auto7z_WPF.Services
         {
             return string.Format("a -aoa -y {0} -tzstd {1} {2}", CommonSwitches, Quote(outputArchivePath), Quote(tarPath));
         }
+        #endregion
+
+        #region 压缩参数开关
+
 
         private static int GetCompressionLevelValue(AppConfig config)
         {
@@ -421,7 +441,7 @@ namespace Auto7z_WPF.Services
         /// <summary>
         /// 追加运行模式相关的开关（线程数 / 字典大小）。
         ///
-        /// 7-Zip 的 -md 会盖掉 -mx 预设的字典大小, 跟两者的先后顺序无关。
+        /// 7-Zip 的 -md 会盖掉 -mx 预设的字典大小，跟两者的先后顺序无关。
         /// 因此只有在使用“存储”等级（-mx=0，本就不需要字典）时才下发 -md；
         /// 其余等级交给 -mx 自己决定字典，否则“标准”和“极限”会退化成同一档，
         /// 用户选择的压缩等级形同虚设。
@@ -493,6 +513,10 @@ namespace Auto7z_WPF.Services
 
             sb.AppendFormat(" -v{0}m", volumeMb);
         }
+        #endregion
+
+        #region 解压命令
+
 
         /// <summary>
         /// 生成解压命令行（不含程序路径）。
@@ -618,6 +642,7 @@ namespace Auto7z_WPF.Services
 
         #region 命令执行
 
+
         /// <summary>
         /// 异步执行 7-Zip 命令：stdout/stderr 同时异步读取（避免管道写满互相等待），
         /// 支持取消，并在退出后返回完整输出供上层给出可读的错误原因。
@@ -667,7 +692,7 @@ namespace Auto7z_WPF.Services
                     // 由上层弹窗向用户索取密码后重试。
                     RedirectStandardInput = true,
                     // 命令行已带 -sccUTF-8，7-Zip 以 UTF-8 输出；
-                    // 按 UTF-8 解码。7z 的错误信息是 UTF-8, 用别的编码会乱码。
+                    // 按 UTF-8 解码。7z 的错误信息是 UTF-8，用别的编码会乱码。
                     StandardOutputEncoding = new UTF8Encoding(false),
                     StandardErrorEncoding = new UTF8Encoding(false)
                 };
@@ -685,7 +710,7 @@ namespace Auto7z_WPF.Services
                     lock (stdoutLock) { stdout.AppendLine(e.Data); }
 
                     if (progress == null) return;
-                    var match = PercentRegex.Match(e.Data);
+                    var match = _percentRegex.Match(e.Data);
                     if (!match.Success) return;
 
                     if (int.TryParse(match.Groups[1].Value, out int percent) && percent != lastPercent)
@@ -703,6 +728,10 @@ namespace Auto7z_WPF.Services
 
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
+
+                #endregion
+
+                #region 进程等待与取消
 
                 var startedAt = DateTime.UtcNow;
                 bool killIssued = false;
@@ -772,6 +801,10 @@ namespace Auto7z_WPF.Services
 
             return result;
         }
+        #endregion
+
+        #region 进程收尾
+
 
         private static int SafeGetExitCode(Process process)
         {
@@ -799,7 +832,8 @@ namespace Auto7z_WPF.Services
 
         #endregion
 
-        #region 路径准备
+        #region 输出目录准备
+
 
         /// <summary>
         /// 为压缩任务准备输出目录。
@@ -882,6 +916,10 @@ namespace Auto7z_WPF.Services
             outputDirectory = safeFolder;
             return true;
         }
+        #endregion
+
+        #region 解压目录准备
+
 
         /// <summary>
         /// 为解压任务准备输出目录：压缩包同级的“压缩包名”子目录，重名时自动追加序号。
@@ -949,6 +987,10 @@ namespace Auto7z_WPF.Services
             destinationDirectory = safeFolder;
             return true;
         }
+        #endregion
+
+        #region 归档命名
+
 
         /// <summary>
         /// 计算压缩后的归档文件路径（输出目录 + 名称 + 扩展名），重名时自动追加序号。

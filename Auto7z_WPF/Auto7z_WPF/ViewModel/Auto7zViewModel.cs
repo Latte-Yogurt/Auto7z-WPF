@@ -54,8 +54,18 @@ namespace Auto7z_WPF
         private string _currentLanguage = LanguageService.FallbackLanguage;
         private LogService.ErrorLevel _errorLevel = LogService.ErrorLevel.Warning;
 
-        /// <summary>控制台模式下已经输出过的百分比, 用来避免重复刷同一行。</summary>
+        /// <summary>控制台模式下已经输出过的百分比，用来避免重复刷同一行。</summary>
         private int _lastConsolePercent = -1;
+
+        /// <summary>
+        /// 是否正在等用户输入密码。
+        ///
+        /// 这期间不打进度行：7-Zip 在索要密码那次会先吐 "  0%"，
+        /// 密码错了那次会吐 "100% T xxx"，这些行混在密码交互中间，
+        /// 会让用户以为程序已经在解压了，实际它正卡在等输入。
+        /// </summary>
+        private bool _awaitingPassword;
+
         private bool _isPortable;
 
         // 压缩面板
@@ -199,6 +209,8 @@ namespace Auto7z_WPF
             _mainText = GetDefaultModeText();
         }
 
+        #endregion
+
         #region 便携模式
 
         /// <summary>
@@ -257,10 +269,8 @@ namespace Auto7z_WPF
                 _isPortable = !portable;
                 SavePortableSetting(!portable);
                 AppPaths.IsPortable = !portable;
-                _messageService.ShowError(
-                    EnumText.GetErrorText("Err_PortableMoveFailed", "切换{0}失败：数据目录没能移动", portable ? "便携模式" : "普通模式"),
-                    out string log);
-                _logService.WriteLog(log, LogService.ErrorLevel.Error);
+                ReportError(
+                    EnumText.GetErrorText("Err_PortableMoveFailed", "切换{0}失败：数据目录没能移动", portable ? "便携模式" : "普通模式"));
                 IsPortable = !portable;
                 return;
             }
@@ -275,9 +285,25 @@ namespace Auto7z_WPF
             // 便携模式下右键菜单不该留在系统里，勾选时注销掉；
             // 取消勾选回到普通模式再注册回来。
             // 注册表得管理员权限才能写，这里会弹 UAC。
-            if (portable) ShellRegistrationService.UnregisterWithElevation();
-            else ShellRegistrationService.RegisterWithElevation();
+            //
+            // SkipShellMenuSync 只给测试用：便携模式的测试要验的是"数据目录搬没搬对"，
+            // 注册表只是搬目录的副产物。让测试去动注册表就得弹 UAC 让人点，
+            // 一次测试打扰一次，很烦人。关掉之后行为只差"右键菜单没跟着切换"，
+            // 跟被测的搬迁逻辑无关。
+            if (!SkipShellMenuSync)
+            {
+                if (portable) ShellRegistrationService.UnregisterWithElevation();
+                else ShellRegistrationService.RegisterWithElevation();
+            }
         }
+
+        /// <summary>
+        /// 切换便携模式时要不要同步右键菜单的注册状态。
+        ///
+        /// 默认 true（正常行为）。测试可以置成 false 跳过 ——
+        /// 那一步要提权写注册表，会弹 UAC。
+        /// </summary>
+        public bool SkipShellMenuSync { get; set; }
 
         /// <summary>
         /// 把数据目录搬到便携位置。
@@ -309,6 +335,10 @@ namespace Auto7z_WPF
             return moved;
         }
 
+        #endregion
+
+        #region 数据目录搬运
+
         /// <summary>
         /// 删掉空目录。里面还有东西就留着。
         /// </summary>
@@ -325,6 +355,58 @@ namespace Auto7z_WPF
             catch
             {
                 // 删不掉就留着，一个空目录不影响使用
+            }
+        }
+
+        /// <summary>
+        /// 判断某个目录能不能安全地递归删除。
+        ///
+        /// 递归删除不可逆，被删的必须是程序自己的数据目录：
+        /// 要么是数据目录本身（目录名必须是 <see cref="AppPaths.DataFolderName"/>），
+        /// 要么是它下面的子目录（合并时搬空的那几个）。
+        /// 根目录本身（.config 或 %LOCALAPPDATA%）不许删，
+        /// 别的路径更不许删 —— 搬移过程中路径一旦算错就是整片目录没了。
+        /// </summary>
+        /// <param name="directoryPath">待删除的目录路径。</param>
+        /// <returns>可以安全删除则返回 true。</returns>
+        private static bool IsSafeToDeleteRecursively(string directoryPath)
+        {
+            if (string.IsNullOrWhiteSpace(directoryPath)) return false;
+
+            try
+            {
+                string full = Path.GetFullPath(directoryPath);
+                string[] roots =
+                {
+                    Path.GetFullPath(AppPaths.GetPortableRootDirectory()),
+                    Path.GetFullPath(AppPaths.GetLocalRootDirectory())
+                };
+
+                foreach (string root in roots)
+                {
+                    string dataDirectory = Path.GetFullPath(Path.Combine(root, AppPaths.DataFolderName));
+
+                    // 数据目录本身：名字要对得上
+                    if (string.Equals(full, dataDirectory, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return string.Equals(Path.GetFileName(full), AppPaths.DataFolderName,
+                            StringComparison.Ordinal);
+                    }
+
+                    // 数据目录下面的子目录
+                    if (full.StartsWith(dataDirectory + Path.DirectorySeparatorChar,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+            catch
+            {
+                // 路径算不出来就当不安全，不删
+                return false;
             }
         }
 
@@ -360,6 +442,10 @@ namespace Auto7z_WPF
                     MergeDirectory(directory, target);
                 }
 
+                // 递归删除不可逆，先把路径规整成绝对路径再做边界校验
+                string fullSource = Path.GetFullPath(sourceDirectory);
+                if (!IsSafeToDeleteRecursively(fullSource)) return false;
+
                 Directory.Delete(sourceDirectory, true);
                 return true;
             }
@@ -391,8 +477,16 @@ namespace Auto7z_WPF
                 MergeDirectory(directory, Path.Combine(targetDirectory, Path.GetFileName(directory)));
             }
 
+            // 递归删除不可逆，先把路径规整成绝对路径再做边界校验
+            string fullSource = Path.GetFullPath(sourceDirectory);
+            if (!IsSafeToDeleteRecursively(fullSource)) return;
+
             Directory.Delete(sourceDirectory, true);
         }
+
+        #endregion
+
+        #region 便携配置写入
 
         /// <summary>
         /// 只把便携模式这一个键写进当前配置文件。
@@ -411,6 +505,8 @@ namespace Auto7z_WPF
         }
 
         #endregion
+
+        #region 配置保存
 
         /// <summary>
         /// 把当前设置写回配置文件。
@@ -607,7 +703,7 @@ namespace Auto7z_WPF
         /// <summary>
         /// 密码框内容。用于控制“完全加密”是否可用。
         /// </summary>
-        public string PasswordBox_Zip_Text
+        public string ZipPasswordInputText
         {
             get => _passwordBoxZipText;
             set
@@ -756,20 +852,66 @@ namespace Auto7z_WPF
             private set => SetProperty(ref _isEggMode, value);
         }
 
+        #endregion
+
+        #region 运行方式
+
+        /// <summary>
+        /// 本次的运行方式。
+        ///
+        /// 三种方式的差异不只是"有没有界面"：
+        ///   Gui       —— 主窗口在场，进度显示在主窗口提示区
+        ///   Console   —— 信息写控制台，多文件用 Y/N 问答
+        ///   ShellMenu —— 永远不建主窗口，进度用独立进度窗口，需要确认时弹小对话框
+        /// 所以显式区分，不要靠"有没有主窗口"去反推。
+        /// </summary>
+        public RunMode CurrentRunMode { get; set; } = RunMode.Gui;
+
         /// <summary>
         /// 是否为命令行模式。
         ///
-        /// 命令行模式下不弹界面, 进度输出到控制台。
+        /// 命令行模式下不弹界面，进度输出到控制台。
         /// </summary>
-        public bool ConsoleProgressEnabled { get; set; }
+        public bool ConsoleProgressEnabled => CurrentRunMode == RunMode.Console;
+
+        /// <summary>
+        /// 是否为右键菜单模式。
+        ///
+        /// 右键菜单模式同样不建主窗口，但需要用户确认的地方
+        /// （比如多文件是否合并）要弹小对话框问，不能只往控制台写。
+        /// </summary>
+        public bool ShellMenuMode => CurrentRunMode == RunMode.ShellMenu;
+
+        #endregion
+
+        #region 控制台输出
 
         /// <summary>
         /// 往控制台写一行文字。
         ///
-        /// 控制台代码页不一定是 UTF-8, 直接写中文会变成问号,
+        /// 控制台代码页不一定是 UTF-8，直接写中文会变成问号，
         /// 这里按控制台实际用的编码来转。
+        ///
+        /// 命令行模式下程序已经把父 cmd 的控制台接过来了
+        /// （见 <see cref="ConsoleAttach"/>），Console.Out 绑的就是它，
+        /// 所以这里写进去用户就能在 cmd 窗口里看到。
         /// </summary>
         private static void WriteConsoleLine(string text)
+        {
+            WriteConsoleText(text, true);
+        }
+
+        /// <summary>
+        /// 往控制台写一段文字，可以不换行。
+        ///
+        /// 问用户输入的地方（密码、Y/N）要用不换行的那种，
+        /// 这样用户的输入会紧跟在提示后面，看起来是同一行：
+        ///     该压缩包已加密，请输入密码：test123
+        /// 换行的话输入会跑到下一行，提示和输入看起来断开了。
+        /// </summary>
+        /// <param name="text">要写的文字。</param>
+        /// <param name="newLine">末尾是否换行。</param>
+        private static void WriteConsoleText(string text, bool newLine)
         {
             if (string.IsNullOrEmpty(text)) return;
 
@@ -778,22 +920,36 @@ namespace Auto7z_WPF
                 var encoding = Console.OutputEncoding;
                 if (encoding == null || encoding.CodePage == 65001)
                 {
-                    Console.WriteLine(text);
+                    if (newLine) Console.WriteLine(text);
+                    else Console.Write(text);
                     return;
                 }
 
-                byte[] bytes = encoding.GetBytes(text);
-                Console.OpenStandardOutput().Write(bytes, 0, bytes.Length);
-                Console.Out.WriteLine();
+                // 按控制台代码页转成字节，直接写标准输出。
+                // 不能写成 "写字节 + Console.Out.WriteLine()"：
+                // 那样会多出一个换行，而且 Console.Out 的编码可能跟字节不一致。
+                string payload = newLine ? text + Environment.NewLine : text;
+                byte[] bytes = encoding.GetBytes(payload);
+                Stream stdout = Console.OpenStandardOutput();
+                stdout.Write(bytes, 0, bytes.Length);
+                stdout.Flush();
             }
             catch
             {
-                Console.WriteLine(text);
+                try
+                {
+                    if (newLine) Console.WriteLine(text);
+                    else Console.Write(text);
+                }
+                catch
+                {
+                    // 连控制台都没有（比如双击运行），那就只能丢掉
+                }
             }
         }
 
         /// <summary>
-        /// 把进度写到控制台。同一百分比只写一次, 免得刷屏。
+        /// 把进度写到控制台。同一百分比只写一次，免得刷屏。
         /// </summary>
         private void WriteConsoleProgress(ProgressInfo info)
         {
@@ -804,10 +960,79 @@ namespace Auto7z_WPF
                 return;
             }
 
+            // 正在等用户输密码时不要打进度。
+            //
+            // 7-Zip 在索要密码那次会先吐一行 "  0%"（扫描存档的起始行），
+            // 密码错了那次会吐 "100% T xxx"（读到文件头但解密失败）。
+            // 这些行混在密码交互中间，看起来像是"已经开始解压了"，
+            // 实际程序正卡在等输入 —— 会把交互流程搅乱。
+            if (_awaitingPassword) return;
+
             if (_lastConsolePercent == info.Percent) return;
             _lastConsolePercent = info.Percent;
 
-            WriteConsoleLine(string.Format("{0}%", info.Percent));
+            // 进度文本走语言资源，三种阶段各有各的措辞
+            string template = GetProgressTextTemplate(info.Stage);
+            WriteConsoleLine(string.Format(template, info.Percent));
+        }
+
+        #endregion
+
+        #region 进度文本
+
+        /// <summary>
+        /// 取某个阶段的进度文本模板。
+        ///
+        /// 命令行模式与进度窗口共用同一批键，但措辞分开：
+        /// 控制台上是 "7z 已处理...x%"，进度窗口里还要说明在干什么。
+        /// </summary>
+        /// <param name="stage">任务阶段。</param>
+        /// <returns>带 {0} 占位符的文本模板。</returns>
+        private string GetProgressTextTemplate(ProgressStage stage)
+        {
+            switch (stage)
+            {
+                case ProgressStage.Compressing:
+                    return EnumText.GetResourceText("Console_ProgressCompress", "7z processed...{0}%");
+
+                case ProgressStage.Extracting:
+                    return EnumText.GetResourceText("Console_ProgressExtract", "7z processed...{0}%");
+
+                case ProgressStage.CalculatingMd5:
+                    return EnumText.GetResourceText("Console_ProgressMd5", "MD5 processed...{0}%");
+
+                default:
+                    return EnumText.GetResourceText("ProgressText", "7z: {0}%");
+            }
+        }
+
+        /// <summary>
+        /// 取某个阶段的进度窗口标题文本。
+        /// </summary>
+        /// <param name="stage">任务阶段。</param>
+        /// <returns>阶段描述文本。</returns>
+        public string GetStageText(ProgressStage stage)
+        {
+            switch (stage)
+            {
+                case ProgressStage.Compressing:
+                    return EnumText.GetResourceText("ProcessStageCompress", "Compressing…");
+
+                case ProgressStage.Extracting:
+                    return EnumText.GetResourceText("ProcessStageExtract", "Extracting…");
+
+                case ProgressStage.CalculatingMd5:
+                    return EnumText.GetResourceText("ProcessStageMd5", "Calculating MD5…");
+
+                case ProgressStage.Finished:
+                    return EnumText.GetResourceText("ProcessStageFinished", "Done");
+
+                case ProgressStage.Failed:
+                    return EnumText.GetResourceText("ProcessStageFailed", "Failed");
+
+                default:
+                    return EnumText.GetResourceText("ProcessWaiting", "Preparing…");
+            }
         }
 
         /// <summary>是否有任务正在执行。</summary>
@@ -820,7 +1045,7 @@ namespace Auto7z_WPF
                 {
                     RaiseCommandStates();
 
-                    // 任务跑完时通知外面, 让排队的下一批接着做
+                    // 任务跑完时通知外面，让排队的下一批接着做
                     if (!value) TaskCompleted?.Invoke(this, EventArgs.Empty);
                 }
             }
@@ -896,7 +1121,7 @@ namespace Auto7z_WPF
 
         #endregion
 
-        #region 任务执行
+        #region 任务启动
 
         /// <summary>
         /// 启动压缩任务（自动模式下会在识别到压缩文件时转为解压）。
@@ -909,20 +1134,38 @@ namespace Auto7z_WPF
         public void BeginExtractTask() => RunTask(StartExtract);
 
         /// <summary>
-        /// 同步跑一个任务, 等它结束才返回。
+        /// 同步跑一个任务，等它结束才返回。
         ///
-        /// 命令行模式要用这个: 界面模式是异步的, 跑完不管,
-        /// 但命令行模式跑完就要退出进程, 得等任务真的做完。
+        /// 命令行模式要用这个：界面模式是异步的，跑完不管，
+        /// 但命令行模式跑完就要退出进程，得等任务真的做完。
         /// </summary>
         /// <param name="task">任务本体。</param>
         public void RunTaskAndWait(Action<Action<ProgressInfo>> task)
+        {
+            RunTaskAndWait(task, null);
+        }
+
+        /// <summary>
+        /// 同步跑一个任务，等它结束才返回。
+        ///
+        /// 进度除了走内部通道（主窗口提示区 / 控制台）之外，
+        /// 还可以额外转给一个回调 —— 右键菜单模式要把进度送到
+        /// 独立的进度窗口上。
+        /// </summary>
+        /// <param name="task">任务本体。</param>
+        /// <param name="externalReport">额外的进度回调；为空表示不转发。</param>
+        public void RunTaskAndWait(Action<Action<ProgressInfo>> task, Action<ProgressInfo> externalReport)
         {
             if (IsBusy) return;
 
             IsBusy = true;
             _cancellation = new CancellationTokenSource();
 
-            Action<ProgressInfo> report = info => UpdateProgress(info);
+            Action<ProgressInfo> report = info =>
+            {
+                UpdateProgress(info);
+                externalReport?.Invoke(info);
+            };
 
             try
             {
@@ -933,6 +1176,7 @@ namespace Auto7z_WPF
                 AppState.CurrentStatus = AppState.OperationStatus.Error;
                 _logService.WriteLog(EnumText.GetErrorText("Log_TaskException", "任务执行异常：{0}", ex.Message), LogService.ErrorLevel.Error);
                 WriteConsoleLine("错误: " + ex.Message);
+                ReportTaskResult(false, ex.Message);
             }
             finally
             {
@@ -947,7 +1191,16 @@ namespace Auto7z_WPF
         /// </summary>
         public void RunCompressAndWait()
         {
-            RunTaskAndWait(report => CompressFiles(_pendingBatch.Files.ToList(), report));
+            RunCompressAndWait(null);
+        }
+
+        /// <summary>
+        /// 同步跑压缩任务。
+        /// </summary>
+        /// <param name="externalReport">额外的进度回调。</param>
+        public void RunCompressAndWait(Action<ProgressInfo> externalReport)
+        {
+            RunTaskAndWait(report => CompressFiles(_pendingBatch.Files.ToList(), report), externalReport);
         }
 
         /// <summary>
@@ -955,15 +1208,37 @@ namespace Auto7z_WPF
         /// </summary>
         public void RunExtractAndWait()
         {
-            RunTaskAndWait(StartExtract);
+            RunExtractAndWait(null);
         }
+
+        /// <summary>
+        /// 同步跑解压任务。
+        /// </summary>
+        /// <param name="externalReport">额外的进度回调。</param>
+        public void RunExtractAndWait(Action<ProgressInfo> externalReport)
+        {
+            RunTaskAndWait(StartExtract, externalReport);
+        }
+        #endregion
+
+        #region 自动模式分发
+
 
         /// <summary>
         /// 同步跑自动模式任务。
         /// </summary>
         public void RunAutoDispatchAndWait()
         {
-            RunTaskAndWait(StartAutoDispatch);
+            RunAutoDispatchAndWait(null);
+        }
+
+        /// <summary>
+        /// 同步跑自动模式任务。
+        /// </summary>
+        /// <param name="externalReport">额外的进度回调。</param>
+        public void RunAutoDispatchAndWait(Action<ProgressInfo> externalReport)
+        {
+            RunTaskAndWait(StartAutoDispatch, externalReport);
         }
 
         /// <summary>
@@ -1060,6 +1335,10 @@ namespace Auto7z_WPF
                 _pendingBatch = original;
             }
         }
+        #endregion
+
+        #region 任务执行与取消
+
 
         /// <summary>
         /// 在后台线程执行任务，异常不会逃逸到界面线程。
@@ -1084,8 +1363,7 @@ namespace Auto7z_WPF
             {
                 AppState.CurrentStatus = AppState.OperationStatus.Error;
                 _logService.WriteLog(EnumText.GetErrorText("Log_TaskException", "任务执行异常：{0}", ex.Message), LogService.ErrorLevel.Error);
-                _messageService.ShowError(ex.Message, out string log);
-                _logService.WriteLog(log, LogService.ErrorLevel.Error);
+                ReportError(ex.Message);
                 MainText = GetDefaultModeText();
             }
             finally
@@ -1105,10 +1383,18 @@ namespace Auto7z_WPF
         {
             if (info == null) return;
 
-            // 命令行模式: 进度打到控制台, 界面不参与
+            // 命令行模式：进度打到控制台，界面不参与
             if (ConsoleProgressEnabled)
             {
                 WriteConsoleProgress(info);
+                return;
+            }
+
+            // 右键菜单模式：进度显示在独立的进度窗口上（由调用方转发），
+            // 这里不碰 MainText —— 那是没有主窗口的模式，
+            // 而且任务在后台线程上跑，跨线程写绑定属性不安全。
+            if (CurrentRunMode == RunMode.ShellMenu)
+            {
                 return;
             }
 
@@ -1155,7 +1441,47 @@ namespace Auto7z_WPF
 
         #endregion
 
-        #region 压缩任务
+        #region 压缩实现
+
+
+        /// <summary>
+        /// 报告任务开始。
+        ///
+        /// 命令行模式下写控制台；右键菜单模式下由进度窗口显示；
+        /// 图形界面模式下主窗口自己有提示区，不用额外输出。
+        /// </summary>
+        /// <param name="templateKey">语言资源键。</param>
+        /// <param name="fallback">资源缺失时的备用文案。</param>
+        /// <param name="argument">要填进文案的参数。</param>
+        private void ReportTaskStart(string templateKey, string fallback, string argument)
+        {
+            if (CurrentRunMode == RunMode.Console)
+            {
+                WriteConsoleLine(EnumText.GetFormattedText(templateKey, fallback, argument));
+            }
+        }
+
+        /// <summary>
+        /// 报告任务结果。
+        /// </summary>
+        /// <param name="success">是否成功。</param>
+        /// <param name="detail">结果描述。</param>
+        /// <param name="cancelled">是否被取消。</param>
+        private void ReportTaskResult(bool success, string detail, bool cancelled = false)
+        {
+            if (CurrentRunMode != RunMode.Console) return;
+
+            if (cancelled)
+            {
+                WriteConsoleLine(EnumText.GetResourceText("Console_TaskCancelled", "已取消"));
+                return;
+            }
+
+            string template = success
+                ? EnumText.GetResourceText("Console_TaskDone", "完成：{0}")
+                : EnumText.GetResourceText("Console_TaskFailed", "失败：{0}");
+            WriteConsoleLine(string.Format(template, detail ?? string.Empty));
+        }
 
         /// <summary>
         /// 压缩一组文件。
@@ -1171,6 +1497,9 @@ namespace Auto7z_WPF
                 CompleteWithoutWork(report);
                 return;
             }
+
+            ReportTaskStart("Console_CompressStart", "开始压缩：{0}",
+                string.Join("; ", files.Select(f => f.Path)));
 
             if (files.Count > 1)
             {
@@ -1189,6 +1518,10 @@ namespace Auto7z_WPF
 
             CompressMerged(files, report);
         }
+        #endregion
+
+        #region 合并压缩
+
 
         /// <summary>
         /// 把给定文件合并压缩成一个包。
@@ -1207,6 +1540,10 @@ namespace Auto7z_WPF
                 _pendingBatch = original;
             }
         }
+        #endregion
+
+        #region 压缩入口
+
 
         /// <summary>
         /// 执行压缩任务。
@@ -1271,6 +1608,10 @@ namespace Auto7z_WPF
             var produced = new List<string> { archivePath };
 
             bool hasWarning = false;
+
+            #endregion
+
+            #region 压缩命令执行
 
             for (int i = 0; i < commands.Count; i++)
             {
@@ -1355,7 +1696,9 @@ namespace Auto7z_WPF
             AppState.SevenZUsageCount++;
             AppState.CurrentStatus = AppState.OperationStatus.Finish;
             report(new ProgressInfo(100, ProgressStage.Finished));
-            SetResult(EnumText.GetResourceText("Result_CompressDone", "压缩完成"), failed: false);
+            string doneText = EnumText.GetResourceText("Result_CompressDone", "压缩完成");
+            SetResult(doneText, failed: false);
+            ReportTaskResult(true, doneText);
         }
 
         #endregion
@@ -1392,7 +1735,8 @@ namespace Auto7z_WPF
 
         #endregion
 
-        #region 解压任务
+        #region 解压实现
+
 
         /// <summary>
         /// 执行解压任务。
@@ -1421,6 +1765,8 @@ namespace Auto7z_WPF
             if (!EnsureComponents(report)) return;
 
             string archive = !string.IsNullOrWhiteSpace(archiveOverride) ? archiveOverride : batch.Files[0].Path;
+
+            ReportTaskStart("Console_ExtractStart", "开始解压：{0}", archive);
 
             // 分卷包：name.7z 本身不存在，实际是 name.7z.001 …
             bool isSplit = SevenZipService.IsSplitArchive(archive);
@@ -1488,6 +1834,18 @@ namespace Auto7z_WPF
                             : EnumText.GetErrorText("Log_PasswordAsked", "7-Zip 索要密码，第 {0} 次尝试，弹窗请求输入", attempt),
                         LogService.ErrorLevel.Info);
 
+                    // 密码错或 7-Zip 索要密码时都要重新问用户。
+                    // 命令行模式用 Console_ 前缀的键，界面模式用普通键 ——
+                    // 措辞可以各自调整（控制台上要带冒号引导输入），
+                    // 又不会因为改了一处而牵连另一处。
+                    string prompt = isWrong
+                        ? (CurrentRunMode == RunMode.Console
+                            ? EnumText.GetFormattedText("Console_PasswordWrong", "密码错误，第 {0} 次尝试，重新询问密码：", attempt)
+                            : EnumText.GetFormattedText("PasswordWrongAttempt", "密码错误，第 {0} 次尝试，重新询问密码：", attempt))
+                        : (CurrentRunMode == RunMode.Console
+                            ? EnumText.GetResourceText("Console_PasswordPrompt", "该压缩包已加密，请输入密码：")
+                            : EnumText.GetResourceText("PasswordPrompt", "该压缩包已加密，请输入密码："));
+
                     if (attempt >= MaxPasswordAttempts)
                     {
                         _sevenZipService.CleanupUnfinished(destinationDirectory);
@@ -1498,12 +1856,20 @@ namespace Auto7z_WPF
                     // 清掉上一次失败留下的半截内容，避免与重试结果混在一起
                     _sevenZipService.CleanupUnfinished(destinationDirectory);
 
-                    // 密码输错时把提示换成“密码错误，第 N 次尝试…”，让用户知道上一次没通过
-                    string prompt = isWrong
-                        ? EnumText.GetErrorText("PasswordWrongAttempt", "密码错误，第 {0} 次尝试，重新询问密码", attempt)
-                        : null;
+                    // 从这里到拿到密码为止，不打进度行：
+                    // 下一次 7-Zip 跑起来会先吐 "  0%"，那行会被用户看成
+                    // "已经开始解压了"，实际程序还卡在等密码。
+                    _awaitingPassword = true;
+                    string password;
+                    try
+                    {
+                        password = RequestPassword(prompt, attempt);
+                    }
+                    finally
+                    {
+                        _awaitingPassword = false;
+                    }
 
-                    string password = RequestPassword(prompt);
                     if (password == null)
                     {
                         // 用户取消
@@ -1524,6 +1890,10 @@ namespace Auto7z_WPF
                 return;
             }
         }
+        #endregion
+
+        #region 解压收尾
+
 
         /// <summary>
         /// 解压成功后的收尾：处理“压缩的 tar”需要再解一层的情况。
@@ -1545,16 +1915,34 @@ namespace Auto7z_WPF
             AppState.SevenZUsageCount++;
             AppState.CurrentStatus = AppState.OperationStatus.Finish;
             report(new ProgressInfo(100, ProgressStage.Finished));
-            SetResult(EnumText.GetResourceText("Result_ExtractDone", "解压完成"), failed: false);
+            string doneText = EnumText.GetResourceText("Result_ExtractDone", "解压完成");
+            SetResult(doneText, failed: false);
+            ReportTaskResult(true, doneText);
         }
 
+        #endregion
+
+        #region 解压密码询问
+
         /// <summary>
-        /// 弹窗向用户索取解压密码。
+        /// 向用户索取解压密码。
+        ///
+        /// 三种方式各走各的路：
+        ///   命令行模式 —— 在控制台提示并读一行输入
+        ///   右键菜单模式 —— 弹 PasswordWindow
+        ///   图形界面模式 —— 弹 PasswordWindow
         /// </summary>
         /// <param name="prompt">提示文字；为空时用默认的"该压缩包已加密，请输入密码"。</param>
+        /// <param name="attempt">第几次尝试；用来拼"密码错误，第 N 次"那句话。</param>
         /// <returns>用户输入的密码；用户取消时返回 null。</returns>
-        private string RequestPassword(string prompt = null)
+        private string RequestPassword(string prompt = null, int attempt = 1)
         {
+            // 命令行模式：控制台看得见，直接在控制台里问
+            if (CurrentRunMode == RunMode.Console)
+            {
+                return RequestPasswordOnConsole(prompt, attempt);
+            }
+
             var app = Application.Current;
             if (app == null) return null;
 
@@ -1592,6 +1980,62 @@ namespace Auto7z_WPF
         }
 
         /// <summary>
+        /// 在控制台里索取解压密码。
+        ///
+        /// 命令行模式下控制台看得见、也读得到输入，所以直接问用户。
+        /// 读不到输入（管道、计划任务等场景）时返回 null，
+        /// 由上层按"用户没给密码"处理，不让任务卡住。
+        /// </summary>
+        /// <param name="prompt">提示文字；为空时用默认提示。</param>
+        /// <param name="attempt">第几次尝试。</param>
+        /// <returns>用户输入的密码；读不到输入时返回 null。</returns>
+        private string RequestPasswordOnConsole(string prompt, int attempt)
+        {
+            string message = !string.IsNullOrWhiteSpace(prompt)
+                ? prompt
+                : EnumText.GetResourceText("Console_PasswordPrompt", "该压缩包已加密，请输入密码：");
+
+            // 提示后面不换行：用户输入的密码会紧跟在冒号后面，
+            // 看起来是同一行。换行的话输入会跑到下一行，提示和输入就断开了。
+            WriteConsoleText(message, false);
+
+            string line = ReadConsoleLine();
+            if (line == null)
+            {
+                _logService.WriteLog(EnumText.GetErrorText("Log_PasswordCancelled", "用户取消了密码输入"), LogService.ErrorLevel.Info);
+                // 读不到输入，提示得补个换行，后面的输出才不会跟这行挤在一起
+                WriteConsoleLine(string.Empty);
+                return null;
+            }
+
+            // 读到了，把用户敲的内容换行收尾
+            WriteConsoleLine(string.Empty);
+
+            _logService.WriteLog(EnumText.GetErrorText("Log_PasswordGot", "已获取密码"), LogService.ErrorLevel.Info);
+            return line;
+        }
+
+        /// <summary>
+        /// 从控制台读一行。读不到返回 null。
+        /// </summary>
+        /// <returns>读到的内容（已去掉行尾空白）；读不到时返回 null。</returns>
+        private static string ReadConsoleLine()
+        {
+            try
+            {
+                // 读不到就返回 null：管道已关闭、计划任务没有输入等情况下
+                // Console.ReadLine 会抛异常或直接返回 null。
+                string line = Console.ReadLine();
+                if (line == null) return null;
+                return line.Trim();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
         /// 在界面线程上创建并显示密码输入窗口（必须在界面线程调用）。
         ///
         /// 用非模态的 Show() 而不是 ShowDialog()：
@@ -1623,6 +2067,10 @@ namespace Auto7z_WPF
                 " 详情=" + result.GetFailureDetail(),
                 LogService.ErrorLevel.Error);
         }
+
+        #endregion
+
+        #region 归档格式识别
 
         /// <summary>
         /// 把“压缩的 tar”解出的中间 tar 文件再解一层，得到原始内容。
@@ -1741,22 +2189,30 @@ namespace Auto7z_WPF
 
         #endregion
 
-        #region 任务辅助
+        #region 合并询问
+
 
         /// <summary>
         /// 询问用户是否把多个文件合并为单个压缩包。
         /// 提示文本取自语言资源字典，随界面语言变化。
         ///
-        /// 命令行模式下改成控制台问答, 免得为了问一句话就把主窗口拉起来。
+        /// 命令行模式下改成控制台问答 (Y/N)，免得为了问一句话就把主窗口拉起来。
+        /// 右键菜单模式下同样不建主窗口，但控制台看不见，改用小对话框问。
         /// </summary>
         /// <returns>true = 合并为一个压缩包；false = 每个文件各自压缩。</returns>
         private bool AskPackInOneFile()
         {
+            // 命令行模式：控制台问 Y/N
+            if (CurrentRunMode == RunMode.Console)
+            {
+                return AskPackInOneFileOnConsole();
+            }
+
+            // 图形界面与右键菜单：都弹对话框问（右键模式下没有主窗口，
+            // MessageService 里的 ResolveOwner 会让对话框独立显示）
             string question = EnumText.GetResourceText("MultiFilePackQuery",
                 "Multiple files have been detected. Pack into a single file?");
             if (string.IsNullOrWhiteSpace(question)) return true;
-
-            if (ConsoleProgressEnabled) return AskPackInOneFileOnConsole(question);
 
             bool result = _messageService.AskYesNo(question, out string log);
             _logService.WriteLog(log, LogService.ErrorLevel.Info);
@@ -1767,14 +2223,23 @@ namespace Auto7z_WPF
         /// <summary>
         /// 在控制台里问是否合并。
         ///
-        /// 从资源管理器右键进来时控制台是不可见的, 所以读不到输入,
-        /// 这时按默认的"合并"处理, 不让任务卡住。
+        /// 命令行模式下用户在 cmd 里看得见也读得到输入，所以问 Y/N。
+        /// 读不到输入（管道、计划任务等场景）时按默认的"合并"处理，
+        /// 不让任务卡住。
         /// </summary>
-        private bool AskPackInOneFileOnConsole(string question)
+        private bool AskPackInOneFileOnConsole()
         {
-            WriteConsoleLine(question);
+            string question = EnumText.GetResourceText("Console_MergeQuestion",
+                "Multiple files detected. Pack into a single archive? (Y/N)");
+
+            // 提示后面不换行：用户的回答紧跟在问句后面，看起来是同一行
+            WriteConsoleText(question, false);
 
             bool hasInput = TryReadConsoleAnswer(out bool answer);
+
+            // 收尾换行，后面的输出不会跟这行挤在一起
+            WriteConsoleLine(string.Empty);
+
             if (!hasInput)
             {
                 // 读不到输入就按合并处理
@@ -1790,6 +2255,9 @@ namespace Auto7z_WPF
 
         /// <summary>
         /// 从控制台读一个 y/n。
+        ///
+        /// 交互式控制台和重定向的管道都能读；读不到（比如计划任务没有输入）
+        /// 返回 false，让调用方走默认分支。
         /// </summary>
         private static bool TryReadConsoleAnswer(out bool answer)
         {
@@ -1797,8 +2265,6 @@ namespace Auto7z_WPF
 
             try
             {
-                if (!Console.IsInputRedirected) return false;
-
                 string line = Console.ReadLine();
                 if (line == null) return false;
 
@@ -1806,7 +2272,8 @@ namespace Auto7z_WPF
                 if (line.Length == 0) return true;
 
                 answer = !(line.Equals("n", StringComparison.OrdinalIgnoreCase)
-                           || line.Equals("no", StringComparison.OrdinalIgnoreCase));
+                           || line.Equals("no", StringComparison.OrdinalIgnoreCase)
+                           || line.Equals("否", StringComparison.Ordinal));
                 return true;
             }
             catch
@@ -1814,6 +2281,10 @@ namespace Auto7z_WPF
                 return false;
             }
         }
+        #endregion
+
+        #region 输出路径校验
+
 
         /// <summary>
         /// 校验输出路径。
@@ -1852,17 +2323,42 @@ namespace Auto7z_WPF
             MainText = GetDefaultModeText();
         }
 
+        /// <summary>
+        /// 报告错误。
+        ///
+        /// 三种方式各走各的：
+        ///   图形界面 / 右键菜单 —— 弹对话框（用户看得见）
+        ///   命令行模式 —— 写控制台。
+        ///
+        /// 命令行模式**不能**弹窗：那是个模态对话框，会把 cmd 窗口堵住，
+        /// 而且用户的注意力在控制台上，不在屏幕上弹出来的窗体上。
+        /// 用户看到的应该是控制台里的一行错误文本。
+        /// </summary>
+        /// <param name="detail">错误详情。</param>
+        private void ReportError(string detail)
+        {
+            if (CurrentRunMode == RunMode.Console)
+            {
+                // 控制台模式：只写文本，不弹窗
+                _logService.WriteLog(detail, LogService.ErrorLevel.Error);
+                return;
+            }
+
+            _messageService.ShowError(detail, out string log);
+            _logService.WriteLog(log, LogService.ErrorLevel.Error);
+        }
+
         private void FailWithError(Exception error, Action<ProgressInfo> report)
         {
             AppState.CurrentStatus = AppState.OperationStatus.Error;
 
             string detail = error?.Message ?? string.Empty;
-            _messageService.ShowError(detail, out string log);
-            _logService.WriteLog(log, LogService.ErrorLevel.Error);
+            ReportError(detail);
 
             report(new ProgressInfo(0, ProgressStage.Failed));
             MainText = GetDefaultModeText();
             SetResult(EnumText.GetResourceText("Result_Failed", "Failed"), failed: true);
+            ReportTaskResult(false, detail);
         }
 
         private void FailFromCommand(CommandResult result, Action<ProgressInfo> report, bool cancelled)
@@ -1875,6 +2371,7 @@ namespace Auto7z_WPF
                 report(new ProgressInfo(0, ProgressStage.Failed));
                 MainText = GetDefaultModeText();
                 SetResult(EnumText.GetResourceText("Result_Cancelled", EnumText.GetErrorText("Log_TaskCancelled", "任务已取消")), failed: true);
+                ReportTaskResult(false, null, cancelled: true);
                 return;
             }
 
@@ -1885,11 +2382,11 @@ namespace Auto7z_WPF
                     result?.ExitCode.ToString(CultureInfo.InvariantCulture) ?? "未知");
             }
 
-            _messageService.ShowError(detail, out string log);
-            _logService.WriteLog(log, LogService.ErrorLevel.Error);
+            ReportError(detail);
 
             report(new ProgressInfo(0, ProgressStage.Failed));
             MainText = GetDefaultModeText();
+            ReportTaskResult(false, detail);
         }
 
         /// <summary>

@@ -17,7 +17,7 @@ namespace Auto7z_WPF.Services
         private const int BufferSize = 1024 * 1024;    // 1MB 缓冲区，避免进入大对象堆
         private const int UiRefreshMs = 100;           // 进度回调节流间隔
 
-        private static readonly char[] HexLower = "0123456789abcdef".ToCharArray();
+        private static readonly char[] _hexLower = "0123456789abcdef".ToCharArray();
 
         /// <summary>
         /// 计算一个或多个文件/文件夹内所有文件的 MD5。
@@ -221,8 +221,8 @@ namespace Auto7z_WPF.Services
             for (int i = 0; i < bytes.Length; i++)
             {
                 byte b = bytes[i];
-                chars[i * 2] = HexLower[b >> 4];
-                chars[i * 2 + 1] = HexLower[b & 0x0F];
+                chars[i * 2] = _hexLower[b >> 4];
+                chars[i * 2 + 1] = _hexLower[b & 0x0F];
             }
             return new string(chars);
         }

@@ -22,7 +22,7 @@ namespace Auto7z_WPF.Services
 
         /// <summary>
         /// 规范化用户输入的目录路径。
-        /// 用户可能粘贴了带引号的路径、或从拖放获得的 &lt;文件路径&gt;，
+        /// 用户可能粘贴了带引号的路径、或从拖放获得的 &lt；文件路径&gt；，
         /// 这里统一去掉引号与首尾空白，保证后续 Path.Combine 得到合法的目录名。
         /// </summary>
         public static string NormalizeDirectoryPath(string path)
