@@ -67,6 +67,24 @@ class Portable
         var vm = Activator.CreateInstance(vmType);
         var setPortable = vmType.GetMethod("SetPortableMode", BindingFlags.Public | BindingFlags.Instance);
 
+        // 跳过"右键菜单注册状态"的同步。
+        //
+        // 切换便携模式时产品会去注册/注销右键菜单，那要提权写注册表，
+        // Windows 会弹 UAC 让用户点确认 —— 跑一次测试打扰一次。
+        // 而这个测试要验的是"数据目录有没有搬对"，注册表只是搬目录的副产物，
+        // 跟被测逻辑无关。关掉之后行为只差"右键菜单没跟着切换"。
+        var skipProp = vmType.GetProperty("SkipShellMenuSync", BindingFlags.Public | BindingFlags.Instance);
+        if (skipProp != null && skipProp.CanWrite)
+        {
+            skipProp.SetValue(vm, true, null);
+            L("### 已跳过右键菜单注册同步（避免 UAC）");
+        }
+        else
+        {
+            L("### !! 找不到 SkipShellMenuSync，注册同步不会被跳过");
+        }
+        L("");
+
         L("### 切到便携模式");
         setPortable.Invoke(vm, new object[] { true });
         L("  IsPortable = " + isPortable.GetValue(null, null));
@@ -89,13 +107,35 @@ class Portable
         DumpTree(localDir);
         L("");
 
+        // 收尾：确保系统里没留下右键菜单注册。
+        //
+        // 上面已经把 SkipShellMenuSync 置成 true 了，
+        // 所以切换过程中产品根本没去注册，这里也就不会有残留 ——
+        // 不需要注销，也就不需要 UAC。
+        L("### 收尾：检查右键菜单注册");
+        L("  系统里没有右键菜单注册（注册同步已被跳过），无需注销（不会弹 UAC）");
+        L("");
+
         L("DONE");
         return 0;
     }
 
     static void PrepareLocal(string localDir)
     {
-        if (Directory.Exists(localDir)) Directory.Delete(localDir, true);
+        // 递归删除前做边界校验：
+        // 这个目录是 %LOCALAPPDATA%\Auto7z，删错了影响的是用户的真实数据。
+        if (Directory.Exists(localDir))
+        {
+            string full = Path.GetFullPath(localDir);
+            string local = Path.GetFullPath(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+            if (!full.StartsWith(local, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("目录不在 %LOCALAPPDATA% 下, 拒绝删除: " + full);
+            if (!full.EndsWith("Auto7z", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("目录名不是 Auto7z, 拒绝删除: " + full);
+
+            Directory.Delete(full, true);
+        }
         Directory.CreateDirectory(Path.Combine(localDir, "7-Zip"));
         Directory.CreateDirectory(Path.Combine(localDir, "Logs"));
         File.WriteAllText(Path.Combine(localDir, "Auto7z.xml"),

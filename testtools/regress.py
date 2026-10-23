@@ -8,8 +8,13 @@
 
 测试会在 %LOCALAPPDATA%\\Auto7z 下改配置（测完会恢复），
 产物写到工作区的 regress/ 目录。
+
+收尾会：
+  1) 注销右键菜单（测试产物不是生产版本，不该在系统里留注册）
+  2) 清理临时目录（所有测试跑完之后统一清，带白名单校验）
 """
 import ctypes
+import locale
 import os
 import shutil
 import subprocess
@@ -19,8 +24,36 @@ import xml.etree.ElementTree as ET
 from ctypes import wintypes
 from pathlib import Path
 
+
+def decode_console_output(data):
+    """把子进程的控制台输出解成文本。
+
+    Windows 上这些子进程（tasklist、portable.exe）按 **OEM 代码页** 输出，
+    中文系统上是 GBK/CP936，不是 UTF-8。
+    而 Python 3.15 起默认是 UTF-8 模式（PEP 686），
+    locale.getpreferredencoding() 在那里返回的就是 utf-8，
+    所以不能直接拿它来解码 —— 会把中文解成乱码，
+    后面的字符串断言就全部落空（表现为「配置里没有记下便携标记」这种假失败）。
+
+    做法：先按 OEM 代码页试，解不出来再退到 mbcs，再退到 utf-8。
+    """
+    if not data:
+        return ""
+    for enc in ("gbk", "mbcs", "utf-8"):
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from safe_ops import SafeTemp, safe_rmtree, UnsafeDeleteError
+
 PROJECT = Path(r"C:\Users\Mocha\Desktop\VSProject\Auto7z_WPF\Auto7z_WPF")
 WORKSPACE = Path(__file__).resolve().parent.parent
+
+# 临时目录：受控在 %TEMP% 下，路径含标记串，删除前有白名单校验
+TEMP = SafeTemp("regress")
 
 
 def parse_args():
@@ -43,6 +76,20 @@ def parse_args():
 
 
 APP, CONFIG = parse_args()
+
+# 图形入口与命令行入口是两个可执行体：
+#   Auto7z.exe      Console 子系统，只做命令行（不带参数时打印用法就退出）；
+#   Auto7zGUI.exe   GUI 子系统，只做图形的事（双击 / 右键 / 拖拽 / 主窗口）。
+# 需要「启动一次程序让它重建配置、写日志」的用例必须走图形入口，
+# 否则拿到的是命令行版本的用法输出，什么都不会发生。
+GUI_APP = APP.parent / "Auto7zGUI.exe"
+if not GUI_APP.exists():
+    GUI_APP = APP
+
+
+def exe_for(args):
+    """没有参数 = 界面模式，走图形入口；带参数 = 命令行模式，走命令行入口。"""
+    return GUI_APP if not list(args) else APP
 LOCAL = Path(os.environ["LOCALAPPDATA"]) / "Auto7z"
 CFG = LOCAL / "Auto7z.xml"
 LOGS = LOCAL / "Logs"
@@ -63,6 +110,43 @@ def bad(s):
     ISSUES.append(s)
     OUT.append("  !! " + s)
     print("  !! " + s)
+
+
+def find_lang_dir():
+    """找语言词典目录。
+
+    从被测程序的位置往上推: bin\\Debug\\Auto7z.exe -> 源码目录 -> Resources\\Languages。
+    推不出来就在工程树里找 Resources\\Languages。
+    写死绝对路径的做法已经过时, 换个目录就找不到, 而找不到时下面的比对
+    会静默地什么都不检查还报"0 问题"。
+    """
+    candidates = []
+    try:
+        app_dir = APP.resolve().parent
+        # bin\\Debug -> 上一级是 bin, 再上一级是工程目录
+        candidates.append(app_dir.parent.parent / "Resources" / "Languages")
+        candidates.append(app_dir.parent / "Resources" / "Languages")
+    except Exception:
+        pass
+
+    candidates.append(WORKSPACE / "Auto7z_WPF" / "Auto7z_WPF" / "Resources" / "Languages")
+
+    for c in candidates:
+        try:
+            if c.is_dir() and len(list(c.glob("*.xaml"))) >= 2:
+                return c
+        except OSError:
+            continue
+
+    # 最后在工程树里搜一遍
+    try:
+        for c in WORKSPACE.rglob("Resources/Languages"):
+            if c.is_dir() and len(list(c.glob("*.xaml"))) >= 2:
+                return c
+    except OSError:
+        pass
+
+    return None
 
 
 def set_cfg(**kw):
@@ -90,9 +174,17 @@ def products_in(d, skip=()):
 
 
 def fresh(name):
-    d = ROOT / name
+    """在受控临时目录里开一个干净的工作目录。
+
+    原来这个目录开在工作区（工程根）下面，用 shutil.rmtree 直接删。
+    现在挪到 %TEMP% 下的受控目录，删除前有白名单校验：
+    必须在受控根内、路径含标记串、目录里没有源码类文件。
+    这条边界是历史 P0 事故的直接教训 ——
+    当时路径参数传错 + 删除边界模糊，把测试工具源码删光了。
+    """
+    d = TEMP.path / name
     if d.exists():
-        shutil.rmtree(d, ignore_errors=True)
+        safe_rmtree(d)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -130,8 +222,9 @@ def kill_running():
     程序是单实例的: 上一个还在跑的话, 新起的会认为已经有实例,
     把文件交过去就自己退了。测试要一个一个单独跑, 所以先清干净。
     """
-    subprocess.run(["taskkill", "/F", "/IM", "Auto7z.exe"],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for image in ("Auto7z.exe", "Auto7zGUI.exe"):
+        subprocess.run(["taskkill", "/F", "/IM", image],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(0.3)
 
 
@@ -142,7 +235,7 @@ def close_gracefully(args, wait=5.0):
     界面模式下才会发 WM_CLOSE 让它保存配置再退。
     """
     kill_running()
-    p = subprocess.Popen([APP] + list(args),
+    p = subprocess.Popen([exe_for(args)] + list(args),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          stdin=subprocess.DEVNULL)
 
@@ -220,25 +313,6 @@ def md5_of(p):
     return h.hexdigest()
 
 
-def move_data_dir(src, dst):
-    """合并式搬迁: 目标已有同名文件时以源为准"""
-    src = Path(src)
-    dst = Path(dst)
-    if not src.exists():
-        return
-    dst.mkdir(parents=True, exist_ok=True)
-    for f in src.glob("*"):
-        target = dst / f.name
-        if f.is_dir():
-            if target.exists():
-                shutil.rmtree(str(target), ignore_errors=True)
-            shutil.move(str(f), str(target))
-        else:
-            if target.exists():
-                target.unlink()
-            shutil.move(str(f), str(target))
-
-
 def shell_menu_registered():
     """检查右键菜单的挂载点在不在"""
     try:
@@ -252,17 +326,22 @@ def shell_menu_registered():
 
 
 def main():
+    # 报告写到工程根的 regress\ 目录（给人看，跑完还留在这儿方便查）。
+    # 测试产物写到受控临时目录（给测试用，跑完统一清）。
+    # 这样工程里只多一个 report.txt，不会攒下一堆压缩包、临时文件。
     if ROOT.exists():
         shutil.rmtree(ROOT, ignore_errors=True)
     ROOT.mkdir(parents=True, exist_ok=True)
+    TEMP.ensure()
 
     # 备份真实配置, 测完原样还原(由 run() 负责)
     say("##### 被测程序 #####")
     say("  " + str(APP))
     say("  配置: " + str(CFG))
+    say("  临时目录: " + str(TEMP.path))
     say("")
 
-    data = ROOT / "data"
+    data = TEMP.path / "data"
     data.mkdir(parents=True, exist_ok=True)
     (data / "a.txt").write_text("alpha\n", encoding="utf-8")
     (data / "b.txt").write_text("beta\n", encoding="utf-8")
@@ -466,8 +545,12 @@ def main():
     out = run_capture([str(d / "x.txt"), str(d / "y.dat")], 8)
     flat = out.replace("\r", " ").replace("\n", " | ")
     say("  控制台输出: %s" % (flat[:120] or "(空)"))
-    # 提示语跟着界面语言走, 中英文都要认
-    if ("打包" in out or "单个压缩文件" in out or
+    # 提示语跟着界面语言走。
+    # 命令行模式用的是 Console_MergeQuestion 这个键（带 Y/N 提示），
+    # 界面模式用的是 MultiFilePackQuery（不带 Y/N）。
+    # 两个键措辞不同是故意的：控制台要告诉用户按什么键。
+    if ("是否合并" in out or "打包" in out or "单个压缩文件" in out or
+            "Y/N" in out or
             "package them into a single" in out or "Multiple files" in out):
         say("  合并询问已在控制台提示: OK")
     else:
@@ -565,26 +648,34 @@ def main():
     say("")
     say("##### T16: 语言资源 #####")
     import re
-    lang_dir = Path(r"C:\Users\Mocha\Desktop\VSProject\Auto7z_WPF\Auto7z_WPF\Resources\Languages")
-    sets = {}
-    for f in sorted(lang_dir.glob("*.xaml")):
-        keys = re.findall(r'x:Key="([^"]+)"', f.read_text(encoding="utf-8"))
-        sets[f.name] = keys
-        dups = [k for k in set(keys) if keys.count(k) > 1]
-        say("  %-12s %d keys%s" % (f.name, len(keys),
-                                   "  重复: " + ",".join(dups) if dups else ""))
-        if dups:
-            bad("%s 重复键: %s" % (f.name, ",".join(dups)))
-    names = list(sets)
-    for i in range(len(names)):
-        for j in range(i + 1, len(names)):
-            a, b = sets[names[i]], sets[names[j]]
-            oa = [k for k in a if k not in b]
-            ob = [k for k in b if k not in a]
-            if oa:
-                bad("%s 有 %s 没有的键: %s" % (names[i], names[j], ",".join(oa)))
-            if ob:
-                bad("%s 有 %s 没有的键: %s" % (names[j], names[i], ",".join(ob)))
+    # 词典目录从被测程序的位置推出来, 不要再写死绝对路径:
+    # 写死的旧路径早已不存在, glob 匹配到 0 个文件时下面所有检查都成了空转,
+    # 键缺失永远检不出来, 还会报成"0 问题"。
+    lang_dir = find_lang_dir()
+    if lang_dir is None:
+        bad("找不到语言词典目录, T16 无法执行")
+    else:
+        sets = {}
+        for f in sorted(lang_dir.glob("*.xaml")):
+            keys = re.findall(r'x:Key="([^"]+)"', f.read_text(encoding="utf-8"))
+            sets[f.name] = keys
+            dups = [k for k in set(keys) if keys.count(k) > 1]
+            say("  %-12s %d keys%s" % (f.name, len(keys),
+                                       "  重复: " + ",".join(dups) if dups else ""))
+            if dups:
+                bad("%s 重复键: %s" % (f.name, ",".join(dups)))
+        if len(sets) < 2:
+            bad("语言词典只找到 %d 个, 少于 2 个, 无法比对" % len(sets))
+        names = list(sets)
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                a, b = sets[names[i]], sets[names[j]]
+                oa = [k for k in a if k not in b]
+                ob = [k for k in b if k not in a]
+                if oa:
+                    bad("%s 有 %s 没有的键: %s" % (names[i], names[j], ",".join(oa)))
+                if ob:
+                    bad("%s 有 %s 没有的键: %s" % (names[j], names[i], ",".join(ob)))
 
     # T17 日志
     say("")
@@ -647,7 +738,7 @@ def main():
     backup = CFG.read_text(encoding="utf-8")
     try:
         CFG.write_text("not xml <<<", encoding="utf-8")
-        p = subprocess.Popen([APP], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen([exe_for([])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(3)
         alive = p.poll() is None
         if p.poll() is None:
@@ -667,9 +758,14 @@ def main():
     # T21 残留
     say("")
     say("##### T21: 进程残留 #####")
+    # tasklist 的输出是本地代码页（中文系统上是 GBK），不是 UTF-8。
+    # 用 text=True 会按 locale 解码，中文系统上遇到非 ASCII 字节就抛
+    # UnicodeDecodeError，整个测试脚本在最后一步崩掉。
+    # 这里显式按本地代码页解码并忽略无法识别的字节。
     out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq 7z.exe", "/NH"],
-                         stdout=subprocess.PIPE, text=True)
-    n = out.stdout.lower().count("7z.exe")
+                         stdout=subprocess.PIPE)
+    listing = decode_console_output(out.stdout)
+    n = listing.lower().count("7z.exe")
     say("  残留 7z 进程: %d" % n)
     if n:
         bad("残留 7z 进程: %d" % n)
@@ -680,7 +776,8 @@ def main():
     try:
         csc = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
         src = WORKSPACE / "testtools" / "cs" / "portable" / "portable.cs"
-        exe = APP.parent / "portable.exe"
+        # 编译产物放受控临时目录，不要往产品的 bin 目录里扔 exe
+        exe = TEMP.path / "portable.exe"
         refs = [
             r"C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.7.2\PresentationFramework.dll",
             r"C:\Program Files (x86)\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.7.2\PresentationCore.dll",
@@ -694,9 +791,14 @@ def main():
             args.append(str(src))
             build = subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if build.returncode == 0:
-                out = subprocess.run([str(exe), str(WORKSPACE), str(APP)],
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                text = out.stdout or ""
+                # 第一个参数是"报告写到哪"。
+                # 原来传的是工程根(WORKSPACE)，portable.exe 会把 portable.txt
+                # 直接丢在工程根目录里 —— 那是产品代码的地盘，不该留测试产物。
+                # 改成传到受控临时目录，跟着其它临时产物一起被统一清理。
+                out = subprocess.run([str(exe), str(TEMP.path), str(APP)],
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                # 同 T21：辅助程序按控制台代码页输出中文，不能用默认的 UTF-8 解码
+                text = decode_console_output(out.stdout)
                 for line in text.splitlines():
                     if line.strip():
                         say("  " + line.strip())
@@ -721,24 +823,42 @@ def main():
     except Exception as e:
         bad("便携模式测试异常: %s" % e)
 
-    # T22 测便携模式时会把右键菜单注销掉, 这里重新注册回去。
-    # 注册完要确认真的成了: 便携模式的注销跟这里会撞车, 可能白注册一次。
+    # 测试收尾：把右键菜单注销掉。
+    #
+    # 之前这里是"重新注册回去"，理由是怕影响用户日常使用。
+    # 但测试完成后的程序并不是直接投入生产的那一份，
+    # 留着注册等于在系统里挂了一个指向测试产物的右键菜单 ——
+    # 那才是真正的"幽灵注册"：菜单在，但指向的 dll 可能已被覆盖或删掉。
+    #
+    # 收尾策略：**先查再动**。
+    #   - 系统里本来就没有注册（大多数情况）-> 什么都不用做
+    #   - 有残留 -> 才注销
+    #
+    # 为什么要"先查"：注销要走 regsvr32 提权，Windows 会弹 UAC 让用户点确认。
+    # 每次跑测试都弹一次 UAC 让人点，是很烦人的；
+    # 而"没有残留就不需要注销"，本来就不该有东西要清。
+    # 有残留才值得打扰用户一次。
     say("")
-    say("##### 恢复右键菜单注册 #####")
-    for attempt in range(3):
-        try:
-            subprocess.run([APP, "-r"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           stdin=subprocess.DEVNULL, timeout=30)
-        except Exception as e:
-            say("  注册失败: %s" % e)
-            continue
-
-        if shell_menu_registered():
-            say("  已重新注册")
-            break
-        time.sleep(1.5)
+    say("##### 收尾：检查右键菜单注册 #####")
+    if not shell_menu_registered():
+        say("  系统里没有右键菜单注册，无需注销（不会弹 UAC）")
     else:
-        say("  !! 重新注册没成功")
+        say("  检测到注册残留，执行注销")
+        for attempt in range(3):
+            try:
+                subprocess.run([APP, "-ur"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               stdin=subprocess.DEVNULL, timeout=60)
+            except Exception as e:
+                say("  注销失败: %s" % e)
+                continue
+
+            if not shell_menu_registered():
+                say("  已注销")
+                break
+            time.sleep(1.5)
+        else:
+            say("  !! 右键菜单仍处于注册状态")
+            bad("收尾没能注销右键菜单, 系统里留了幽灵注册")
 
     say("")
     say("##### 问题汇总 (%d) #####" % len(ISSUES))
@@ -750,8 +870,23 @@ def main():
     print("TOTAL ISSUES: %d" % len(ISSUES))
 
 
+def cleanup():
+    """所有测试跑完之后统一清理临时产物。
+
+    放在最后统一清，而不是边测边清：
+    中途清理一旦边界判断出错，删掉的是还在用的目录，
+    后面几个用例跟着崩；统一清理则只剩一次风险点。
+    """
+    print("")
+    print("##### 清理临时产物 #####")
+    try:
+        print("  " + TEMP.cleanup())
+    except UnsafeDeleteError as e:
+        print("  !! 清理被拒绝: %s" % e)
+
+
 def run():
-    """跑完全部测试, 无论成败都把配置还原"""
+    """跑完全部测试, 无论成败都把配置还原、清理临时目录"""
     global CONFIG_SNAPSHOT
     if CFG.exists():
         CONFIG_SNAPSHOT = CFG.read_text(encoding="utf-8")
@@ -764,6 +899,7 @@ def run():
                 print("配置已还原")
             except Exception as e:
                 print("配置还原失败: %s" % e)
+        cleanup()
 
 
 if __name__ == "__main__":
