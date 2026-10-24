@@ -118,7 +118,7 @@ Auto7zShell\buildtool\buildtool.exe --vcvars "C:\Program Files\Microsoft Visual 
 
 `buildtool.bat` compiles `buildtool.exe` from `BuildTool.cpp`; `buildtool.exe` then compiles the component and leaves it in `Auto7zShell\build\Auto7zShell.dll`. `buildtool.exe` is statically linked and only needs `KERNEL32.dll` and `SHELL32.dll`. It needs the MSVC x64 toolchain; if it can't find one it prints the download steps and opens the browser.
 
-The `VCVARS` path hardcoded in `buildtool.bat` points at a Visual Studio 18 BuildTools location that typically does not exist — on a VS 2022 machine, pass the real `vcvars64.bat` via `--vcvars` as shown above, or edit the `VCVARS` constant in the bat.
+`buildtool.bat` defaults to the Visual Studio 2022 Community `vcvars64.bat` and falls back to the other 2022 editions (Enterprise / Professional / Build Tools) when that exact path is missing. If your toolchain lives somewhere else, pass it with `--vcvars` as shown above, or edit the `VCVARS` constant in the bat.
 
 Copy the resulting `Auto7zShell.dll` next to `Auto7z.exe` — the application looks for it in its own directory. `Auto7zGUI.exe` belongs in the same directory: the Explorer context menu and drag-and-drop use it, and it has to sit next to `Auto7z.exe`.
 
@@ -159,6 +159,27 @@ apart by looking at the parent process: Explorer started it, so it is a
 drag-and-drop.
 
 ### Registering the context menu
+### Exit codes
+
+`Auto7z.exe` reports the outcome to the caller, so scripts and scheduled tasks
+can tell success from failure:
+
+| Code | Meaning |
+|---|---|
+| 0 | everything succeeded (or the usage was printed for `-h`) |
+| 1 | the task ran but failed or was cancelled |
+| 2 | nothing ran: missing/unknown arguments, or none of the input paths exist |
+
+Relative input paths are accepted (`Auto7z.exe -Z file.txt` inside the file's
+folder works); they are resolved to absolute paths before the output folder is
+chosen.
+### Progress and cancelling
+
+Progress comes straight from 7-Zip's own `-bsp1` stream and is parsed per percentage point,
+so the number moves in the console, in the main window's status text and in the small
+progress window used by the context menu. In the context-menu mode, closing the small
+progress window is a **cancel**: the 7-Zip child process is killed and the half-written
+folder is deleted before the window disappears.
 
 ```bat
 Auto7z.exe -r
@@ -297,7 +318,7 @@ Auto7zShell\buildtool\buildtool.exe --vcvars "C:\Program Files\Microsoft Visual 
 
 `buildtool.bat` 用 `BuildTool.cpp` 编出 `buildtool.exe`；`buildtool.exe` 再编组件，产物在 `Auto7zShell\build\Auto7zShell.dll`。`buildtool.exe` 是静态链接的，只依赖 `KERNEL32.dll` 与 `SHELL32.dll`。它需要 MSVC 的 x64 工具链；找不到时会打印下载步骤并打开浏览器。
 
-`buildtool.bat` 里写死的 `VCVARS` 指向 VS 18 BuildTools 的位置，一般不存在 —— VS 2022 的机器上按上面的样子用 `--vcvars` 传入真实的 `vcvars64.bat`，或者改掉 bat 里的 `VCVARS` 常量。
+`buildtool.bat` 现在默认指向 Visual Studio 2022 Community 的 `vcvars64.bat`，该路径不存在时会依次回退到 2022 的 Enterprise / Professional / Build Tools；工具链装在别处时，按上面的样子用 `--vcvars` 传入真实路径，或者改掉 bat 里的 `VCVARS` 常量。
 
 编出来的 `Auto7zShell.dll` 要放在 `Auto7z.exe` 旁边 —— 程序在同目录下找它。
 
@@ -332,6 +353,23 @@ Auto7z.exe [选项] [文件或目录...]
 程序靠看父进程来区分：父进程是 explorer，说明是拖拽。
 
 ### 注册右键菜单
+### 退出码
+
+`Auto7z.exe` 会把结果告诉调用方，脚本与计划任务据此判断成败：
+
+| 码 | 含义 |
+|---|---|
+| 0 | 全部成功（`-h` 打印用法也算成功） |
+| 1 | 任务跑了但失败，或被取消 |
+| 2 | 根本没跑：参数缺失/无法识别，或输入路径一个都不存在 |
+
+相对路径可用（在文件所在目录里 `Auto7z.exe -Z file.txt` 能正常压缩）——
+程序会先把它转成绝对路径，再推导输出目录。
+### 进度与取消
+
+进度直接取自 7-Zip 的 `-bsp1` 输出，按百分点解析：控制台、主窗口状态文字、
+右键菜单用的小进度窗口显示的是同一串数字。右键菜单模式下，**关掉小进度窗口就是取消**——
+7-Zip 子进程会被结束，压到一半的目录会在窗口消失前删掉。
 
 ```bat
 Auto7z.exe -r
