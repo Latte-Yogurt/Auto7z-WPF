@@ -39,7 +39,7 @@ buildtool\buildtool.exe --vcvars "C:\Program Files\Microsoft Visual Studio\2022\
 
 第一个用 `BuildTool.cpp` 编译构建工具本身，第二个构建组件。产物在 `build\Auto7zShell.dll`，要拷到主程序旁边 —— 组件按同目录找主程序。
 
-`buildtool.bat` 里写死的 `VCVARS` 指向 VS 18 BuildTools 的位置，一般不存在 —— VS 2022 的机器上按上面的样子用 `--vcvars` 传入真实的 `vcvars64.bat`，或者改掉 bat 里的 `VCVARS` 常量。
+`buildtool.bat` 现在默认指向 Visual Studio 2022 Community 的 `vcvars64.bat`，该路径不存在时会依次回退到 2022 的 Enterprise / Professional / Build Tools；工具链装在别处时，按上面的样子用 `--vcvars` 传入真实路径，或者改掉 bat 里的 `VCVARS` 常量。
 
 组件的 `buildtool.exe` 支持 `--clean` 先清空 `build\` 目录再构建。
 
@@ -82,7 +82,7 @@ buildtool\buildtool.exe --vcvars "C:\Program Files\Microsoft Visual Studio\2022\
 
 工具链默认在几个常见位置找（按顺序）：VS 18 的 BuildTools、VS 2022 的 BuildTools / Community / Professional / Enterprise，每个都试 `Program Files (x86)` 与 `Program Files` 两个路径。装在别处就用 `--vcvars` 指定 `vcvars64.bat` 的完整路径。
 
-`buildtool.bat` 里的路径是写死的（`VS 18\BuildTools`），不在那儿就把那一行改掉，或者直接用 `--vcvars`。
+`buildtool.bat` 里的默认路径是 VS 2022 Community，缺失时会回退到 2022 的其它版本；装在别处就把那一行改掉，或者直接用 `--vcvars`。
 
 ### 构建工具内部做了什么
 
