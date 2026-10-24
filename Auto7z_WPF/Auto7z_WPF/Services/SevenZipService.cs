@@ -152,7 +152,15 @@ namespace Auto7z_WPF.Services
         ///   - 百分号后面必须有内容（否则是上面那三种空行）
         ///   - 标记只能是 +（正常）；T 表示这个文件出错，不算进度
         /// </summary>
-        private static readonly Regex _percentRegex = new Regex(@"^\s*(\d{1,3})\s*%\s*\+", RegexOptions.Compiled);
+        // 7-Zip 在 -bsp1 下真正的进度行有两种形态（分隔符是 \r，不是 \n）：
+        //   压缩： " 20% 1 + f1.bin"
+        //   解压： " 64% 23 - f30.bin"
+        // 百分号后面的文件序号有时没有（" 10% + f0.bin"），所以序号可省略；
+        // 标记只认 + 与 -：
+        //   "100% T xxx" 是读文件出错（密码错就是它），不是进度；
+        //   "  0%" / "  0M Scan ..." 是扫描起始行，也不是进度。
+        private static readonly Regex _percentRegex =
+            new Regex(@"^\s*(\d{1,3})\s*%(?:\s+\d+)?\s*[+\-]\s", RegexOptions.Compiled);
 
         /// <summary>
         /// 正在运行的 7-Zip 进程。程序退出时统一结束，
@@ -165,6 +173,17 @@ namespace Auto7z_WPF.Services
         /// 结束所有仍在运行的 7-Zip 进程（程序退出时调用）。
         /// </summary>
         public void KillRunningProcesses()
+        {
+            KillAllRunningProcesses();
+        }
+
+        /// <summary>
+        /// 结束所有 7-Zip 子进程（静态版，供程序退出时兜底）。
+        ///
+        /// 右键菜单模式没有主窗口，关闭流程走不到 ViewModel.OnClosing，
+        /// 不在这里兜底的话，程序退出后 7z.exe 会留在后台继续跑。
+        /// </summary>
+        public static void KillAllRunningProcesses()
         {
             lock (_runningProcessesLock)
             {
@@ -710,13 +729,19 @@ namespace Auto7z_WPF.Services
                     lock (stdoutLock) { stdout.AppendLine(e.Data); }
 
                     if (progress == null) return;
-                    var match = _percentRegex.Match(e.Data);
-                    if (!match.Success) return;
 
-                    if (int.TryParse(match.Groups[1].Value, out int percent) && percent != lastPercent)
+                    // 7-Zip 用 \r 覆盖同一行来刷进度，管道下偶尔一次送来多段；
+                    // 这里按 \r 再拆一遍，避免中间的更新被整段丢掉。
+                    foreach (string chunk in e.Data.Split('\r'))
                     {
-                        lastPercent = percent;
-                        progress(percent);
+                        var match = _percentRegex.Match(chunk);
+                        if (!match.Success) continue;
+
+                        if (int.TryParse(match.Groups[1].Value, out int percent) && percent != lastPercent)
+                        {
+                            lastPercent = percent;
+                            progress(percent);
+                        }
                     }
                 };
 

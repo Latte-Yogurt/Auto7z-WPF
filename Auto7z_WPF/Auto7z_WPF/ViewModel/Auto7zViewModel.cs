@@ -1083,6 +1083,21 @@ namespace Auto7z_WPF
         /// 设置本次任务的输入。
         /// 大小在接收阶段（界面线程）统计一次，任务执行期间不再重复遍历目录。
         /// </summary>
+        /// <summary>
+        /// 上一次任务是否以失败或取消结束。命令行模式据此决定进程退出码。
+        /// </summary>
+        public bool LastTaskFailed { get; private set; }
+
+        /// <summary>
+        /// 上一次 SetPendingFiles 里被丢弃的输入个数（路径不存在或无法访问）。
+        /// </summary>
+        public int RejectedInputCount { get; private set; }
+
+        /// <summary>
+        /// 当前待处理批次里是否还有条目。
+        /// </summary>
+        public bool HasPendingFiles => _pendingBatch != null && !_pendingBatch.IsEmpty;
+
         public void SetPendingFiles(IEnumerable<string> files)
         {
             if (files == null)
@@ -1092,30 +1107,42 @@ namespace Auto7z_WPF
             }
 
             var items = new List<PendingFile>();
+            int rejected = 0;
             foreach (var path in files)
             {
                 if (string.IsNullOrWhiteSpace(path)) continue;
 
+                // 相对路径先转成绝对路径：后面推导输出目录用的是 Path.GetDirectoryName，
+                // 相对路径会得到空串，任务会以「无法确定输出目录」失败。
+                string full = NormalizeInputPath(path);
+
                 try
                 {
-                    if (File.Exists(path))
+                    if (File.Exists(full))
                     {
                         long size = 0;
-                        try { size = new FileInfo(path).Length; } catch { /* 读不到大小按 0 处理 */ }
-                        items.Add(new PendingFile(path, size, false));
+                        try { size = new FileInfo(full).Length; } catch { /* 读不到大小按 0 处理 */ }
+                        items.Add(new PendingFile(full, size, false));
                     }
-                    else if (Directory.Exists(path))
+                    else if (Directory.Exists(full))
                     {
-                        long size = _sevenZipService.GetSizeInBytes(path);
-                        items.Add(new PendingFile(path, size < 0 ? 0 : size, true));
+                        long size = _sevenZipService.GetSizeInBytes(full);
+                        items.Add(new PendingFile(full, size < 0 ? 0 : size, true));
+                    }
+                    else
+                    {
+                        // 路径不存在：记下来，命令行模式据此报错并返回非 0，
+                        // 而不是像以前那样静默丢弃、退出码还是 0。
+                        rejected++;
                     }
                 }
                 catch
                 {
-                    // 无法访问的条目直接跳过
+                    rejected++;
                 }
             }
 
+            RejectedInputCount = rejected;
             _pendingBatch = new PendingFileBatch(items);
         }
 
@@ -1159,6 +1186,7 @@ namespace Auto7z_WPF
             if (IsBusy) return;
 
             IsBusy = true;
+            LastTaskFailed = false;
             _cancellation = new CancellationTokenSource();
 
             Action<ProgressInfo> report = info =>
@@ -1395,6 +1423,15 @@ namespace Auto7z_WPF
             // 而且任务在后台线程上跑，跨线程写绑定属性不安全。
             if (CurrentRunMode == RunMode.ShellMenu)
             {
+                return;
+            }
+
+            // 图形界面模式下 MainText 绑在主窗口上，只能在界面线程改。
+            // 任务本身跑在后台线程（Task.Run），所以这里统一切回界面线程。
+            var app = Application.Current;
+            if (app != null && !app.Dispatcher.CheckAccess())
+            {
+                app.Dispatcher.BeginInvoke(new Action(() => UpdateProgress(info)));
                 return;
             }
 
@@ -1663,11 +1700,17 @@ namespace Auto7z_WPF
             {
                 try
                 {
-                    // 分卷时对首个分卷计算，其余分卷同样生成各自的 md5
-                    foreach (var part in _sevenZipService.CollectProducedFiles(archivePath))
+                    // 分卷时每个分卷各生成一份 md5。
+                    // 进度按整批折算：每份自己的 0-100 映射到这一批的区间里，
+                    // 否则第一份跑完进度会跳回 0，看起来像重头再来一遍。
+                    var parts = _sevenZipService.CollectProducedFiles(archivePath);
+                    for (int partIndex = 0; partIndex < parts.Count; partIndex++)
                     {
-                        _sevenZipService.GenerateMd5(part,
-                            p => report(new ProgressInfo(p, ProgressStage.CalculatingMd5)), CurrentToken);
+                        int slice = partIndex;
+                        _sevenZipService.GenerateMd5(parts[partIndex],
+                            p => report(new ProgressInfo(
+                                MapMd5Progress(slice, parts.Count, p), ProgressStage.CalculatingMd5)),
+                            CurrentToken);
                     }
                 }
                 catch (OperationCanceledException)
@@ -2350,6 +2393,7 @@ namespace Auto7z_WPF
 
         private void FailWithError(Exception error, Action<ProgressInfo> report)
         {
+            LastTaskFailed = true;
             AppState.CurrentStatus = AppState.OperationStatus.Error;
 
             string detail = error?.Message ?? string.Empty;
@@ -2363,6 +2407,8 @@ namespace Auto7z_WPF
 
         private void FailFromCommand(CommandResult result, Action<ProgressInfo> report, bool cancelled)
         {
+            // 取消也算「没成功」：命令行/脚本据此拿到非 0 退出码。
+            LastTaskFailed = true;
             AppState.CurrentStatus = cancelled ? AppState.OperationStatus.Normal : AppState.OperationStatus.Error;
 
             if (cancelled)
@@ -2399,6 +2445,38 @@ namespace Auto7z_WPF
         {
             ResultText = text ?? string.Empty;
             IsResultFailed = failed;
+        }
+
+        #endregion
+
+        #region 输入路径与进度工具
+
+        /// <summary>
+        /// 把输入路径规整成绝对路径；路径非法时原样返回，交给后面的存在性检查。
+        /// </summary>
+        private static string NormalizeInputPath(string path)
+        {
+            try
+            {
+                return Path.GetFullPath(path);
+            }
+            catch (Exception)
+            {
+                // 非法路径（含非法字符等）：原样返回，后面按「不存在」处理
+                return path;
+            }
+        }
+
+        /// <summary>
+        /// 把「第 index 份的 0-100」折算成「整批的 0-100」，保证一轮任务内进度只增不减。
+        /// </summary>
+        private static int MapMd5Progress(int index, int count, int percent)
+        {
+            if (count <= 1) return percent;
+            if (percent < 0) percent = 0;
+            if (percent > 100) percent = 100;
+            int mapped = (int)Math.Round((index * 100.0 + percent) / count);
+            return mapped > 100 ? 100 : mapped;
         }
 
         private void CleanupProducedFiles(IEnumerable<string> paths)

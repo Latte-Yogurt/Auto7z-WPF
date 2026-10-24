@@ -70,7 +70,7 @@ Auto7z.exe [选项] [文件或目录...]
 ..\Auto7zShell\buildtool\buildtool.exe --vcvars "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
 ```
 
-第一条把 `buildtool.exe` 编译出来，第二条用它把组件编到 `..\Auto7zShell\build\Auto7zShell.dll`（`buildtool.bat` 里写死的 `VCVARS` 一般不存在，所以用 `--vcvars` 传真实路径）。把那个 dll 拷到主程序的输出目录（`bin\Release\` 或 `bin\Debug\`）里。
+第一条把 `buildtool.exe` 编译出来，第二条用它把组件编到 `..\Auto7zShell\build\Auto7zShell.dll`（`buildtool.bat` 默认用 VS 2022 Community 的 `vcvars64.bat`，装在别处就用 `--vcvars` 传真实路径）。把那个 dll 拷到主程序的输出目录（`bin\Release\` 或 `bin\Debug\`）里。
 
 构建完的目录里要有：
 
@@ -99,6 +99,54 @@ Filename: "{app}\Auto7z.exe"; Parameters: "-r"; Flags: runhidden; Tasks: desktop
 Type: filesandordirs; Name: "{app}"
 
 [Code]
+// Auto7zShell.dll 被资源管理器加载在自己的进程里；`-ur` 只删注册表，跨进程
+// 卸载做不到。不把它释放出来，卸载程序随后删 {app} 时 dll 仍被占用，删不掉、
+// 要等重启。
+
+function FindWindowW(ClassName, WindowName: String): Longint;
+  external 'FindWindowW@user32.dll stdcall';
+
+// 任务栏或桌面窗口在，就说明资源管理器回来了。
+function ExplorerRunning: Boolean;
+begin
+  Result := (FindWindowW('Shell_TrayWnd', '') <> 0) or
+            (FindWindowW('Progman', '') <> 0);
+end;
+
+procedure KillExplorerToReleaseShellDll;
+var
+  ErrorCode: Integer;
+begin
+  if Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM explorer.exe', '',
+          SW_HIDE, ewWaitUntilTerminated, ErrorCode) then
+  begin
+    Log('taskkill /F /IM explorer.exe returned ' + IntToStr(ErrorCode));
+    Sleep(1000);   // 等进程退出、dll 句柄真正释放
+  end
+  else
+    Log('Could not start taskkill, error ' + IntToStr(ErrorCode) + ': ' + SysErrorMessage(ErrorCode));
+end;
+
+procedure EnsureExplorerRunning;
+var
+  ErrorCode: Integer;
+  Waited: Integer;
+begin
+  Waited := 0;
+  while (Waited < 10000) and not ExplorerRunning do
+  begin
+    Sleep(500);
+    Waited := Waited + 500;
+  end;
+
+  if ExplorerRunning then
+    Exit;
+
+  // AutoRestartShell 被关掉的机器上没人拉它，补一次。
+  ShellExec('', ExpandConstant('{win}\explorer.exe'), '', '',
+            SW_SHOWNORMAL, ewNoWait, ErrorCode);
+end;
+
 procedure RunUnregisterShellMenu;
 var
   ErrorCode: Integer;
@@ -123,15 +171,31 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ShellDll: String;
 begin
   if CurUninstallStep = usUninstall then
+  begin
+    // 先跑 -ur 清注册表，再杀 explorer：资源管理器重新起来时才不会又把
+    // dll 加载回去。这一步在 [UninstallDelete] 之前，dll 才能被真正删掉。
     RunUnregisterShellMenu;
+
+    ShellDll := ExpandConstant('{app}\Auto7zShell.dll');
+    if FileExists(ShellDll) then
+      KillExplorerToReleaseShellDll;
+  end
+  else if CurUninstallStep = usPostUninstall then
+    EnsureExplorerRunning;
 end;
 ```
 
 `-r` / `-ur` 就是给安装程序用的。注册要管理员权限，`PrivilegesRequired=admin` 时安装程序本身就是管理员，不会多弹 UAC。
 
 卸载走 `[Code]` 而不是 `[UninstallRun]`，是因为第三方卸载工具跑卸载时不一定给管理员权限 —— 那样注册表写不进去，右键菜单会残留，指向一个已经不存在的 dll。
+
+**为什么要杀 explorer**：`Auto7zShell.dll` 是进程内的 COM 组件，资源管理器右键用过一次就把它加载进自己的进程，`-ur` 只能删注册表，没法让别的进程卸载 dll。所以 `usUninstall` 里注销完就 `taskkill` 一次，等句柄释放后 `[UninstallDelete]` 才能把 `{app}` 删干净；`usPostUninstall` 再确认任务栏回来，回来得晚就在这里拉一把。
+
+代价是用户已经打开的文件夹窗口会被关掉，任务栏一般 1～2 秒就恢复（Winlogon 的 `AutoRestartShell` 默认会重启它）。只有在 `Auto7zShell.dll` 确实存在时才动手，没装过外壳扩展的旧版本卸载不会被牵连。
 
 ### 便携版
 

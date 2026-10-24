@@ -33,6 +33,22 @@ namespace Auto7z_WPF
         public bool Cancelled => _cancelled;
 
         /// <summary>
+        /// 任务已经收尾，允许窗口真正关闭。
+        ///
+        /// 任务进行中窗口不允许直接关 —— 关窗口一律转成取消请求，
+        /// 否则窗口没了、7z 还在跑，压到一半的目录也没人清。
+        /// </summary>
+        public bool AllowClose { get; set; }
+
+        /// <summary>
+        /// 把「关窗口」当成取消请求。
+        /// </summary>
+        public void RequestCancel()
+        {
+            _cancelled = true;
+        }
+
+        /// <summary>
         /// 设置进度文本。
         /// 文本由调用方从语言资源里取，这里只负责显示。
         /// </summary>
