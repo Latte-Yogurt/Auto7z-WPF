@@ -38,13 +38,7 @@ testtools/
 ├── cmdline_test.py        命令行测试（T1–T6）
 ├── cmd_real_test.py       真实 cmd 语义测试（#13 回归保护，C1–C4）
 ├── check_reg.py           右键菜单注册状态检查
-├── diff_reg.py            把 7-Zip 与 Auto7z 的注册表结构列出来对比
-├── find_dead_keys.py      查词典与配置里的废键、没人调用的方法
 ├── find_dead2.py          更全面的废键审查（含 C++ 导出函数）
-├── add_keys.py            往三语词典批量加键
-├── add_portable_keys.py   追加便携模式相关的词典键
-├── add_tabindex.py        给主窗口控件按视觉顺序加 TabIndex
-├── remove_delete_temp_keys.py  移除已废弃的词典键
 ├── COVERAGE.md            覆盖维度台账（D01 起，逐轮追加不改写历史行；测试资产，可能随轮次归档移动）
 └── cs/                    需要进程内跑的 C# 检查工具
     ├── build_all.py       编译下面所有工具（二进制放在各自目录里）
@@ -204,6 +198,24 @@ python cmd_real_test.py --app "..\..\Auto7z.exe"
 > **不要用 `.bat` 包一层跑这些用例。** 批处理里 cmd 会等 GUI 程序，
 > 那样即使子系统改错也会「通过」。脚本里用的是 `cmd /s /c "… & echo MARK %TIME%"` 单行命令。
 
+## UI 自动化（进度 / 取消）
+
+| 脚本 | 覆盖 | 说明 |
+|---|---|---|
+| `ui_probe.ps1 -Scenario gui` | 主窗口进度文字 | 用 UI Automation 读 `MainText`，验证压缩过程中数值在变 |
+| `ui_probe.ps1 -Scenario shellmenu` | 右键模式进度 + 取消 | 读进度条数值，再用窗口消息关窗，检查 7z 是否被结束、半成品目录是否被删 |
+| `ui_feed_test.ps1` | 拖拽入窗（接口级） | 用 Debug 版 `--feed` 把路径交给主窗口，走投放后的 `EnqueueFiles`，再验证 7z 真的起来、进度文本在变 |
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ui_probe.ps1 -Scenario gui
+powershell -ExecutionPolicy Bypass -File ui_probe.ps1 -Scenario shellmenu
+```
+
+**拖拽为什么改成接口级**：主窗口是 `AllowsTransparency` 的无边框透明窗，合成鼠标拖拽进不去；
+跨进程调窗口上的 `IDropTarget` 也拿不到（那个指针只在目标进程地址空间里有效）。
+所以产品里留了一个 **仅 Debug 构建** 的注入开关 `--feed`，它走的是投放之后的同一条 `EnqueueFiles` 路径；
+Release 构建里这段被 `#if DEBUG` 编译掉，最终产品中不存在这个开关。
+
 ## 外壳扩展相关的检查
 
 右键菜单能不能出来，取决于几件事，工具分别查。
@@ -314,8 +326,7 @@ python check_reg.py
 
 ## 注意事项
 
-- **部分脚本里的路径是写死的**。`regress.py`、`find_dead_keys.py`、
-  `add_keys.py`、`add_portable_keys.py`、`add_tabindex.py`、`remove_delete_temp_keys.py`
+- **部分脚本里的路径是写死的**。`regress.py`
   里还硬编码着旧工程路径 `C:\Users\Mocha\Desktop\VSProject\Auto7z_WPF\Auto7z_WPF`（**注意没有 `\ Project` 段**），该目录已不存在：
   - `regress.py` 用 `--app` 指定被测程序即可，词典目录会从被测程序位置反推；
   - `find_dead2.py`、`cs_check.py`、`namecheck.py`、`regioncheck.py`、`behaviorcheck.py`、`shellreg_check.py`、`renamecheck.py` 都可以传路径参数，默认指向当前工程；
@@ -353,7 +364,6 @@ python check_reg.py
 
 ## 自动化做不到的部分
 
-WPF 的 `AllowsTransparency` 窗口收不到合成的鼠标事件（AHK v1.1、Win32 `PostMessage`、
 物理鼠标模拟、UIAutomation `Invoke` 都试过），UAC 提示框也点不了，
 所以下面几项**必须人工点**：
 

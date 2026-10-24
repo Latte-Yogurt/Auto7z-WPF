@@ -54,9 +54,9 @@ CHECKS = [
      "ViewModel/Auto7zViewModel.cs",
      "CurrentRunMode == RunMode.Console"),
 
-    ("BC4", "D24", "进度正则必须要求 `+` 标记",
+    ("BC4", "D24", "进度正则必须允许文件序号并只认 + / - 标记",
      "Services/SevenZipService.cs",
-     r"%\s*\+"),
+     r"(?:\s+\d+)?\s*[+\-]"),
 
     ("BC5", "D25", "右键菜单注册同步必须能被 SkipShellMenuSync 关掉",
      "ViewModel/Auto7zViewModel.cs",

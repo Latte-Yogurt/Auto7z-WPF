@@ -158,6 +158,30 @@ def case_password(r):
     r.ok("没有「不是内部或外部命令」") if not bad_cmd else r.bad("出现 cmd 抢输入的症状")
 
 
+def case_missing_input(r):
+    print("\n=== C5  输入不存在：必须报错且退出码非 0（B2 的回归保护）===")
+    for args, name in (("-Z", "不存在的输入"), ("-U", "不存在的压缩包")):
+        direct = subprocess.run([str(r.app), args, str(r.work / "no_such_entry.bin")],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+        out = decode_console(direct.stdout).strip()
+        print("  %s -> 退出码=%d 输出行数=%d" % (name, direct.returncode, len(out.splitlines())))
+        r.ok("退出码非 0") if direct.returncode != 0 else r.bad("%s 的退出码仍为 0" % name)
+        r.ok("有错误提示") if out else r.bad("%s 没有任何输出" % name)
+
+
+def case_relative_path(r):
+    print("\n=== C6  相对路径：应正常完成（B3 的回归保护）===")
+    sub = r.work / "rel"
+    sub.mkdir(exist_ok=True)
+    (sub / "rel.txt").write_text("relative content", encoding="utf-8")
+    proc = subprocess.run([str(r.app), "-Z", "rel.txt"], cwd=str(sub),
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+    out = decode_console(proc.stdout)
+    made = list(sub.rglob("*.7z"))
+    print("  退出码=%d 产物=%d 末行=%s" % (proc.returncode, len(made), out.strip().splitlines()[-1] if out.strip() else "(无输出)"))
+    r.ok("退出码 0") if proc.returncode == 0 else r.bad("相对路径退出码 %d" % proc.returncode)
+    r.ok("已生成压缩包") if made else r.bad("相对路径没有产出压缩包（仍是「无法确定输出目录」）")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--app", default=str(DEFAULT_APP))
@@ -184,6 +208,8 @@ def main():
         case_merge(r)
         case_failure_exit_code(r)
         case_password(r)
+        case_missing_input(r)
+        case_relative_path(r)
     finally:
         if a.keep:
             print("\n保留临时目录: %s" % work)

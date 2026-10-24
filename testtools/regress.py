@@ -313,6 +313,25 @@ def md5_of(p):
     return h.hexdigest()
 
 
+
+
+def registered_main_exe():
+    """读右键菜单登记的 MainExePath；读不到返回 None。"""
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                             r"SOFTWARE\\Classes\\CLSID\\" + CLSID + r"\\Auto7z",
+                             0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
+        try:
+            value, _ = winreg.QueryValueEx(key, "MainExePath")
+            return value
+        finally:
+            winreg.CloseKey(key)
+    except Exception:
+        return None
+
+
+
 def shell_menu_registered():
     """检查右键菜单的挂载点在不在"""
     try:
@@ -842,6 +861,10 @@ def main():
     say("##### 收尾：检查右键菜单注册 #####")
     if not shell_menu_registered():
         say("  系统里没有右键菜单注册，无需注销（不会弹 UAC）")
+    elif registered_main_exe() and Path(registered_main_exe()).parent != APP.parent:
+        # 机器上装了一份真的 Auto7z（安装程序注册的），指向的不是本次被测产物。
+        # 那不是测试残留，去注销反而会破坏用户的安装，还可能弹 UAC。
+        say("  注册指向另一份安装（%s），不动它" % registered_main_exe())
     else:
         say("  检测到注册残留，执行注销")
         for attempt in range(3):
