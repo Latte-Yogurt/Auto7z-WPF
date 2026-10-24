@@ -70,7 +70,7 @@ Auto7z.exe [选项] [文件或目录...]
 ..\Auto7zShell\buildtool\buildtool.exe --vcvars "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
 ```
 
-第一条把 `buildtool.exe` 编译出来，第二条用它把组件编到 `..\Auto7zShell\build\Auto7zShell.dll`（`buildtool.bat` 里写死的 `VCVARS` 一般不存在，所以用 `--vcvars` 传真实路径）。把那个 dll 拷到主程序的输出目录（`bin\Release\` 或 `bin\Debug\`）里。
+第一条把 `buildtool.exe` 编译出来，第二条用它把组件编到 `..\Auto7zShell\build\Auto7zShell.dll`（`buildtool.bat` 默认用 VS 2022 Community 的 `vcvars64.bat`，装在别处就用 `--vcvars` 传真实路径）。把那个 dll 拷到主程序的输出目录（`bin\Release\` 或 `bin\Debug\`）里。
 
 构建完的目录里要有：
 

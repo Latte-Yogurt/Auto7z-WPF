@@ -109,11 +109,38 @@ namespace Auto7z_WPF.Services
             worker.IsBackground = false;
             worker.Start();
 
+            // 取消轮询：进度窗口的取消 / 关闭按钮只置一个标志，
+            // 真正的取消要由界面线程转成 CancellationToken 才能传到 7-Zip。
+            // 之前没人读这个标志 —— 点取消、点关闭都没有反应，任务照跑、窗口不动。
+            var cancelTimer = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromMilliseconds(150)
+            };
+            cancelTimer.Tick += (s, e) =>
+            {
+                if (!progress.Cancelled) return;
+                cancelTimer.Stop();
+                _viewModel.CancelCurrentTask();
+            };
+            cancelTimer.Start();
+
+            // 标题栏的 X（Alt+F4）不许直接关：先转成取消请求，
+            // 否则窗口没了、7z 还在跑，压到一半的安全目录也没人清。
+            progress.Closing += (s, e) =>
+            {
+                if (progress.AllowClose) return;
+                e.Cancel = true;
+                progress.RequestCancel();
+            };
+
             // 界面线程用嵌套消息循环等任务结束。
             // 期间消息泵继续转 —— 进度条能刷新、窗口能拖动、能弹对话框。
             Dispatcher.PushFrame(frame);
 
+            cancelTimer.Stop();
+
             // 让界面线程把最后的进度显示出来再关窗
+            progress.AllowClose = true;
             progress.Close();
 
             if (failure != null)

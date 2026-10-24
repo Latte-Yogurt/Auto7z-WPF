@@ -29,6 +29,29 @@ namespace Auto7z_WPF
 
         private void Application_Startup(object sender, StartupEventArgs e)
         {
+
+#if DEBUG
+            // 测试注入入口（仅 Debug 构建；Release 里整段被条件编译掉）。
+            // 与「把文件拖到主窗口」走同一条路径：拿到单实例锁就建主窗口并 EnqueueFiles，
+            // 拿不到就说明已有实例在跑，把路径交给它 —— 与用户拖拽后的处理完全一致。
+            if (TestHooks.TryParseFeed(e.Args, out string[] feedPaths))
+            {
+                LogService.CleanupOldLogs();
+                _singleInstance = new SingleInstanceService();
+                if (!_singleInstance.TryAcquire())
+                {
+                    SingleInstanceService.SendToRunningInstance(feedPaths);
+                    Shutdown();
+                    return;
+                }
+
+                StartNormalMode();
+                (Current.MainWindow as MainWindow)?.EnqueueFiles(feedPaths);
+                return;
+            }
+#endif
+
+
             // 命令行参数：文件路径、模式开关、注册与注销
             ShellCommandService.Parse(e.Args, out List<string> paths, out string mode,
                 out bool register, out bool unregister, out bool help, out bool setMainExePath,
@@ -109,7 +132,7 @@ namespace Auto7z_WPF
                         // 交不上（对方还没准备好），只能自己接着做
                         if (fromShell || dragAndDrop)
                         {
-                            RunFromShellMenu(paths.ToArray(), mode);
+            RunFromShellMenu(paths.ToArray(), mode);
                         }
                         else
                         {
@@ -199,13 +222,26 @@ namespace Auto7z_WPF
 
             if (mode != null) viewModel.CurrentOperationMode = ParseMode(mode);
 
+            // 输入路径一个都不存在时，命令行要明确报错并返回非 0。
+            // 以前是静默丢弃、退出码 0，脚本与计划任务没法判断成败。
+            viewModel.SetPendingFiles(paths);
+            if (!viewModel.HasPendingFiles)
+            {
+                Console.WriteLine(EnumText.GetErrorText(
+                    "Err_InputNotFound", "找不到指定的文件或目录：{0}", string.Join("; ", paths)));
+                _singleInstance.Dispose();
+                Shutdown(2);
+                return;
+            }
+
             var runner = new ConsoleTaskRunner(viewModel);
             runner.Run(paths, mode);
 
             // 任务跑完直接退出，不留在后台。
             // 用 Shutdown 而不是 Environment.Exit，让日志正常落盘。
+            // 失败或取消返回非 0，调用方才能判断成败。
             _singleInstance.Dispose();
-            Shutdown();
+            Shutdown(viewModel.LastTaskFailed ? 1 : 0);
             return;
         }
 
@@ -288,6 +324,12 @@ namespace Auto7z_WPF
         protected override void OnExit(ExitEventArgs e)
         {
             _singleInstance?.Dispose();
+
+            // 右键菜单模式没有主窗口，关闭流程走不到 ViewModel.OnClosing，
+            // 这里兜底结束 7z 子进程：否则程序退出后 7z.exe 仍在后台跑，
+            // 既占着 CPU，也可能锁住还没删干净的半成品目录。
+            SevenZipService.KillAllRunningProcesses();
+
             base.OnExit(e);
         }
     }

@@ -125,6 +125,7 @@
     <Compile Include="Services\ShellMenuTaskRunner.cs" />
     <Compile Include="Services\ShellRegistrationService.cs" />
     <Compile Include="Services\SingleInstanceService.cs" />
+    <Compile Include="Services\TestHooks.cs" />
     <Compile Include="ViewModel\Auto7zViewModel.cs" />
     <Compile Include="ViewModel\ObservableObject.cs" />
     <Compile Include="ViewModel\RelayCommand.cs" />
