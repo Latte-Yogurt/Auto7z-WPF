@@ -1,100 +1,88 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
-using System.Linq;
-using System.Xml;
-using System.Xml.Linq;
 using Auto7z_WPF.Models;
 
 namespace Auto7z_WPF.Services
 {
     /// <summary>
-    /// 配置读写服务，基于 XML 文件持久化应用程序设置。
-    /// 保存采用“临时文件 + 替换”，避免写入过程中崩溃导致配置损坏。
+    /// 应用配置的读写入口。配置是标准 JSON：顶层一个对象，每个设置项对应一个键。
+    /// 键序固定、缩进两格，用户可以手工编辑，任何现代 JSON 解析器都能读。
     /// </summary>
     public class ConfigService
     {
-        /// <summary>
-        /// 配置文件路径。
-        ///
-        /// 每次都按 <see cref="AppPaths"/> 当前的数据目录重新取。
-        /// 切换便携模式后配置会搬到新位置，缓存下来的路径就失效了。
-        /// </summary>
         public string ConfigPath => AppPaths.ConfigFilePath;
 
-        /// <summary>
-        /// 确保配置文件存在且完整。
-        ///
-        /// 文件不存在时按默认配置新建；
-        /// 文件存在但缺键时补齐缺的键，保留已有的值。
-        /// </summary>
-        public void EnsureConfigLegal()
+        #region 键表
+        // 键表集中在一处：读取、写回、缺键补齐、默认值全部从这张表推导，
+        // 四处各写一份默认值是历史上一再出错的来源（漏改一处就静默漂移）。
+        private static readonly ConfigKey[] _keys =
         {
-            try
+            new ConfigKey("Language", false),
+            new ConfigKey("Volume", false),
+            new ConfigKey("Format", false),
+            new ConfigKey("Password", false),
+            new ConfigKey("Zstd", true),
+            new ConfigKey("GenerateSHA256", true),
+            new ConfigKey("AutoSave", true),
+            new ConfigKey("MaxLevelCompress", true),
+            new ConfigKey("IsTopMost", true),
+            new ConfigKey("IsPortable", true),
+            new ConfigKey("RuntimeMode", false),
+            new ConfigKey("OutputPath", false),
+            new ConfigKey("IsSolidMode", true),
+            new ConfigKey("IsEncFileName", true),
+            new ConfigKey("CompressionLevel", false),
+            new ConfigKey("UnzipPassword", false),
+            new ConfigKey("SevenZUsageCount", false),
+            new ConfigKey("ErrorLevel", false)
+        };
+
+        private sealed class ConfigKey
+        {
+            public readonly string Name;
+
+            // 布尔键在写出时按原生 true/false，而不是带引号的 "True"。
+            public readonly bool IsBoolean;
+
+            public ConfigKey(string name, bool isBoolean)
             {
-                if (!File.Exists(ConfigPath))
-                {
-                    CreateDefaultConfig(ConfigPath);
-                    return;
-                }
-
-                var doc = XDocument.Load(ConfigPath);
-                if (doc.Root == null) return;
-
-                var missing = DefaultConfigElements()
-                    .Where(e => doc.Root.Element(e.Name) == null)
-                    .ToList();
-
-                if (missing.Count == 0) return;
-
-                foreach (var element in missing)
-                {
-                    doc.Root.Add(element);
-                }
-
-                SaveDocument(doc);
-            }
-            catch
-            {
-                // 处理失败忽略，后续读取会使用默认值
+                Name = name;
+                IsBoolean = isBoolean;
             }
         }
+        #endregion
 
+        #region 配置加载与保存
         /// <summary>
-        /// 加载配置到 AppConfig 实例。
+        /// 读配置。文件缺失或损坏时落一份默认文件并返回默认值；
+        /// 单个键解析失败只回落该键的默认值，不整份作废。
         /// </summary>
         public AppConfig Load()
         {
-            EnsureConfigLegal();
-
             var config = new AppConfig();
 
+            // 读取失败不抛给调用方：程序必须始终能启动。
             try
             {
-                var doc = XDocument.Load(ConfigPath);
-                config.Language = GetElementValue(doc, "Language", LanguageService.FallbackLanguage, LanguageService.GetSupportedLanguages());
-                config.Volume = GetElementValue(doc, "Volume", "2000", null);
-                config.Format = ParseFormat(GetElementValue(doc, "Format", "7z", null));
-                config.Password = GetElementValue(doc, "Password", string.Empty, null);
-                config.Zstd = ParseBool(doc, "Zstd", true);
-                config.GenerateMd5 = ParseBool(doc, "GenerateMD5", true);
-                config.AutoSave = ParseBool(doc, "AutoSave", true);
-                config.MaxLevelCompress = ParseBool(doc, "MaxLevelCompress", false);
-                config.IsTopMost = ParseBool(doc, "IsTopMost", false);
-                config.IsPortable = ParseBool(doc, "IsPortable", false);
-                config.RuntimeMode = ParseRuntimeMode(GetElementValue(doc, "RuntimeMode", "Balanced", null));
-                config.OutputPath = GetElementValue(doc, "OutputPath", string.Empty, null);
-                config.IsSolidMode = ParseBool(doc, "IsSolidMode", false);
-                config.IsEncFileName = ParseBool(doc, "IsEncFileName", false);
-                // 压缩等级优先读 CompressionLevel，缺失时回退到旧键 ZipLevel
-                config.CompressionLevel = ParseCompressionLevel(ReadCompressionLevel(doc));
-                config.UnzipPassword = GetElementValue(doc, "UnzipPassword", string.Empty, null);
-                config.SevenZUsageCount = ParseLong(doc, "SevenZUsageCount", 0);
-                config.ErrorLevel = ParseErrorLevel(GetElementValue(doc, "ErrorLevel", "Warning", null));
-            }
-            catch (XmlException)
-            {
-                CreateDefaultConfig(ConfigPath);
+                var values = LoadValues();
+                if (values == null) return config;
+
+                // 旧版本留下的、当前版本已不用的键在这里剔除，
+                // 让文件只描述当前版本，避免用户以为某个旧键还在生效。
+                var cleaned = RemoveDeprecated(values);
+
+                // 缺键补齐：读回来的键数少于键表就说明文件是旧版或手改少了，
+                // 补一份完整的写回，保证磁盘与代码一致。
+                if (cleaned.Count != values.Count || HasMissingKeys(values))
+                {
+                    SaveDocument(BuildDocument(values));
+                    values = LoadValues();
+                    if (values == null) return config;
+                }
+
+                ApplyValues(config, values);
             }
             catch (Exception)
             {
@@ -104,43 +92,37 @@ namespace Auto7z_WPF.Services
             return config;
         }
 
-        /// <summary>
-        /// 将 AppConfig 保存到 XML 配置文件。
-        /// </summary>
         public bool Save(AppConfig config)
         {
             if (config == null) return false;
 
-            EnsureConfigLegal();
-
             try
             {
-                var doc = LoadDocument();
-                if (doc?.Root == null) return false;
+                // 以现有文件为基底再覆盖已知键：用户手工加的扩展键得以保留。
+                var values = LoadValues() ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-                // 先剔除废弃键，避免旧配置里的无用键值一直留在文件里
-                RemoveDeprecatedKeys(doc);
+                RemoveDeprecated(values);
 
-                UpdateElement(doc, "Language", config.Language);
-                UpdateElement(doc, "Volume", config.Volume);
-                UpdateElement(doc, "Format", ArchiveFormatMap.ToSwitchValue(config.Format));
-                UpdateElement(doc, "Password", config.Password);
-                UpdateElement(doc, "Zstd", config.Zstd.ToString());
-                UpdateElement(doc, "GenerateMD5", config.GenerateMd5.ToString());
-                UpdateElement(doc, "AutoSave", config.AutoSave.ToString());
-                UpdateElement(doc, "MaxLevelCompress", config.MaxLevelCompress.ToString());
-                UpdateElement(doc, "IsTopMost", config.IsTopMost.ToString());
-                UpdateElement(doc, "IsPortable", config.IsPortable.ToString());
-                UpdateElement(doc, "RuntimeMode", config.RuntimeMode.ToString());
-                UpdateElement(doc, "OutputPath", config.OutputPath ?? string.Empty);
-                UpdateElement(doc, "IsSolidMode", config.IsSolidMode.ToString());
-                UpdateElement(doc, "IsEncFileName", config.IsEncFileName.ToString());
-                UpdateElement(doc, "CompressionLevel", config.CompressionLevel.ToString());
-                UpdateElement(doc, "UnzipPassword", config.UnzipPassword);
-                UpdateElement(doc, "SevenZUsageCount", config.SevenZUsageCount.ToString());
-                UpdateElement(doc, "ErrorLevel", config.ErrorLevel.ToString());
+                Set(values, "Language", config.Language);
+                Set(values, "Volume", config.Volume);
+                Set(values, "Format", ArchiveFormatMap.ToSwitchValue(config.Format));
+                Set(values, "Password", config.Password);
+                Set(values, "Zstd", config.Zstd.ToString());
+                Set(values, "GenerateSHA256", config.GenerateSHA256.ToString());
+                Set(values, "AutoSave", config.AutoSave.ToString());
+                Set(values, "MaxLevelCompress", config.MaxLevelCompress.ToString());
+                Set(values, "IsTopMost", config.IsTopMost.ToString());
+                Set(values, "IsPortable", config.IsPortable.ToString());
+                Set(values, "RuntimeMode", config.RuntimeMode.ToString());
+                Set(values, "OutputPath", config.OutputPath ?? string.Empty);
+                Set(values, "IsSolidMode", config.IsSolidMode.ToString());
+                Set(values, "IsEncFileName", config.IsEncFileName.ToString());
+                Set(values, "CompressionLevel", config.CompressionLevel.ToString());
+                Set(values, "UnzipPassword", config.UnzipPassword);
+                Set(values, "SevenZUsageCount", config.SevenZUsageCount.ToString(CultureInfo.InvariantCulture));
+                Set(values, "ErrorLevel", config.ErrorLevel.ToString());
 
-                return SaveDocument(doc);
+                return SaveDocument(BuildDocument(values));
             }
             catch (Exception)
             {
@@ -148,60 +130,98 @@ namespace Auto7z_WPF.Services
             }
         }
 
-        /// <summary>
-        /// 单项更新配置键值（供运行时即时写入）。
-        /// </summary>
+        /// <summary>只改单个键，其余内容原样保留。</summary>
         public bool Update(string key, string value)
         {
             if (string.IsNullOrWhiteSpace(key)) return false;
 
-            EnsureConfigLegal();
-
             try
             {
-                var doc = LoadDocument();
-                if (doc?.Root == null) return false;
+                var values = LoadValues();
+                if (values == null) return false;
 
-                RemoveDeprecatedKeys(doc);
-                UpdateElement(doc, key, value);
-                return SaveDocument(doc);
+                RemoveDeprecated(values);
+                Set(values, key, value);
+                return SaveDocument(BuildDocument(values));
             }
             catch (Exception)
             {
                 return false;
             }
         }
+        #endregion
 
-        #region 私有辅助
-
-        private XDocument LoadDocument()
+        #region 配置文档读写
+        // 读完整份配置为键值表；文件不存在时先落默认文件，损坏时重建。
+        private Dictionary<string, string> LoadValues()
         {
             if (!File.Exists(ConfigPath))
             {
-                CreateDefaultConfig(ConfigPath);
+                if (!CreateDefaultConfig(ConfigPath)) return null;
             }
 
             try
             {
-                return XDocument.Load(ConfigPath);
+                string text = File.ReadAllText(ConfigPath, new System.Text.UTF8Encoding(false));
+
+                var parsed = JsonConfig.Parse(text);
+                if (parsed != null) return parsed;
             }
-            catch (XmlException)
+            catch (IOException)
             {
-                // 配置损坏：重建默认配置后再写入
-                CreateDefaultConfig(ConfigPath, forceOverwrite: true);
-                return XDocument.Load(ConfigPath);
+                // 读不出来就重建，与解析失败同路处理。
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return null;
+            }
+
+            // 解析失败：文件损坏，重建一份默认配置。
+            if (!CreateDefaultConfig(ConfigPath, forceOverwrite: true)) return null;
+
+            try
+            {
+                return JsonConfig.Parse(File.ReadAllText(ConfigPath, new System.Text.UTF8Encoding(false)));
+            }
+            catch (Exception)
+            {
+                return null;
             }
         }
 
-        /// <summary>
-        /// 原子写入：先写 .tmp，再替换目标文件，避免中途失败留下半截 XML。
-        /// </summary>
-        private bool SaveDocument(XDocument doc)
+        // 把键值表按固定键序写成 JSON 文本；不在键表里的扩展键排到最后并保持相对顺序。
+        private static string BuildDocument(Dictionary<string, string> values)
+        {
+            var entries = new List<KeyValuePair<string, string>>(_keys.Length + 8);
+            var isBoolean = new List<bool>(_keys.Length + 8);
+
+            foreach (var key in _keys)
+            {
+                // 缺键按默认值写出：调用方可能只填了部分键。
+                string value = values.TryGetValue(key.Name, out string existing) ? existing : DefaultValue(key.Name);
+                entries.Add(new KeyValuePair<string, string>(key.Name, value));
+                isBoolean.Add(key.IsBoolean);
+            }
+
+            foreach (var pair in values)
+            {
+                if (IsKnownKey(pair.Key)) continue;
+                entries.Add(pair);
+                isBoolean.Add(false);
+            }
+
+            return JsonConfig.Build(entries, isBoolean);
+        }
+
+        // 先写临时文件再原子替换：写到一半崩溃不会留下半截 JSON。
+        private bool SaveDocument(string content)
         {
             string tempPath = ConfigPath + ".tmp";
             try
             {
-                doc.Save(tempPath);
+                Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath));
+
+                JsonConfig.WriteFile(tempPath, content);
 
                 if (File.Exists(ConfigPath))
                 {
@@ -211,24 +231,48 @@ namespace Auto7z_WPF.Services
                 {
                     File.Move(tempPath, ConfigPath);
                 }
+
                 return true;
             }
             catch
             {
-                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* 忽略 */ }
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* 有意忽略：残留的临时文件删不掉不影响配置写入结果 */ }
                 return false;
             }
         }
+        #endregion
 
-        private static string GetElementValue(XDocument doc, string elementName, string defaultValue, string[] validValues)
+        #region 键值应用与容错
+        // 把键值表灌进 AppConfig，逐键做校验与回落。
+        private static void ApplyValues(AppConfig config, Dictionary<string, string> values)
         {
-            var node = doc.Root?.Element(elementName);
-            if (node == null || string.IsNullOrWhiteSpace(node.Value))
-            {
-                return defaultValue;
-            }
+            config.Language = GetValue(values, "Language", LanguageService.FallbackLanguage, LanguageService.GetSupportedLanguages());
+            config.Volume = GetValue(values, "Volume", "2000", null);
+            config.Format = ParseFormat(GetValue(values, "Format", "7z", null));
+            config.Password = GetValue(values, "Password", string.Empty, null);
+            config.Zstd = ParseBool(values, "Zstd", true);
+            config.GenerateSHA256 = ParseBool(values, "GenerateSHA256", true);
+            config.AutoSave = ParseBool(values, "AutoSave", true);
+            config.MaxLevelCompress = ParseBool(values, "MaxLevelCompress", false);
+            config.IsTopMost = ParseBool(values, "IsTopMost", false);
+            config.IsPortable = ParseBool(values, "IsPortable", false);
+            config.RuntimeMode = ParseRuntimeMode(GetValue(values, "RuntimeMode", "Balanced", null));
+            config.OutputPath = GetValue(values, "OutputPath", string.Empty, null);
+            config.IsSolidMode = ParseBool(values, "IsSolidMode", false);
+            config.IsEncFileName = ParseBool(values, "IsEncFileName", false);
+            config.CompressionLevel = ParseCompressionLevel(GetValue(values, "CompressionLevel", CompressionLevelPreset.Normal.ToString(), null));
+            config.UnzipPassword = GetValue(values, "UnzipPassword", string.Empty, null);
+            config.SevenZUsageCount = ParseLong(values, "SevenZUsageCount", 0);
+            config.ErrorLevel = ParseErrorLevel(GetValue(values, "ErrorLevel", "Warning", null));
+        }
 
-            var value = node.Value.Trim();
+        // 取值统一做空值与白名单校验，非法内容回落到默认值，调用方不必再判空。
+        private static string GetValue(Dictionary<string, string> values, string key, string defaultValue, string[] validValues)
+        {
+            string value = values.TryGetValue(key, out string raw) ? raw : null;
+            if (string.IsNullOrWhiteSpace(value)) return defaultValue;
+
+            value = value.Trim();
 
             if (validValues != null && !Array.Exists(validValues, v => v.Equals(value, StringComparison.OrdinalIgnoreCase)))
             {
@@ -237,62 +281,38 @@ namespace Auto7z_WPF.Services
 
             return value;
         }
+
+        private static bool ParseBool(Dictionary<string, string> values, string key, bool defaultValue)
+        {
+            string value = values.TryGetValue(key, out string raw) ? raw : null;
+            if (string.IsNullOrWhiteSpace(value)) return defaultValue;
+
+            // 布尔解析失败时保持默认值而不是当作 false，否则拼错的 true 会静默改掉行为。
+            if (bool.TryParse(value.Trim(), out bool result))
+            {
+                return result;
+            }
+
+            return defaultValue;
+        }
+
+        private static long ParseLong(Dictionary<string, string> values, string key, long defaultValue)
+        {
+            string value = values.TryGetValue(key, out string raw) ? raw : null;
+            if (string.IsNullOrWhiteSpace(value)) return defaultValue;
+
+            // 使用量统计不接受负数，负数与非法文本同样按默认值处理，避免统计值倒退。
+            if (long.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long result) && result >= 0)
+            {
+                return result;
+            }
+
+            return defaultValue;
+        }
         #endregion
 
-        #region 配置值解析
-
-
-        private static bool ParseBool(XDocument doc, string elementName, bool defaultValue)
-        {
-            var node = doc.Root?.Element(elementName);
-            if (node == null || string.IsNullOrWhiteSpace(node.Value))
-            {
-                return defaultValue;
-            }
-
-            if (bool.TryParse(node.Value.Trim(), out var result))
-            {
-                return result;
-            }
-
-            return defaultValue;
-        }
-
-        private static long ParseLong(XDocument doc, string elementName, long defaultValue)
-        {
-            var node = doc.Root?.Element(elementName);
-            if (node == null || string.IsNullOrWhiteSpace(node.Value))
-            {
-                return defaultValue;
-            }
-
-            if (long.TryParse(node.Value.Trim(), out var result) && result >= 0)
-            {
-                return result;
-            }
-
-            return defaultValue;
-        }
-
-        private static string ReadCompressionLevel(XDocument doc)
-        {
-            // 新键优先：一旦保存过新版配置，旧键就不再参与解析，避免旧值反向覆盖新值
-            var current = doc.Root?.Element("CompressionLevel");
-            if (current != null && !string.IsNullOrWhiteSpace(current.Value))
-            {
-                return current.Value.Trim();
-            }
-
-            var legacy = doc.Root?.Element("ZipLevel");
-            return legacy != null && !string.IsNullOrWhiteSpace(legacy.Value)
-                ? legacy.Value.Trim()
-                : CompressionLevelPreset.Normal.ToString();
-        }
-
-        /// <summary>
-        /// 解析压缩格式。无法识别时按 7z 处理，并记一条警告，
-        /// 免得配置里的格式值写错了却悄无声息。
-        /// </summary>
+        #region 格式与枚举解析
+        // 无法识别的格式只记一条警告并继续按 7z 处理，配置异常不该阻断启动。
         private static ArchiveFormat ParseFormat(string text)
         {
             ArchiveFormat? parsed = ArchiveFormatMap.Parse(text);
@@ -305,10 +325,6 @@ namespace Auto7z_WPF.Services
             return ArchiveFormat.SevenZip;
         }
 
-        /// <summary>
-        /// 解析日志级别：Info / Warning / Error。
-        /// 这是配置文件中的隐藏开关（界面上没有对应控件），用于调节日志详细程度。
-        /// </summary>
         private static LogService.ErrorLevel ParseErrorLevel(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return LogService.ErrorLevel.Warning;
@@ -323,9 +339,7 @@ namespace Auto7z_WPF.Services
             return LogService.ErrorLevel.Warning;
         }
 
-        /// <summary>
-        /// 运行模式：存枚举名（Low/Balanced/High），同时兼容各语言的显示文本。
-        /// </summary>
+        // 运行模式与压缩等级的文本先认枚举名（英文），再交给 EnumText 按当前语言反查，最后回落默认值。
         private static RuntimeModePreset ParseRuntimeMode(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return RuntimeModePreset.Balanced;
@@ -348,9 +362,6 @@ namespace Auto7z_WPF.Services
             return EnumText.ParseRuntimeMode(text);
         }
 
-        /// <summary>
-        /// 压缩等级：存枚举名，同时兼容旧键 ZipLevel 与各语言的显示文本。
-        /// </summary>
         private static CompressionLevelPreset ParseCompressionLevel(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return CompressionLevelPreset.Normal;
@@ -375,32 +386,34 @@ namespace Auto7z_WPF.Services
         }
         #endregion
 
-        #region 配置写回
-
-
-        private static void UpdateElement(XDocument doc, string elementName, string value)
+        #region 节点写回与废弃键清理
+        private static void Set(Dictionary<string, string> values, string key, string value)
         {
-            var element = doc.Root?.Element(elementName);
-            if (element != null)
-            {
-                element.Value = value ?? string.Empty;
-            }
-            else
-            {
-                doc.Root?.Add(new XElement(elementName, value ?? string.Empty));
-            }
+            values[key] = value ?? string.Empty;
         }
 
-        /// <summary>
-        /// 已废弃的配置键。这些键在早期版本中用于保存窗口位置与缩放，
-        /// 现在窗口位置由系统管理、也不再记录缩放，因此读写时直接剔除，
-        /// 避免配置文件里堆积无用键值。
-        ///
-        /// DisableVolume：现在用“分卷大小 = 0 表示不分卷”来表达，不再需要单独的开关键。
-        /// Portable：便携模式未实现，配置项没有对应的行为。
-        /// ZipLevel：旧版压缩等级的键名，现为 CompressionLevel，读取时已做兼容。
-        /// MainText：旧版主提示文本的键名，现由界面绑定视图模型提供。
-        /// </summary>
+        private static bool IsKnownKey(string key)
+        {
+            foreach (var candidate in _keys)
+            {
+                if (candidate.Name.Equals(key, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+
+            return false;
+        }
+
+        private static bool HasMissingKeys(Dictionary<string, string> values)
+        {
+            foreach (var key in _keys)
+            {
+                if (!values.ContainsKey(key.Name)) return true;
+            }
+
+            return false;
+        }
+
+        // 这些键旧版本用过，继续留在文件里会被误认为仍然生效；
+        // 写回前统一剔除，让配置文件只描述当前版本。
         private static readonly string[] _deprecatedKeys =
         {
             "ScreenWidth",
@@ -415,35 +428,61 @@ namespace Auto7z_WPF.Services
             "IsDeleteTemp"
         };
 
-        /// <summary>
-        /// 从配置文档中移除已废弃的键。
-        /// </summary>
-        private static void RemoveDeprecatedKeys(XDocument doc)
+        private static Dictionary<string, string> RemoveDeprecated(Dictionary<string, string> values)
         {
-            var root = doc.Root;
-            if (root == null) return;
-
             foreach (var key in _deprecatedKeys)
             {
-                var element = root.Element(key);
-                element?.Remove();
+                values.Remove(key);
+            }
+
+            return values;
+        }
+        #endregion
+
+        #region 默认配置重建
+        private static string DefaultValue(string key)
+        {
+            switch (key)
+            {
+                case "Language": return LanguageService.ResolveSystemLanguage();
+                case "Volume": return "2000";
+                case "Format": return "7z";
+                case "Password": return string.Empty;
+                case "Zstd": return bool.TrueString;
+                case "GenerateSHA256": return bool.TrueString;
+                case "AutoSave": return bool.TrueString;
+                case "MaxLevelCompress": return bool.FalseString;
+                case "IsTopMost": return bool.FalseString;
+                case "IsPortable": return bool.FalseString;
+                case "RuntimeMode": return RuntimeModePreset.Balanced.ToString();
+                case "OutputPath": return string.Empty;
+                case "IsSolidMode": return bool.FalseString;
+                case "IsEncFileName": return bool.FalseString;
+                case "CompressionLevel": return CompressionLevelPreset.Normal.ToString();
+                case "UnzipPassword": return string.Empty;
+                case "SevenZUsageCount": return "0";
+                case "ErrorLevel": return "Warning";
+                default: return string.Empty;
             }
         }
 
-        private static void CreateDefaultConfig(string configPath, bool forceOverwrite = false)
+        // 重建用于文件缺失与文件损坏两种情况；损坏时必须覆盖写入，否则修不好的旧文件会一直被读到。
+        private static bool CreateDefaultConfig(string configPath, bool forceOverwrite = false)
         {
-            if (File.Exists(configPath) && !forceOverwrite)
-            {
-                return;
-            }
+            if (File.Exists(configPath) && !forceOverwrite) return true;
 
-            var defaultConfig = new XDocument(
-                new XElement("Configuration", DefaultConfigElements()));
+            var values = new Dictionary<string, string>(_keys.Length, StringComparer.OrdinalIgnoreCase);
+            foreach (var key in _keys)
+            {
+                values[key.Name] = DefaultValue(key.Name);
+            }
 
             string tempPath = configPath + ".tmp";
             try
             {
-                defaultConfig.Save(tempPath);
+                Directory.CreateDirectory(Path.GetDirectoryName(configPath));
+
+                JsonConfig.WriteFile(tempPath, BuildDocument(values));
 
                 if (File.Exists(configPath))
                 {
@@ -453,41 +492,15 @@ namespace Auto7z_WPF.Services
                 {
                     File.Move(tempPath, configPath);
                 }
+
+                return true;
             }
             catch
             {
-                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* 忽略 */ }
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* 有意忽略：残留的临时文件删不掉不影响配置写入结果 */ }
+                return false;
             }
         }
-
-        /// <summary>
-        /// 默认配置里的各个键。新建配置与补齐缺失的键都用这一份。
-        /// </summary>
-        private static List<XElement> DefaultConfigElements()
-        {
-            return new List<XElement>
-            {
-                new XElement("Language", LanguageService.ResolveSystemLanguage()),
-                new XElement("Volume", "2000"),
-                new XElement("Format", "7z"),
-                new XElement("Password", string.Empty),
-                new XElement("Zstd", "True"),
-                new XElement("GenerateMD5", "True"),
-                new XElement("AutoSave", "True"),
-                new XElement("MaxLevelCompress", "False"),
-                new XElement("IsTopMost", "False"),
-                new XElement("IsPortable", "False"),
-                new XElement("RuntimeMode", RuntimeModePreset.Balanced.ToString()),
-                new XElement("OutputPath", string.Empty),
-                new XElement("IsSolidMode", "False"),
-                new XElement("IsEncFileName", "False"),
-                new XElement("CompressionLevel", CompressionLevelPreset.Normal.ToString()),
-                new XElement("UnzipPassword", string.Empty),
-                new XElement("SevenZUsageCount", "0"),
-                new XElement("ErrorLevel", "Warning")
-            };
-        }
-
         #endregion
     }
 }

@@ -7,6 +7,8 @@
 
     <Application.Resources>
         <ResourceDictionary>
+            <!-- 这里合并的 zh-CN 只是让 XAML 设计器与启动瞬间有东西可显示；
+                 真实语言在 App 启动后由 LanguageService 按配置整份替换。 -->
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Resources\WindowDirectory\UIResource.xaml"/>
                 <ResourceDictionary Source="Resources\Languages\zh-CN.xaml"/>

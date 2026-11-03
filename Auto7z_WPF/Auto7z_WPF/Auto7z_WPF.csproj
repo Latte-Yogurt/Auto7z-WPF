@@ -1,25 +1,10 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <ProjectGuid Condition=" '$(ProjectGuid)' == '' ">{D9E00C7F-8FD4-4C5E-85D1-F48735C63702}</ProjectGuid>
-    <!-- Console 子系统，不是 WinExe。
-         这不是为了在双击运行时弹黑窗，而是为了让 **cmd 会等程序跑完**：
-         cmd 启动 GUI 子系统程序时**不等**它结束，提示符立刻就还回来了，
-         用户接着敲的输入会被 cmd 当成自己的命令执行
-         （表现为「'n' 不是内部或外部命令」）。
-         程序自己的输出也会跟提示符交错，看着像被截断。
-         密码输入同样受害 —— 敲完回车内容进了 cmd，程序永远等不到。
-         改成 Console 子系统后 cmd 会等，交互才正常。
-
-         双击运行时多出来的黑窗由程序自己藏掉：
-         启动时判断控制台是不是自己独占的（GetConsoleProcessList 只数到自己），
-         是就把那个控制台窗口隐藏掉。见 ConsoleAttach.HideOwnConsoleWindow()。
-         用户自己的 cmd 里启动时不隐藏，输出照常显示。 -->
-    <!-- 图形入口由 Auto7z_WPF.Gui.csproj 设置 GuiEntry=true 后再 import 本工程：
-         同一份源码编两份，只差 PE 子系统。详见 Auto7z_WPF.Gui.csproj。 -->
     <OutputType Condition=" '$(GuiEntry)' != 'true' and '$(OutputType)' == '' ">Exe</OutputType>
     <OutputType Condition=" '$(GuiEntry)' == 'true' and '$(OutputType)' == '' ">WinExe</OutputType>
     <RootNamespace>Auto7z_WPF</RootNamespace>
@@ -43,7 +28,7 @@
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
     <ApplicationRevision>0</ApplicationRevision>
-    <ApplicationVersion>1.0.0.%2a</ApplicationVersion>
+    <ApplicationVersion>2.1.0.%2a</ApplicationVersion>
     <UseApplicationTrust>false</UseApplicationTrust>
     <PublishWizardCompleted>true</PublishWizardCompleted>
     <BootstrapperEnabled>true</BootstrapperEnabled>
@@ -71,7 +56,6 @@
     <Prefer32Bit>false</Prefer32Bit>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(GuiEntry)' == 'true' ">
-    <!-- 图形入口的编译开关：App.xaml.cs 用它把「只做图形的事」编进去 -->
     <DefineConstants>$(DefineConstants);GUI_ENTRY</DefineConstants>
   </PropertyGroup>
   <PropertyGroup>
@@ -112,6 +96,7 @@
     <Compile Include="Services\AppState.cs" />
     <Compile Include="Services\ArchiveFormatMap.cs" />
     <Compile Include="Services\ConfigService.cs" />
+    <Compile Include="Services\JsonConfig.cs" />
     <Compile Include="Services\ConsoleTaskRunner.cs" />
     <Compile Include="Services\ConsoleAttach.cs" />
     <Compile Include="Services\LaunchContext.cs" />
@@ -119,7 +104,7 @@
     <Compile Include="Services\FileSystemHelper.cs" />
     <Compile Include="Services\LanguageService.cs" />
     <Compile Include="Services\LogService.cs" />
-    <Compile Include="Services\Md5Service.cs" />
+    <Compile Include="Services\SHA256Service.cs" />
     <Compile Include="Services\SevenZipService.cs" />
     <Compile Include="Services\ShellCommandService.cs" />
     <Compile Include="Services\ShellMenuTaskRunner.cs" />

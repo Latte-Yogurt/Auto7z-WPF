@@ -7,40 +7,38 @@ using System.Windows.Threading;
 namespace Auto7z_WPF.Services
 {
     /// <summary>
-    /// 消息提示服务。
-    /// 负责在界面线程上弹出提示框，并返回用于写日志的文本。
-    ///
-    /// 对话框一律用 WPF 窗口而不是 MessageBox：
-    /// MessageBox 是 Win32 模态框，在 WPF 的 Dispatcher 回调里调用会与 WPF 的消息循环互锁，
-    /// 表现为弹窗显示得出但点击无响应，任务一直卡住。
+    /// 统一的提示框入口，负责把消息同步地显示出来并把日志文案回传给调用方。
     /// </summary>
     public class MessageService
     {
+        #region 资源键与提示框
         private const string ErrorTitleKey = "ErrorTitle";
         private const string WarningTitleKey = "WarningTitle";
         private const string ErrorHeadingKey = "ErrorMessage";
         private const string WarningHeadingKey = "WarningMessage";
 
-        /// <summary>错误提示。</summary>
+        /// <summary>显示错误提示，并通过 <paramref name="logMessage"/> 交回可写入日志的整段文案。</summary>
+        /// <param name="detail">错误详情。</param>
+        /// <param name="logMessage">拼好的日志文案。</param>
         public void ShowError(string detail, out string logMessage)
         {
             logMessage = Compose(ErrorHeadingKey, "Error: ", detail);
             Show(logMessage, ErrorTitleKey, "Error");
         }
 
-        /// <summary>警告提示。</summary>
+        /// <summary>显示警告提示，并通过 <paramref name="logMessage"/> 交回可写入日志的整段文案。</summary>
+        /// <param name="detail">警告详情。</param>
+        /// <param name="logMessage">拼好的日志文案。</param>
         public void ShowWarning(string detail, out string logMessage)
         {
             logMessage = Compose(WarningHeadingKey, "Warning: ", detail);
             Show(logMessage, WarningTitleKey, "Warning");
         }
 
-        /// <summary>
-        /// 询问式提示（是/否）。
-        /// </summary>
-        /// <param name="detail">提示内容。</param>
-        /// <param name="logMessage">用于写日志的文本。</param>
-        /// <returns>用户点“是”返回 true；点“否”或直接关闭返回 false。</returns>
+        /// <summary>弹出是/否询问框并阻塞等待用户选择。</summary>
+        /// <param name="detail">询问内容。</param>
+        /// <param name="logMessage">回传的日志文案。</param>
+        /// <returns>用户选了「是」返回 true。</returns>
         public bool AskYesNo(string detail, out string logMessage)
         {
             logMessage = detail;
@@ -48,7 +46,6 @@ namespace Auto7z_WPF.Services
             var app = Application.Current;
             if (app == null) return false;
 
-            // 应用正在退出时不再弹窗
             if (app.Dispatcher.HasShutdownStarted || app.Dispatcher.HasShutdownFinished) return false;
 
             bool confirmed = false;
@@ -66,31 +63,26 @@ namespace Auto7z_WPF.Services
 
             return confirmed;
         }
+        #endregion
 
-        /// <summary>
-        /// 取对话框的宿主窗口。
-        ///
-        /// 没有主窗口时（右键菜单模式）返回 null，对话框独立显示。
-        /// 不能直接用 app.MainWindow：没有主窗口时 WPF 会把刚建好的对话框
-        /// 当成 MainWindow 返回，设置 Owner 会抛「无法将 Owner 属性设置为它本身」。
-        /// </summary>
+        #region 窗体归属
         private static Window ResolveOwner(Application app)
         {
             Window main = app.MainWindow;
             if (main == null) return null;
+            // 主窗口本身就是提示框时不能再把它设成 Owner：
+            // 自引用会在 Show 时抛 InvalidOperationException，而这个异常会把提示框整个吞掉。
             if (main is MessageWindow) return null;
             return main;
         }
+        #endregion
 
-        /// <summary>
-        /// 显示提示框。只有“确定”一个按钮，用于错误与警告。
-        /// </summary>
+        #region 提示框显示
         private static void Show(string message, string titleKey, string titleFallback)
         {
             var app = Application.Current;
             if (app == null) return;
 
-            // 应用正在退出时不再弹窗，否则会阻塞关闭流程
             if (app.Dispatcher.HasShutdownStarted || app.Dispatcher.HasShutdownFinished) return;
 
             ShowDialogAndWait(
@@ -100,7 +92,6 @@ namespace Auto7z_WPF.Services
                     var window = new MessageWindow { Owner = ResolveOwner(app) };
                     window.SetTitle(EnumText.GetResourceText(titleKey, titleFallback));
 
-                    // 单按钮模式：正文换成提示内容，只留“确定”
                     window.ApplyOkButton();
                     window.SetMessage(message);
 
@@ -108,34 +99,19 @@ namespace Auto7z_WPF.Services
                 });
         }
 
-        /// <summary>
-        /// 在界面线程上显示一个对话框，等它关闭后返回。
-        ///
-        /// 对话框用 Show() 显示，外面套一个嵌套的 DispatcherFrame 等它关掉。
-        ///
-        /// 不用 Dispatcher.Invoke 等待：
-        /// Invoke 会把界面线程的调度优先级压到 Send，
-        /// 渲染和输入消息都排不上队，表现为弹窗显示得出却点不动。
-        /// DispatcherFrame 以正常优先级跑嵌套循环，界面在弹窗期间依旧能正常响应。
-        ///
-        /// 主窗口开启“窗口置顶”时会把对话框盖住，弹窗期间临时取消置顶，关闭后恢复。
-        ///
-        /// <param name="app">应用程序对象。</param>
-        /// <param name="createWindow">在界面线程上创建对话框。</param>
-        /// </summary>
         private static void ShowDialogAndWait(Application app, Func<Window> createWindow)
         {
-            // 后台线程在这里等，界面线程跑嵌套循环
             var completed = new ManualResetEventSlim(false);
 
             Action show = () =>
             {
-                // MainWindow 只能在界面线程上取
                 Window main = app.MainWindow;
                 bool wasTopmost = false;
 
                 try
                 {
+                    // 主窗口开着置顶时提示框会被压在下面，看起来就像程序没反应；
+                    // 这里先临时摘掉置顶，关窗时再恢复原状。
                     if (main != null && main.Topmost)
                     {
                         wasTopmost = true;
@@ -154,7 +130,8 @@ namespace Auto7z_WPF.Services
 
                     window.Show();
 
-                    // 跑嵌套循环直到窗口关闭
+                    // Show 之后立刻返回会让提示框一闪而过，用 DispatcherFrame 把当前调用栈停在这里，
+                    // 等到窗口关闭事件把 Continue 置 false 才继续往下走，效果等价于模态对话框。
                     var frame = new DispatcherFrame();
                     window.Closed += (s, e) => frame.Continue = false;
                     Dispatcher.PushFrame(frame);
@@ -177,12 +154,11 @@ namespace Auto7z_WPF.Services
                 }
                 else
                 {
-                    // 用 BeginInvoke 而不是 Invoke：
-                    // Invoke 会把界面线程的优先级压到 Send，渲染与输入都排不上队，
-                    // 弹窗会显示得出但点不动。
                     app.Dispatcher.BeginInvoke(show);
                 }
 
+                // 非 UI 线程调用时必须等 UI 线程把窗口关掉才返回，
+                // 否则调用方拿到的永远是最初的默认结果。
                 completed.Wait();
             }
             catch
@@ -200,5 +176,6 @@ namespace Auto7z_WPF.Services
             string heading = EnumText.GetResourceText(headingKey, headingFallback);
             return string.IsNullOrWhiteSpace(detail) ? heading : heading + detail;
         }
+        #endregion
     }
 }

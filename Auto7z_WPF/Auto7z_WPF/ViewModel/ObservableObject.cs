@@ -5,9 +5,6 @@ using System.Windows.Input;
 
 namespace Auto7z_WPF
 {
-    /// <summary>
-    /// 支持属性变更通知的基础类。
-    /// </summary>
     public class ObservableObject : INotifyPropertyChanged
     {
         public event PropertyChangedEventHandler PropertyChanged;
@@ -19,6 +16,8 @@ namespace Auto7z_WPF
 
         protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
         {
+            // 值没变就不发通知，避免绑定层白重算一遍；
+            // 需要"相同值也刷新"的场景必须显式传名字并自己调 OnPropertyChanged。
             if (Equals(field, value)) return false;
 
             field = value;
@@ -27,9 +26,6 @@ namespace Auto7z_WPF
         }
     }
 
-    /// <summary>
-    /// 通用命令实现，支持 CanExecute 变更通知（用于任务执行期间的界面禁用）。
-    /// </summary>
     public class RelayCommand<T> : ICommand
     {
         private readonly Action<T> _execute;
@@ -57,17 +53,15 @@ namespace Auto7z_WPF
         {
             CanExecuteChanged?.Invoke(this, EventArgs.Empty);
 
-            // 通知 CommandManager 重新查询可执行状态，
-            // 否则输入绑定缓存的旧状态不会更新
+            // 只发自己的事件不够：WPF 的按钮还挂在 CommandManager 的全局重查询上，
+            // 不主动失效的话，命令可用性变了按钮也不会跟着变灰。
             CommandManager.InvalidateRequerySuggested();
         }
 
-        /// <summary>
-        /// 宽容地把命令参数转换为 T：参数为 null 时返回默认值，类型不匹配时也返回默认值，
-        /// 避免 (T)parameter 在参数缺失时抛出 InvalidCastException。
-        /// </summary>
         private static T Cast(object parameter)
         {
+            // 参数类型对不上时给 default 而不是抛异常：XAML 的 CommandParameter
+            // 是字符串，泛型参数传不进来属于常态，抛异常会让整次点击崩掉。
             if (parameter is T typed) return typed;
             if (parameter == null) return default(T);
             return default(T);

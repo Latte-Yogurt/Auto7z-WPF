@@ -2,7 +2,7 @@
 
 Windows 图形化压缩工具，基于 7-Zip ZS 内核（7-Zip 22.01 ZS v1.5.5 R3，x64）。
 
-- 图形界面：拖文件进来就能压缩或解压，支持密码、分卷、MD5、固实压缩、文件名加密
+- 图形界面：拖文件进来就能压缩或解压，支持密码、分卷、SHA256、固实压缩、文件名加密
 - 右键菜单：资源管理器里右键文件或文件夹，直接「用 Auto7z 压缩 / 用 Auto7z 解压」
 - 命令行：可以脚本化调用，支持自动 / 压缩 / 解压三种模式
 - 便携模式：数据全放在程序目录，拔了就能带走
@@ -33,15 +33,19 @@ Windows 图形化压缩工具，基于 7-Zip ZS 内核（7-Zip 22.01 ZS v1.5.5 R
 ```
 Auto7z.exe [选项] [文件或目录...]
 
-  -A            自动模式, 压缩包解压、其余文件压缩 (默认)
-  -Z            压缩模式
-  -U            解压模式
+  -a            自动模式, 压缩包解压、其余文件压缩 (默认)
+  -z            压缩模式
+  -uz           解压模式
   -r            注册右键菜单 (需要管理员权限)
   -ur           注销右键菜单 (需要管理员权限)
   -h            显示本说明
 ```
 
+开关不区分大小写（`-A` 与 `-a` 等价），以 `-h` 打印出来的小写写法为准。
+
 不带选项直接给路径时按自动模式处理。命令行模式**不弹界面**，进度输出到控制台，任务做完进程自动退出。
+
+`-h` 的用法说明现在按配置里的界面语言输出（简体 / 繁体 / 英文各一套），不再是写死的中文。
 
 多文件时「是否合并成一个压缩包」改成在控制台里问。读不到输入（管道、计划任务等场景）就按合并处理。
 
@@ -49,8 +53,6 @@ Auto7z.exe [选项] [文件或目录...]
 不会再拉起主窗口；图形入口是 `Auto7zGUI.exe`。
 
 把文件拖到 `Auto7zGUI.exe` 图标上，走的也是这条路。
-
-另外还有一个内部用的开关 `--set-main-exe-path`：提权后的进程用它只把主程序路径写进注册表，写完就退出。正常使用碰不到。
 
 ## 构建
 
@@ -63,7 +65,7 @@ Auto7z.exe [选项] [文件或目录...]
 
 `msbuild` 通常不在 `PATH` 上 —— 用完整路径，或从 Visual Studio 开发者命令行里跑。
 
-右键菜单组件是独立的 C++ 项目，见 [`Auto7zShell`](../Auto7zShell/README.md)。要出右键菜单功能，两个都要构建：
+右键菜单组件是独立的 C++ 项目，源码在 `..\Auto7zShell\src\`，构建工具在 `..\Auto7zShell\buildtool\`。要出右键菜单功能，两个都要构建：
 
 ```bat
 ..\Auto7zShell\buildtool\buildtool.bat
@@ -209,34 +211,51 @@ end;
 
 ## 配置
 
-配置文件在 `%LOCALAPPDATA%\Auto7z\Auto7z.xml`（便携模式是程序目录下的 `.config\Auto7z\Auto7z.xml`）。
+配置文件在 `%LOCALAPPDATA%\Auto7z\Auto7z.json`（便携模式是程序目录下的 `.config\Auto7z\Auto7z.json`）。
 
-| 键 | 说明 | 默认值 |
-|---|---|---|
-| `Language` | 界面语言：`zh-CN` / `zh-TW` / `en-US` | 按系统语言推断 |
-| `Volume` | 分卷大小（MB），`0` 表示不分卷 | `2000` |
-| `Format` | 压缩格式：`7z` / `zip` / `tar` | `7z` |
-| `Password` | 压缩密码 | 空 |
-| `UnzipPassword` | 解压密码 | 空 |
-| `Zstd` | tar 归档是否用 zstd 压缩 | `True` |
-| `GenerateMD5` | 是否生成 MD5 校验文件 | `True` |
-| `AutoSave` | 是否自动保存设置 | `True` |
-| `MaxLevelCompress` | 是否用最高压缩等级 | `False` |
-| `IsSolidMode` | 是否固实压缩 | `False` |
-| `IsEncFileName` | 是否加密文件名（仅 7z，且需要密码） | `False` |
-| `CompressionLevel` | 压缩等级：`Store` / `Normal` / `Ultra` | `Normal` |
-| `OutputPath` | 输出目录，空表示源文件旁边 | 空 |
-| `IsTopMost` | 窗口是否置顶 | `False` |
-| `IsPortable` | 是否便携模式 | `False` |
-| `RuntimeMode` | 运行模式：`Low` / `Balanced` / `High` | `Balanced` |
-| `SevenZUsageCount` | 7z 使用次数 | `0` |
-| `ErrorLevel` | 日志级别：`Info` / `Warning` / `Error`（隐藏开关，界面上没有对应控件） | `Warning` |
+格式是**标准 JSON**（RFC 8259）：顶层一个对象，值为原生类型 —— 布尔写 `true` / `false`，
+数字写裸值，其余写字符串。UTF-8 无 BOM，缩进两格，键序固定。任何现代 JSON 解析器
+（`jq`、Python 的 `json`、JS 的 `JSON.parse`、`System.Text.Json`）都能直接读它。
+
+```json
+{
+  "Language": "zh-CN",
+  "Volume": 2000,
+  "Format": "7z",
+  "Zstd": true,
+  "CompressionLevel": "Normal"
+}
+```
+
+| 键 | 类型 | 说明 | 默认值 |
+|---|---|---|---|
+| `Language` | 字符串 | 界面语言：`zh-CN` / `zh-TW` / `en-US` | 按系统语言推断 |
+| `Volume` | 数字 | 分卷大小（MB），`0` 表示不分卷 | `2000` |
+| `Format` | 字符串 | 压缩格式：`7z` / `zip` / `tar` | `7z` |
+| `Password` | 字符串 | 压缩密码 | 空 |
+| `UnzipPassword` | 字符串 | 解压密码 | 空 |
+| `Zstd` | 布尔 | tar 归档是否用 zstd 压缩 | `true` |
+| `GenerateSHA256` | 布尔 | 是否生成 SHA256 校验文件 | `true` |
+| `AutoSave` | 布尔 | 是否自动保存设置 | `true` |
+| `MaxLevelCompress` | 布尔 | 是否用最高压缩等级 | `false` |
+| `IsSolidMode` | 布尔 | 是否固实压缩 | `false` |
+| `IsEncFileName` | 布尔 | 是否加密文件名（仅 7z，且需要密码） | `false` |
+| `CompressionLevel` | 字符串 | 压缩等级：`Store` / `Normal` / `Ultra` | `Normal` |
+| `OutputPath` | 字符串 | 输出目录，空表示源文件旁边 | 空 |
+| `IsTopMost` | 布尔 | 窗口是否置顶 | `false` |
+| `IsPortable` | 布尔 | 是否便携模式 | `false` |
+| `RuntimeMode` | 字符串 | 运行模式：`Low` / `Balanced` / `High`，控制线程数与字典大小 | `Balanced` |
+| `SevenZUsageCount` | 数字 | 7z 使用次数 | `0` |
+| `ErrorLevel` | 字符串 | 日志级别：`Info` / `Warning` / `Error`（隐藏开关，界面上没有对应控件） | `Warning` |
 
 `Format` 只支持 `7z` / `zip` / `tar` 三种输出。gz、bz2、xz、zst、rar 等只用于**识别**（判断某个文件是不是压缩包、决定自动模式下解不解），不能作为输出格式。解压不写死格式，由 7-Zip 按文件头自己认，所以 rar / gz / xz / cab / tar.zst 都能解开。
 
 `Volume` 有三条限制：tar 格式不支持分卷（7-Zip 会生成解不开的 `.tar.001`）；输入总大小不超过分卷大小时不切分；输入为空时不切分（否则会产出一个孤零零的 `.7z.001`）。
 
-配置文件坏了会自动重建，缺键也会补齐。早期版本用过的 `ZipLevel`、`Portable`、`MainText` 等旧键在读写时会被剔除。
+`RuntimeMode` 与 `CompressionLevel` 是两个独立的旋钮：前者决定 `-mmt` 线程数（低占用 1、均衡取一半核心、高性能取满全部核心），后者决定 `-md` 字典大小（标准 4/16/32 MB、极限 16/32/64 MB，按低/均衡/高排列）。存储等级不下发 `-md`——那一档 7-Zip 用 Copy 方法，本来就没有字典。
+
+配置文件坏了会自动重建，缺键也会补齐；单个键的值非法只回落该键的默认值，不整份作废。
+早期版本用过的 `ZipLevel`、`Portable`、`MainText` 等旧键在读写时会被剔除。
 
 ## 多语言
 
@@ -275,7 +294,8 @@ Auto7z_WPF/
 │   ├── AppPaths.cs             数据目录定位（根目录 + 数据目录名）
 │   ├── AppState.cs             运行时状态
 │   ├── ArchiveFormatMap.cs     格式 ↔ 7-Zip -t 开关、按魔数识别格式
-│   ├── ConfigService.cs        配置读写
+│   ├── ConfigService.cs        配置读写（JSON）
+│   ├── JsonConfig.cs           最小 JSON 读写（零 NuGet、零反射）
 │   ├── ConsoleAttach.cs        借用父进程(cmd)的控制台，并重建标准流绑定
 │   ├── ConsoleTaskRunner.cs    命令行模式的任务执行
 │   ├── EnumText.cs             枚举与界面文案的多语言文本
@@ -283,13 +303,14 @@ Auto7z_WPF/
 │   ├── LanguageService.cs      语言切换
 │   ├── LaunchContext.cs        判定启动方式（拖拽 / 双击 / 命令行）
 │   ├── LogService.cs           日志
-│   ├── Md5Service.cs           MD5 计算
+│   ├── SHA256Service.cs        SHA256 计算（文件/目录的流式哈希与 .sha256 产物）
 │   ├── MessageService.cs       弹窗
 │   ├── SevenZipService.cs      调 7z.exe 的核心逻辑
 │   ├── ShellCommandService.cs  命令行解析
 │   ├── ShellMenuTaskRunner.cs  右键菜单 / 拖拽模式的任务执行（无主窗口）
 │   ├── ShellRegistrationService.cs  右键菜单注册
 │   ├── SingleInstanceService.cs    单实例与任务交接
+│   ├── TestHooks.cs            测试注入入口（仅 Debug 构建）
 │   └── WindowHelper.cs         窗口辅助
 ├── ViewModel/
 │   ├── Auto7zViewModel.cs      主视图模型
@@ -344,10 +365,29 @@ PE 子系统这一个字段同时决定「cmd 等不等」与「启动时给不�
 中文密码打不进去。压缩包的密码本来就允许中文，能输进去比看不见更重要。
 代价是密码在界面上是明文显示的。
 
+**SHA256 计算只有一处实现**：`Services/SHA256Service.cs` 是本项目所有 SHA256 调用的唯一入口，
+`SevenZipService.GenerateSHA256` 也是转手交给它。
+不要在调用方内联第二份哈希循环：缓冲区大小与 `FileShare` 一旦跟这个类不一致，
+就是一份谁也测不出来的静默分叉。
+
+`SHA256Service` 对「读不到的文件」是**跳过而不是整体失败**（批量计算不会因为一个坏文件全废）。
+代价是它自己不报错，所以调用方要负责比对条数：少算了就明确提示，别让用户拿到一份
+不完整的 `.sha256` 却毫不知情。
+
+`.sha256` 写成 **UTF-8 无 BOM**。GBK 遇到非中文字符集的文件名会乱码丢字，而 BOM 更麻烦 ——
+不少校验解析软件会把带 BOM 的首行哈希当成无效内容，用户拿到的文件「看起来有值」却校验不过。
+
+**大目录的大小是延迟统计的**：拖拽/右键进来时，界面线程只做存在性检查
+（`PendingFile.CreateLazy`），统计目录字节数这一步移到任务线程上（`PendingFileBatch.EnsureSizes`）。
+拖一个几万文件的目录进来，界面不会再冻住。
+这个大小只用于分卷判断，晚一点算没有副作用。
+
 **传参走共享内存**：右键菜单选上百个文件时命令行装不下（32767 字符上限），
 所以文件列表走命名共享内存，命令行只带一个引用。
 程序也靠这个共享内存形式认出"这是右键菜单来的"。
-协议见 [`Auto7zShell`](../Auto7zShell/README.md)。
+共享内存里存的是以 `\0` 分隔的 UTF-16 路径列表，映射名与事件名形如
+`Auto7zShellMap<PID><序号>` / `Auto7zShellEvent<PID><序号>`，命令行只带
+`#<映射名>:<字节数>:<事件名>` 这一段引用。
 
 **数据目录分根与数据两层**：根目录普通模式是 `%LOCALAPPDATA%`，
 便携模式是程序目录下的 `.config`；数据目录一律叫 `Auto7z`，挂在根目录下面。
@@ -364,17 +404,35 @@ PE 子系统这一个字段同时决定「cmd 等不等」与「启动时给不�
 **便携模式会注销右键菜单**：便携程序在别的电脑上跑，不该在系统里留注册表痕迹。
 勾选便携模式时注销，取消时注册。
 
+**测试钩子不进交付物**：产品里供测试用的开关一律包在 `#if DEBUG` 里，
+Release 构建把整段编掉。目前有两处：
+
+| 位置 | Release 中的状态 |
+|---|---|
+| `Services/TestHooks.cs`（整文件）+ `App.xaml.cs` 调用点 —— `--feed` 注入 | 不编译，类型不存在，命令行不识别 |
+| `Auto7zViewModel.SkipShellMenuSync` 属性 + 那处判断 | 属性不存在，判断编掉，永远走正常注册流程 |
+
+加任何测试便利设施前先问：**这条代码会出现在用户的 `Auto7zGUI.exe` 里吗？**
+会，就必须包 `#if DEBUG`，或者改成测试侧反射实现。
+反射探针（`guardprobe` / `sha256probe` 等）不受影响 —— 它们从测试进程侧
+`Assembly.LoadFrom` 产品程序集，产品不需要为测试开任何口子。
+
 ## 测试
 
-测试工具在 [`testtools`](../testtools/README.md)，说明见那里的 README。
+测试脚本在 `..\testtools\`，用 Python 3 直接跑，输出到控制台。
 
 一键跑（推荐）：
 
 ```powershell
 cd ..\testtools
-python run_regress.py         # 一键回归
-python run_system_test.py     # 一键系统测试
+python run_regress.py         # 一键回归（13 项）
+python run_system_test.py     # 一键系统测试（15 项）
+python run_bench.py           # 性能基准（不判失败）
 ```
+
+**用 Debug 构建跑**：`--config Debug` 是默认值。依赖测试钩子的项
+（便携模式的 T22、拖拽的 `ui_feed_test.ps1`）在 Release 里会明确跳过 ——
+那不是失败，Release 本来就不带测试开关。
 
 单跑主回归：
 
@@ -382,7 +440,11 @@ python run_system_test.py     # 一键系统测试
 python regress.py --app "..\Auto7z_WPF\Auto7z_WPF\bin\Debug\Auto7z.exe"
 ```
 
-`regress.py` 里写死的默认路径指向的是旧目录结构，已经对不上了，所以要显式用 `--app` 指定被测程序。
+`regress.py` 的默认被测程序路径已失效，必须显式用 `--app` 指定。
+
+本项目的 `Services/SHA256Service.cs` 有专门的运行时探针（`testtools\cs\sha256probe`，
+已接进一键回归）：反射直调这个类，验哈希值、`hash *name` 格式、`.sha256` 不带 BOM、
+目录递归、坏文件跳过、进度单调与取消响应。
 
 ## 已知限制
 
@@ -391,3 +453,5 @@ python regress.py --app "..\Auto7z_WPF\Auto7z_WPF\bin\Debug\Auto7z.exe"
 - 右键菜单是传统 `IContextMenu` 扩展，Windows 11 上在「显示更多选项」里
 - 右键菜单注册要管理员权限，普通用户运行时会弹 UAC
 - 密码框是明文显示的（为了支持中文输入，见「几个关键设计」）
+- 未知开关会被拒绝：`Auto7z.exe -X file` 打印「无法识别的选项」与用法，退出码 2，不产出压缩包
+  （磁盘上真实存在、名字恰好以 `-` 开头的路径仍会被当成路径处理）

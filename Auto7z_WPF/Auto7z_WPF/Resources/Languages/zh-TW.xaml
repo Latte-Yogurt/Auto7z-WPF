@@ -1,6 +1,7 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:sys="clr-namespace:System;assembly=mscorlib">
+    <!-- 本檔必須與 zh-CN.xaml、en-US.xaml 的 x:Key 集合完全一致，缺鍵會靜默顯示為空白。 -->
     <sys:String x:Key="Title">Auto7z</sys:String>
     <sys:String x:Key="TitleText">選擇運行模式</sys:String>
     <sys:String x:Key="AutoModeButton">自動模式</sys:String>
@@ -39,8 +40,8 @@
     <sys:String x:Key="SolidModeContent">固實壓縮</sys:String>
     <sys:String x:Key="ZstdContent">zstd</sys:String>
     <sys:String x:Key="EncFileNameContent">完全加密</sys:String>
-    <sys:String x:Key="GenerateMD5Label">MD5:</sys:String>
-    <sys:String x:Key="GenerateMD5Content">產生校驗檔</sys:String>
+    <sys:String x:Key="GenerateSHA256Label">SHA256:</sys:String>
+    <sys:String x:Key="GenerateSHA256Content">產生校驗檔</sys:String>
     <sys:String x:Key="AddPasswordLabel">添加密碼:</sys:String>
     <sys:String x:Key="CompressionLevelLabel">壓縮等級:</sys:String>
     <sys:String x:Key="Level_Store">存儲</sys:String>
@@ -55,11 +56,9 @@
     <sys:String x:Key="NoButton">否</sys:String>
     <sys:String x:Key="YesButton">是</sys:String>
     <sys:String x:Key="CopyRightText">All rights reserved.</sys:String>
-    <!-- 密碼輸入視窗 -->
     <sys:String x:Key="PasswordWindowTitle">輸入密碼</sys:String>
     <sys:String x:Key="PasswordPromptText">該壓縮檔已加密，請輸入密碼：</sys:String>
     <sys:String x:Key="CancelTaskButton">取消</sys:String>
-    <!-- 設定項懸停提示 -->
     <sys:String x:Key="Tip_TopMost">讓視窗永遠顯示在其他視窗之上。</sys:String>
     <sys:String x:Key="Tip_AutoSave">程式關閉時自動儲存目前所有設定。取消勾選則保留上次的設定。</sys:String>
     <sys:String x:Key="Tip_RuntimeMode">控制壓縮時的資源占用：執行緒數量與字典大小。低佔用最省記憶體，高效能最快。</sys:String>
@@ -70,7 +69,7 @@
     <sys:String x:Key="Tip_SolidMode">固實壓縮：把多個檔案合併成一個資料區塊壓縮，壓縮率更高，但解壓時需整塊解出。多檔案時建議開啟。</sys:String>
     <sys:String x:Key="Tip_Zstd">對 tar 封裝再使用 zstd 壓縮，產生 .tar.zst，可顯著減小體積。</sys:String>
     <sys:String x:Key="Tip_EncFileName">完全加密：連檔名也一起加密。需要先設定密碼，僅 7z 格式支援。</sys:String>
-    <sys:String x:Key="Tip_GenerateMD5">壓縮完成後在同目錄產生 .md5 校驗檔，可用於校驗檔案完整性。</sys:String>
+    <sys:String x:Key="Tip_GenerateSHA256">壓縮完成後在同目錄產生 .sha256 校驗檔，可用於校驗檔案完整性。</sys:String>
     <sys:String x:Key="Tip_CompressionLevel">壓縮等級。存儲=不壓縮（最快）；標準=均衡；極限=體積最小但最慢。7z 與 zip 有效，tar 本身不壓縮故無效。</sys:String>
     <sys:String x:Key="Tip_ZipPassword">壓縮密碼。留空表示不加密。tar 格式不支援加密。</sys:String>
     <sys:String x:Key="Tip_UnzipPassword">解壓密碼。留空表示不解密。tar 格式不需要密碼。</sys:String>
@@ -84,10 +83,9 @@
     <sys:String x:Key="InfoMessage">提示：</sys:String>
     <sys:String x:Key="WarningMessage">警告：</sys:String>
     <sys:String x:Key="ProgressText">7z 處理：已進行...{0}%</sys:String>
-    <sys:String x:Key="Md5ProgressText">MD5 計算進度...{0}%</sys:String>
+    <sys:String x:Key="SHA256ProgressText">SHA256 計算進度...{0}%</sys:String>
     <sys:String x:Key="ErrorMessage">出現錯誤：</sys:String>
     <sys:String x:Key="MultiFilePackQuery">檢測到多個檔案傳入，是否需要將其打包為單個壓縮檔？</sys:String>
-    <!-- 任務結果提示 -->
     <sys:String x:Key="Result_CompressDone">壓縮完成</sys:String>
     <sys:String x:Key="Result_ExtractDone">解壓完成</sys:String>
     <sys:String x:Key="Result_Failed">處理失敗</sys:String>
@@ -104,8 +102,7 @@
     <sys:String x:Key="Log_UnknownFormat">設定中的壓縮格式無法辨識，已按 7z 處理：{0}</sys:String>
     <sys:String x:Key="Log_DialogConfirmed">詢問框：使用者選擇「是」</sys:String>
     <sys:String x:Key="Log_DialogCancelled">詢問框：使用者選擇「否」</sys:String>
-    <sys:String x:Key="Log_Md5Failed">產生 MD5 失敗：{0}</sys:String>
-    <!-- 錯誤訊息 -->
+    <sys:String x:Key="Log_SHA256Failed">產生 SHA256 失敗：{0}</sys:String>
     <sys:String x:Key="Err_NoCompressInput">沒有可壓縮的輸入</sys:String>
     <sys:String x:Key="Err_UnknownOutputDir">無法確定輸出目錄</sys:String>
     <sys:String x:Key="Err_OutputDirNotFound">輸出目錄不存在：{0}</sys:String>
@@ -123,9 +120,10 @@
     <sys:String x:Key="Err_EmptyCommand">命令行為空</sys:String>
     <sys:String x:Key="Err_SevenZipExeMissing">找不到 7z.exe：{0}</sys:String>
 
-    <!-- 內部日誌文字 -->
     <sys:String x:Key="Log_LanguageSwitchFailed">切換語言失敗（{0}）：{1}</sys:String>
     <sys:String x:Key="Log_AutoExtractEach">自動模式：逐個解壓 {0} 個壓縮檔</sys:String>
+    <sys:String x:Key="Log_AutoMixed">自動模式：混合輸入，壓縮檔 {0} 個逐個解壓，其餘 {1} 個壓縮</sys:String>
+    <sys:String x:Key="Log_InputRejected">{0} 個輸入路徑不存在或無法存取，已略過</sys:String>
     <sys:String x:Key="Log_TaskException">工作執行異常：{0}</sys:String>
     <sys:String x:Key="Log_ChoseMerge">使用者選擇合併為單個壓縮檔，共 {0} 個檔案</sys:String>
     <sys:String x:Key="Log_ChoseSeparate">使用者選擇不合併，{0} 個檔案分別壓縮</sys:String>
@@ -143,7 +141,7 @@
     <sys:String x:Key="ProcessWaiting">準備中…</sys:String>
     <sys:String x:Key="ProcessStageCompress">壓縮中…</sys:String>
     <sys:String x:Key="ProcessStageExtract">解壓縮中…</sys:String>
-    <sys:String x:Key="ProcessStageMd5">計算 MD5 校驗中…</sys:String>
+    <sys:String x:Key="ProcessStageSHA256">計算 SHA256 校驗中…</sys:String>
     <sys:String x:Key="ProcessStageFinished">處理完成</sys:String>
     <sys:String x:Key="ProcessStageFailed">處理失敗</sys:String>
     <sys:String x:Key="ProcessStageCancelled">已取消</sys:String>
@@ -158,6 +156,13 @@
     <sys:String x:Key="Console_TaskCancelled">已取消</sys:String>
     <sys:String x:Key="Console_ProgressCompress">7z 已處理...{0}%</sys:String>
     <sys:String x:Key="Console_ProgressExtract">7z 已處理...{0}%</sys:String>
-    <sys:String x:Key="Console_ProgressMd5">MD5 已處理...{0}%</sys:String>
+    <sys:String x:Key="Console_ProgressSHA256">SHA256 已處理...{0}%</sys:String>
     <sys:String x:Key="PasswordPrompt">該壓縮檔已加密，請輸入密碼：</sys:String>
+    <sys:String x:Key="Err_InputNotFound">找不到指定的檔案或目錄：{0}</sys:String>
+    <sys:String x:Key="Console_RegisterOk">右鍵選單註冊成功</sys:String>
+    <sys:String x:Key="Console_RegisterFailed">右鍵選單註冊失敗，請以系統管理員身分執行</sys:String>
+    <sys:String x:Key="Console_UnregisterOk">右鍵選單已取消註冊</sys:String>
+    <sys:String x:Key="Console_UnregisterFailed">右鍵選單取消註冊失敗</sys:String>
+    <sys:String x:Key="Console_ShellDllMissing">找不到 Auto7zShell.dll，無法註冊</sys:String>
+    <sys:String x:Key="Err_UnknownSwitch">無法辨識的選項：{0}</sys:String>
 </ResourceDictionary>

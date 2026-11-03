@@ -7,17 +7,12 @@ using System.Windows.Input;
 namespace Auto7z_WPF.Services
 {
     /// <summary>
-    /// 无边框窗口的公共处理。
+    /// 无边框窗口的通用交互：拖动窗体与左右方向键切换焦点。
     /// </summary>
     public static class WindowHelper
     {
-        /// <summary>
-        /// 让无边框窗口可以用鼠标拖动移动。
-        ///
-        /// WindowStyle=None 的窗口没有标题栏，系统不会替它处理拖动，
-        /// 这里在窗口背景区域按下左键时调用 DragMove 实现。
-        /// 落在按钮、输入框等可交互控件上的按下不处理，避免影响点击。
-        /// </summary>
+        #region 窗体拖动
+        /// <summary>让整个窗口都能拖动，但按在可交互控件上时不拖。</summary>
         /// <param name="window">目标窗口。</param>
         public static void EnableWindowDragging(Window window)
         {
@@ -25,6 +20,8 @@ namespace Auto7z_WPF.Services
 
             window.MouseLeftButtonDown += (s, e) =>
             {
+                // 无边框窗口没有标题栏，只能靠窗口自己的身体拖动；
+                // 但按在输入框或按钮上时用户想的是操作那个控件，此时拖动会把点击吞掉。
                 if (e.OriginalSource is DependencyObject source && IsInteractive(source)) return;
 
                 try
@@ -33,14 +30,11 @@ namespace Auto7z_WPF.Services
                 }
                 catch (InvalidOperationException)
                 {
-                    // 鼠标已释放时忽略
+                    // 鼠标键在 DragMove 之前就松开时会抛这个异常，属于正常竞态，忽略即可。
                 }
             };
         }
 
-        /// <summary>
-        /// 判断落点是不是需要交互的控件：是的话按下鼠标不应该触发拖动。
-        /// </summary>
         private static bool IsInteractive(DependencyObject source)
         {
             return source is TextBoxBase
@@ -51,19 +45,13 @@ namespace Auto7z_WPF.Services
                 || source is ListBoxItem
                 || source is RadioButton;
         }
+        #endregion
 
-        /// <summary>
-        /// 让左右方向键在指定的控件之间移动焦点。
-        ///
-        /// WPF 默认只有 Tab 能换焦点，方向键只对单选框、下拉框有效。
-        /// 对话框里两个按钮挨着放，用方向键在它们之间移动更顺手。
-        ///
-        /// 只在焦点确实落在这两个控件上时才接管方向键，
-        /// 否则会连带把下拉框、单选框的方向键也吃掉。
-        /// </summary>
-        /// <param name="window">所在窗口。</param>
-        /// <param name="left">向左移动时到达的控件。</param>
-        /// <param name="right">向右移动时到达的控件。</param>
+        #region 方向键导航
+        /// <summary>左右方向键在两个元素之间移动焦点。</summary>
+        /// <param name="window">目标窗口。</param>
+        /// <param name="left">左侧元素。</param>
+        /// <param name="right">右侧元素。</param>
         public static void EnableArrowNavigation(Window window, FrameworkElement left, FrameworkElement right)
         {
             if (window == null || left == null || right == null) return;
@@ -73,6 +61,7 @@ namespace Auto7z_WPF.Services
                 if (e.Key == Key.Left && IsFocusedOn(right))
                 {
                     MoveFocusTo(left);
+                    // 置 Handled 是为了不让 TextBox 之类再把方向键当成光标移动处理一遍。
                     e.Handled = true;
                 }
                 else if (e.Key == Key.Right && IsFocusedOn(left))
@@ -83,23 +72,19 @@ namespace Auto7z_WPF.Services
             };
         }
 
-        /// <summary>
-        /// 焦点是不是在指定控件上。
-        /// </summary>
         private static bool IsFocusedOn(FrameworkElement element)
         {
             var focused = Keyboard.FocusedElement as FrameworkElement;
             return focused != null && ReferenceEquals(focused, element);
         }
 
-        /// <summary>
-        /// 把焦点移到指定控件上。
-        /// </summary>
         private static void MoveFocusTo(FrameworkElement element)
         {
             if (element == null) return;
+            // Focus() 只改逻辑焦点，键盘焦点还得单独交给 Keyboard，否则方向键仍留在原控件上。
             element.Focus();
             Keyboard.Focus(element);
         }
+        #endregion
     }
 }

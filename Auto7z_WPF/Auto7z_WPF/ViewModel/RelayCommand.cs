@@ -3,9 +3,6 @@ using System.Windows.Input;
 
 namespace Auto7z_WPF
 {
-    /// <summary>
-    /// 无参命令实现。
-    /// </summary>
     public class RelayCommand : ICommand
     {
         private readonly Action _execute;
@@ -27,9 +24,8 @@ namespace Auto7z_WPF
         {
             CanExecuteChanged?.Invoke(this, EventArgs.Empty);
 
-            // 通知 CommandManager 重新查询可执行状态。
-            // MouseBinding 等输入绑定通过 CommandManager 缓存命令状态，
-            // 只触发自身事件的话缓存不会更新，命令在新状态下依旧不执行。
+            // WPF 的按钮同时挂在 CommandManager 的全局重查询上，
+            // 不主动失效的话，可用性变了按钮也不会跟着变灰。
             CommandManager.InvalidateRequerySuggested();
         }
     }

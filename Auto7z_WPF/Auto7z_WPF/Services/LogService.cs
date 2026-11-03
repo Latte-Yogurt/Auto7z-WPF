@@ -6,47 +6,34 @@ using System.Reflection;
 namespace Auto7z_WPF.Services
 {
     /// <summary>
-    /// 日志服务。日志写入 %LOCALAPPDATA%\Auto7z\Logs，
-    /// 与配置、临时组件同属应用数据目录，避免桌面重定向（OneDrive）导致的写入失败。
-    ///
-    /// 分成两类文件：
-    ///   普通日志 —— 记录日常过程（接收文件、自动模式识别等），完整保留。
-    ///   问题日志 —— 记录警告与错误，只保留最近若干天。
-    /// 两类分开存放，按级别决定写入哪个文件，
-    /// 这样清理过期文件时不会连带删掉日常日志。
+    /// 按天分文件的文本日志：Info 进常规日志，Warning 及以上进问题日志，反馈时只需提供后者。
     /// </summary>
     public class LogService
     {
-        // 日志文件名固定用产品名，不取程序集名。
-        // 图形入口的程序集叫 Auto7zGUI，取程序集名会把日志劈成两族
-        // （Auto7z_*.log 与 Auto7zGUI_*.log），过期日志清理也只认得自己那一族。
+        #region 日志文件路径
+        // 问题日志的文件名前缀，清理时按同一前缀匹配，避免误删其他日志。
         private static readonly string _appName = "Auto7z";
 
+        // 多个线程可能同时写同一个文件，路径计算与写入都放在这把锁里串行化。
         private static readonly object _writeLock = new object();
 
+        // 不写 BOM，外部脚本按行合并日志时不会在文件中间混入 BOM 字节。
         private static readonly System.Text.Encoding _utf8NoBom = new System.Text.UTF8Encoding(false);
 
-        /// <summary>问题日志保留天数，超过天数的在启动时删除。</summary>
+        // 问题日志保留一周，覆盖用户反馈周期，又不至于无限增长。
         private const int IssueLogRetentionDays = 7;
 
-        /// <summary>进程启动时确定的普通日志文件路径，之后不再随日期变化。</summary>
+        // 路径按当天日期生成后缓存；进程跨天运行仍写同一文件，避免一次会话的日志被拆成两份。
         private static string _normalLogFile;
 
-        /// <summary>进程启动时确定的问题日志文件路径，之后不再随日期变化。</summary>
         private static string _issueLogFile;
 
-        /// <summary>低于该级别的日志不写入。</summary>
+        // 默认只记 Warning 及以上，需要更细的排查信息时由用户显式调低阈值。
         public static ErrorLevel MinLogLevel { get; set; } = ErrorLevel.Warning;
 
-        /// <summary>日志目录。跟随 <see cref="AppPaths"/> 的当前模式。</summary>
         private static string LogDirectory => AppPaths.LogDirectory;
 
-        /// <summary>
-        /// 清掉已缓存的日志文件路径。
-        ///
-        /// 切换便携模式后数据目录会变，日志也要跟着换，
-        /// 否则会继续往旧目录里写。
-        /// </summary>
+        // 日志目录切换后必须清空缓存，否则仍会写回旧路径。
         public static void ResetLogFiles()
         {
             lock (_writeLock)
@@ -56,13 +43,6 @@ namespace Auto7z_WPF.Services
             }
         }
 
-        /// <summary>
-        /// 普通日志文件路径（按天切分）。
-        ///
-        /// 进程启动时确定一次并固定下来：
-        /// 若每次写入都按当前日期重新计算，跨零点运行的实例会把一次运行拆到两个文件里，
-        /// 午夜前后的日志分散在不同日期的文件中。
-        /// </summary>
         public static string LogFilePath
         {
             get
@@ -82,7 +62,6 @@ namespace Auto7z_WPF.Services
             }
         }
 
-        /// <summary>问题日志文件路径（警告与错误写入这里）。</summary>
         public static string IssueLogFilePath
         {
             get
@@ -102,6 +81,9 @@ namespace Auto7z_WPF.Services
             }
         }
 
+        #endregion
+        #region 日志级别与写入
+        // 数值大小用于级别过滤，新增级别必须插在合适的位置，否则过滤结果会错。
         public enum ErrorLevel
         {
             Info = 0,
@@ -109,23 +91,25 @@ namespace Auto7z_WPF.Services
             Error = 2
         }
 
+        // Info 之外的级别都进问题日志，用户反馈时只需要提供 Issue 文件。
         public void WriteLog(string message, ErrorLevel level)
         {
-            // Info 记普通日志，Warning 与 Error 记问题日志
             string path = level == ErrorLevel.Info ? LogFilePath : IssueLogFilePath;
             WriteLog(message, level, path);
         }
 
         private void WriteLog(string message, ErrorLevel level, string logPath)
         {
+            // 低于阈值的消息直接丢弃，避免高频 Info 淹没真正需要排查的问题。
             if (string.IsNullOrWhiteSpace(message) || level < MinLogLevel) return;
 
             try
             {
                 lock (_writeLock)
                 {
+                    // 目录可能被用户或清理工具删掉，每次写入前确保存在。
                     Directory.CreateDirectory(LogDirectory);
-                    // 显式使用 UTF-8：默认编码受系统区域设置影响，会让中文日志在其它工具里变成乱码
+                    // 每次写入都重新打开再关闭，进程被强杀时已写内容仍会留在磁盘上。
                     using (var writer = new StreamWriter(logPath, true, _utf8NoBom))
                     {
                         string nowTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
@@ -139,12 +123,9 @@ namespace Auto7z_WPF.Services
             }
         }
 
-        /// <summary>
-        /// 启动时清理过期的问题日志。
-        ///
-        /// 普通日志完整保留，只有问题日志按天数清理，
-        /// 避免长时间使用后日志目录无限增长。
-        /// </summary>
+        #endregion
+        #region 日志清理与命名
+        // 只清理问题日志且按文件名里的日期判断，常规日志留给用户自行处置；日期解析不出的文件一律不动。
         public static void CleanupOldLogs()
         {
             try
@@ -155,7 +136,6 @@ namespace Auto7z_WPF.Services
 
                 foreach (string file in Directory.GetFiles(LogDirectory, _appName + "_Issue_*.log"))
                 {
-                    // 文件名格式：<程序名>_Issue_<yyyy-MM-dd>.log
                     string name = Path.GetFileNameWithoutExtension(file);
                     int separator = name.LastIndexOf('_');
                     if (separator < 0 || separator >= name.Length - 1) continue;
@@ -190,5 +170,6 @@ namespace Auto7z_WPF.Services
         {
             return Path.Combine(LogDirectory, $"{prefix}_{date:yyyy-MM-dd}.log");
         }
+        #endregion
     }
 }

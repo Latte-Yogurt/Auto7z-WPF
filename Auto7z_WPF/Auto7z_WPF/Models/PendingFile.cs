@@ -1,38 +1,51 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 
 namespace Auto7z_WPF.Models
 {
-    /// <summary>
-    /// 拖入/传入的单个条目（文件或文件夹）及其大小快照。
-    /// 大小在“接收拖放”时计算一次，避免任务执行期间重复递归遍历目录。
-    /// </summary>
     public sealed class PendingFile
     {
+        private bool _sizeKnown;
+
         public PendingFile(string path, long sizeInBytes, bool isDirectory)
         {
             Path = path;
             SizeInBytes = sizeInBytes;
             IsDirectory = isDirectory;
+            _sizeKnown = true;
         }
 
-        /// <summary>完整路径。</summary>
+        // 界面线程只做存在性检查，目录字节数留到任务线程再算：
+        // 拖一个几万文件的目录进来时，递归遍历整棵树足以让窗口冻住。
+        public static PendingFile CreateLazy(string path, bool isDirectory)
+        {
+            var file = new PendingFile(path, 0, isDirectory);
+            file._sizeKnown = false;
+            return file;
+        }
+
         public string Path { get; }
 
-        /// <summary>大小（字节）。无法读取时为 0。</summary>
-        public long SizeInBytes { get; }
+        public long SizeInBytes { get; private set; }
 
-        /// <summary>是否为文件夹。</summary>
+        public bool SizeKnown => _sizeKnown;
+
+        public void SetSize(long sizeInBytes)
+        {
+            // 只允许从未知变为已知：大小一旦统计过就不再改，
+            // 否则并发的两次统计会互相覆盖，分卷判断跟着抖。
+            if (_sizeKnown) return;
+            _sizeKnown = true;
+            SizeInBytes = sizeInBytes < 0 ? 0 : sizeInBytes;
+        }
+
         public bool IsDirectory { get; }
 
-        /// <summary>名称（文件含扩展名，文件夹为目录名）。</summary>
         public string Name => System.IO.Path.GetFileName(Path);
     }
 
-    /// <summary>
-    /// 一次任务的输入批次。
-    /// </summary>
     public sealed class PendingFileBatch
     {
         public PendingFileBatch(IEnumerable<PendingFile> files)
@@ -44,9 +57,17 @@ namespace Auto7z_WPF.Models
 
         public bool IsEmpty => Files.Count == 0;
 
-        /// <summary>
-        /// 批次总大小（字节）。成功统计的条目累加，读不到大小的条目返回 null 标记。
-        /// </summary>
         public long TotalSizeInBytes => Files.Sum(f => f.SizeInBytes);
+
+        // 这个大小只用于分卷判断，晚一点算没有副作用，所以整批一次补齐即可。
+        public void EnsureSizes(Func<string, long> compute)
+        {
+            if (compute == null) return;
+
+            foreach (var file in Files)
+            {
+                if (!file.SizeKnown) file.SetSize(compute(file.Path));
+            }
+        }
     }
 }

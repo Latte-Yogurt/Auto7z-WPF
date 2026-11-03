@@ -8,13 +8,13 @@ using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
-using System.Windows;
 using Auto7z_WPF.Models;
 
 namespace Auto7z_WPF.Services
 {
+    #region 命令结果模型
     /// <summary>
-    /// 执行外部 7-Zip 命令的返回结果。
+    /// 单次 7z.exe 调用的结果快照，调用方据此区分成功、取消、超时与密码错误。
     /// </summary>
     public sealed class CommandResult
     {
@@ -22,45 +22,33 @@ namespace Auto7z_WPF.Services
         public bool Cancelled { get; set; }
         public bool TimedOut { get; set; }
 
-        /// <summary>7-Zip 退出码。0=成功，1=有警告但已处理完，2=致命错误，7=命令行语法错误。</summary>
         public int ExitCode { get; set; } = -1;
 
         public string StandardOutput { get; set; } = string.Empty;
         public string StandardError { get; set; } = string.Empty;
         public Exception Error { get; set; }
 
-        /// <summary>
-        /// 是否有警告但整体仍算完成（退出码 1）。调用方据此提示用户，但不应判定为失败。
-        /// </summary>
+        // 退出码 1 是完成但带警告，归档已经产出，因此仍按成功处理。
         public bool HasWarning => ExitCode == 1;
 
-        /// <summary>
-        /// 7-Zip 是否在索要密码。
-        ///
-        /// 未提供密码（或密码错误）时，7-Zip 有两种表现：
-        ///   未提供密码 → stdout 输出 "Enter password (will not be echoed):"，退出码 255；
-        ///   密码错误   → stdout 输出 "ERROR: Data Error in encrypted file. Wrong password?"，退出码 2。
-        /// 前者必须弹窗让用户输入密码后重试，否则用户只会看到毫无意义的 "Break signaled"。
-        /// </summary>
+        // 密码提示可能落在 stdout 也可能落在 stderr，两路都要查。
         public bool RequiresPassword =>
             StandardOutput.IndexOf("Enter password", StringComparison.OrdinalIgnoreCase) >= 0
             || StandardError.IndexOf("Enter password", StringComparison.OrdinalIgnoreCase) >= 0;
 
-        /// <summary>
-        /// 是否是“密码错误”（已经给了密码但不对）。
-        /// </summary>
         public bool IsWrongPassword =>
             StandardOutput.IndexOf("Wrong password", StringComparison.OrdinalIgnoreCase) >= 0
             || StandardError.IndexOf("Wrong password", StringComparison.OrdinalIgnoreCase) >= 0;
 
         /// <summary>
-        /// 失败时的可读原因：优先取 7-Zip 的错误输出，其次取异常信息。
+        /// 按异常、关键错误行、原始输出的优先级提取失败原因，供界面直接展示。
         /// </summary>
+        /// <returns>失败描述；两路输出都为空时返回空字符串。</returns>
         public string GetFailureDetail()
         {
             if (Error != null) return Error.Message;
 
-            // 优先从 stderr 里挑出真正的 ERROR 行，避免把整段输出都弹给用户
+            // 先在 stderr 里找，7-Zip 的致命错误通常只写这一路。
             string errorLine = FindErrorLine(StandardError) ?? FindErrorLine(StandardOutput);
             if (!string.IsNullOrWhiteSpace(errorLine)) return errorLine;
 
@@ -69,9 +57,6 @@ namespace Auto7z_WPF.Services
             return string.Empty;
         }
 
-        /// <summary>
-        /// 从 7-Zip 输出中找出第一行包含 ERROR / 警告关键字的内容。
-        /// </summary>
         private static string FindErrorLine(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return null;
@@ -95,93 +80,62 @@ namespace Auto7z_WPF.Services
             return null;
         }
     }
+    #endregion
 
     /// <summary>
-    /// 7-Zip 核心业务服务。
-    /// 负责：组件检查与提取、命令生成、命令执行（异步读取 + 可取消）、临时资源清理、MD5 计算。
-    /// 不直接操作任何 UI 控件，也不生成任何界面文本，仅提供纯业务方法供 ViewModel 调用。
+    /// 7z.exe 的唯一调用入口，负责命令行拼装、进程驱动与输出收集。
+    /// 实例不持有状态，进程跟踪表与资源长度缓存都是静态的。
     /// </summary>
     public class SevenZipService
     {
+        #region 常量与进程跟踪
         private static readonly string _assemblyName = Assembly.GetExecutingAssembly().GetName().Name;
 
-        /// <summary>组件所在目录。跟随 <see cref="AppPaths"/> 的当前模式。</summary>
         private static string ComponentsPath => AppPaths.ComponentsDirectory;
 
-        /// <summary>7z.dll 完整路径。</summary>
         private static string SevenZipDllPath => Path.Combine(ComponentsPath, "7z.dll");
 
+        // 资源名必须与 csproj 里的逻辑路径一致，改名后提取只会静默失败。
         private const string ExeResourcePath = "Resources/Modules/7z.exe";
         private const string DllResourcePath = "Resources/Modules/7z.dll";
 
+        // 用轮询而非阻塞等待，才能边等边响应取消与超时；杀进程后再给若干次轮询的宽限。
         private const int PollIntervalMs = 100;
-        private const int KillGraceIterations = 50; // 杀掉进程后再等 5 秒
 
-        /// <summary>
-        /// 所有 7-Zip 命令共用的开关。
-        /// -bsp1：把进度百分比打到 stdout，否则重定向输出时完全看不到进度（界面进度条会一直是 0%）；
-        /// -sccUTF-8：强制以 UTF-8 输出，否则中文错误信息按 OEM 代码页输出会变成乱码。
-        /// </summary>
+        private const int KillGraceIterations = 50;
+
+        private const int OutputDrainTimeoutMs = 2000;
+
+        // ProcessorCount 至少按 1 算，否则 -mmt0 会被 7-Zip 解释成自动。
+        private static readonly int _processorCount = Math.Max(1, Environment.ProcessorCount);
+
+        // -bsp1 让进度走 stdout 而不是原地重绘，解析才有稳定输入；-sccUTF-8 固定字符集，避免中文路径乱码。
         private const string CommonSwitches = "-bsp1 -sccUTF-8";
 
-        /// <summary>
-        /// 该格式是否支持加密。tar 不支持（7-Zip 会静默忽略 -p，密码形同虚设）。
-        /// </summary>
         public static bool SupportsEncryption(ArchiveFormat format)
         {
             return format != ArchiveFormat.Tar;
         }
 
-        /// <summary>
-        /// 匹配 7-Zip 的**解压进度**行（形如 " 23% + big.bin"）。
-        ///
-        /// 锚定行首，避免把文件名里带 % 的内容误当成进度。
-        ///
-        /// 7-Zip 的 -bsp1 会输出好几种百分号行，其中三种**不是**解压进度：
-        ///
-        ///   "  0%"             —— 扫描存档阶段的起始行，每次解压都出现
-        ///   "  0M Scan C:\...\" —— 扫描阶段的进度（0M 表示扫了 0 个文件）
-        ///   "100% T a.txt"    —— 读取文件时出错（密码错就是这个）
-        ///
-        /// 前两种出现在**每次**解压的开头；第三种只在出错时出现。
-        /// 它们混在密码交互中间，会把流程搅乱：
-        /// 用户看到 "0%" 就以为开始解压了，其实程序正卡在等密码；
-        /// 看到 "100% T" 就以为快好了，其实刚失败。
-        ///
-        /// 真正的解压进度行是 " 23% + 文件名"：
-        ///   - 百分号后面必须有内容（否则是上面那三种空行）
-        ///   - 标记只能是 +（正常）；T 表示这个文件出错，不算进度
-        /// </summary>
-        // 7-Zip 在 -bsp1 下真正的进度行有两种形态（分隔符是 \r，不是 \n）：
-        //   压缩： " 20% 1 + f1.bin"
-        //   解压： " 64% 23 - f30.bin"
-        // 百分号后面的文件序号有时没有（" 10% + f0.bin"），所以序号可省略；
-        // 标记只认 + 与 -：
-        //   "100% T xxx" 是读文件出错（密码错就是它），不是进度；
-        //   "  0%" / "  0M Scan ..." 是扫描起始行，也不是进度。
+        // 只认行首百分比，错误行里的百分号不会被误当成进度。
         private static readonly Regex _percentRegex =
             new Regex(@"^\s*(\d{1,3})\s*%(?:\s+\d+)?\s*[+\-]\s", RegexOptions.Compiled);
 
-        /// <summary>
-        /// 正在运行的 7-Zip 进程。程序退出时统一结束，
-        /// 否则关闭程序后 7z.exe 仍在后台运行，还可能锁住临时组件导致无法删除。
-        /// </summary>
+        // 跟踪表让应用能在退出时清理子进程，否则 7z 会变成孤儿进程继续写归档。
         private static readonly List<Process> _runningProcesses = new List<Process>();
         private static readonly object _runningProcessesLock = new object();
 
-        /// <summary>
-        /// 结束所有仍在运行的 7-Zip 进程（程序退出时调用）。
-        /// </summary>
+        // 资源长度要读完整流才知道，缓存后避免每次启动校验都重读几十 MB。
+        private static readonly Dictionary<string, long> _resourceLengths = new Dictionary<string, long>();
+        private static readonly object _resourceLengthLock = new object();
+
         public void KillRunningProcesses()
         {
             KillAllRunningProcesses();
         }
 
         /// <summary>
-        /// 结束所有 7-Zip 子进程（静态版，供程序退出时兜底）。
-        ///
-        /// 右键菜单模式没有主窗口，关闭流程走不到 ViewModel.OnClosing，
-        /// 不在这里兜底的话，程序退出后 7z.exe 会留在后台继续跑。
+        /// 终止所有仍在运行的 7z 进程，只清空跟踪表，不等待进程真正退出。
         /// </summary>
         public static void KillAllRunningProcesses()
         {
@@ -203,6 +157,7 @@ namespace Auto7z_WPF.Services
             }
         }
 
+        // 注册与注销都在后台回调线程里发生，必须加锁。
         private static void TrackProcess(Process process)
         {
             lock (_runningProcessesLock)
@@ -218,17 +173,16 @@ namespace Auto7z_WPF.Services
                 _runningProcesses.Remove(process);
             }
         }
+        #endregion
 
-        /// <summary>7z.exe 的完整路径。</summary>
+        #region 组件部署与资源提取
         public static string SevenZipExePath => Path.Combine(AppPaths.ComponentsDirectory, "7z.exe");
 
-        /// <summary>7-Zip 组件所在目录。</summary>
         public static string ComponentsDirectory => AppPaths.ComponentsDirectory;
 
-        #region 组件检查与提取
 
         /// <summary>
-        /// 检查 7-Zip 依赖组件是否已就绪。
+        /// 只检查两个组件文件是否存在，不校验大小与可执行性。
         /// </summary>
         public bool CheckComponentsExist()
         {
@@ -243,8 +197,7 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>
-        /// 确保 7-Zip 依赖组件存在，缺失则从程序集资源中提取。
-        /// 逐个文件检查，避免“exe 存在但 dll 缺失”时整体跳过提取。
+        /// 确保 7z.exe 与 7z.dll 就位，缺失或长度不符时从嵌入资源重新释放。
         /// </summary>
         public bool EnsureComponents(out Exception error)
         {
@@ -266,29 +219,19 @@ namespace Auto7z_WPF.Services
             }
         }
 
-        /// <summary>
-        /// 组件文件不存在或已损坏时重新释放。
-        ///
-        /// 只判断“文件在不在”不够：文件被截断或写坏时，
-        /// 7z.exe 会报“不支持的 16 位应用程序”之类的错，
-        /// 而组件永远不会被重新释放。
-        /// </summary>
-        /// <param name="resourcePath">程序集里的资源路径。</param>
-        /// <param name="outputPath">释放到磁盘的目标路径。</param>
         private static void ExtractResourceIfMissing(string resourcePath, string outputPath)
         {
             if (IsComponentUsable(resourcePath, outputPath)) return;
 
-            Uri resourceUri = new Uri($"pack://application:,,,/{_assemblyName};component/{resourcePath}", UriKind.Absolute);
-            var resourceInfo = Application.GetResourceStream(resourceUri);
-            if (resourceInfo == null || resourceInfo.Stream == null)
+            var resourceStream = GetResourceStream(resourcePath);
+            if (resourceStream == null)
             {
                 throw new FileNotFoundException(EnumText.GetErrorText("Err_ResourceMissing", "资源未找到: {0}", resourcePath));
             }
 
-            // 先写临时文件再改名，避免解压中途失败留下半截的 exe/dll 被当成可用组件
+            // 不直接写目标文件：中途崩溃会留下半截的 7z.exe，下次既跑不起来又会被判为已存在。
             string tempPath = outputPath + ".tmp";
-            using (Stream stream = resourceInfo.Stream)
+            using (Stream stream = resourceStream)
             using (FileStream fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
             {
                 stream.CopyTo(fileStream);
@@ -298,16 +241,43 @@ namespace Auto7z_WPF.Services
             File.Move(tempPath, outputPath);
         }
 
+
         /// <summary>
-        /// 判断已释放的组件文件是否还能用。
-        ///
-        /// 只看文件在不在是不够的：文件被截断或写坏时，
-        /// 7z.exe 会报“不支持的 16 位应用程序”，而组件永远不会被重新释放。
-        /// 这里拿磁盘上的文件与程序集里的资源比大小，对不上就当作损坏。
+        /// 从程序集的 .g.resources 清单里取资源流，未命中或读取失败时返回 null。
         /// </summary>
-        /// <param name="resourcePath">程序集里的资源路径。</param>
-        /// <param name="outputPath">已释放的组件文件路径。</param>
-        /// <returns>可用返回 true。</returns>
+        private static Stream GetResourceStream(string resourcePath)
+        {
+            try
+            {
+                var assembly = Assembly.GetExecutingAssembly();
+
+                // 不走 pack:// URI：那套解析依赖 WPF 资源系统与 Application 的初始化时序，
+                // 在没有 Application 的上下文里会抛异常而不是返回 null，直读清单则任何时机都能用。
+                using (Stream listStream = assembly.GetManifestResourceStream(_assemblyName + ".g.resources"))
+                {
+                    if (listStream == null) return null;
+
+                    using (var reader = new System.Resources.ResourceReader(listStream))
+                    {
+                        foreach (System.Collections.DictionaryEntry entry in reader)
+                        {
+                            // 清单里的条目名以小写形式存放，比较必须忽略大小写才能命中。
+                            if (!(entry.Key is string name)) continue;
+                            if (!string.Equals(name, resourcePath, StringComparison.OrdinalIgnoreCase)) continue;
+
+                            return entry.Value as Stream;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                return null;
+            }
+
+            return null;
+        }
+
         private static bool IsComponentUsable(string resourcePath, string outputPath)
         {
             if (!File.Exists(outputPath)) return false;
@@ -317,32 +287,50 @@ namespace Auto7z_WPF.Services
                 var fileInfo = new FileInfo(outputPath);
                 if (fileInfo.Length <= 0) return false;
 
-                Uri resourceUri = new Uri($"pack://application:,,,/{_assemblyName};component/{resourcePath}", UriKind.Absolute);
-                var resourceInfo = Application.GetResourceStream(resourceUri);
-                if (resourceInfo?.Stream == null) return true;
-
-                using (resourceInfo.Stream)
-                {
-                    return resourceInfo.Stream.Length == fileInfo.Length;
-                }
+                long expected = GetEmbeddedResourceLength(resourcePath);
+                return expected <= 0 || expected == fileInfo.Length;
             }
+            // 探测失败时按可用处理：宁可沿用现有文件，也不要因一次读取异常就反复重写组件。
             catch
             {
-                // 判断不出来时先当可用，避免反复重新释放
                 return true;
             }
         }
 
+        private static long GetEmbeddedResourceLength(string resourcePath)
+        {
+            lock (_resourceLengthLock)
+            {
+                if (_resourceLengths.TryGetValue(resourcePath, out long cached)) return cached;
+            }
+
+            long length = -1;
+            try
+            {
+                using (Stream stream = GetResourceStream(resourcePath))
+                {
+                    if (stream != null) length = stream.Length;
+                }
+            }
+            catch
+            {
+                length = -1;
+            }
+
+            lock (_resourceLengthLock)
+            {
+                _resourceLengths[resourcePath] = length;
+            }
+
+            return length;
+        }
         #endregion
 
-        #region 压缩命令
 
+        #region 压缩命令拼装
         /// <summary>
-        /// 生成压缩命令。tar + zstd 要两条，先打包再压缩。
+        /// 生成一条或两条压缩命令，返回多条时调用方必须按顺序执行。
         /// </summary>
-        /// <param name="sourcePaths">待压缩的源文件/文件夹。</param>
-        /// <param name="config">压缩配置。</param>
-        /// <param name="outputArchivePath">最终归档文件的完整路径。</param>
         public List<string> BuildCompressCommands(string[] sourcePaths, AppConfig config, string outputArchivePath)
         {
             var commands = new List<string>();
@@ -350,18 +338,19 @@ namespace Auto7z_WPF.Services
             if (string.IsNullOrWhiteSpace(outputArchivePath)) return commands;
             if (config == null) return commands;
 
+            // 先转成绝对路径：7z.exe 的工作目录与本进程不同，相对路径会解析到意料之外的位置。
             var quotedSources = sourcePaths
                 .Where(p => !string.IsNullOrWhiteSpace(p))
                 .Select(p => Quote(Path.GetFullPath(p)))
                 .ToList();
             if (quotedSources.Count == 0) return commands;
 
-            // tar + zstd：7z 无法一步生成压缩的 tar，改为 tar 打包 + zstd 压缩两步
+            // 7-Zip 无法一步产出 .tar.zst，只能先打 tar 再压 zstd，因此这里返回两条命令。
             if (config.Format == ArchiveFormat.Tar && config.Zstd)
             {
-                // 中间产物是“<名字>.tar”，不能直接用 ChangeExtension：
-                // 目标名本身是 .tar.zst，ChangeExtension 会得到 .tar.tar。
                 string tarPath = BuildIntermediateTarPath(outputArchivePath);
+                // 中间 tar 不套通用开关：密码、分卷、字典只对最终容器有意义，
+                // 加到中间文件上要么被忽略，要么直接让第一步失败。
                 commands.Add(BuildSingleCompressCommand("tar", quotedSources, tarPath, config, applyGenericSwitches: false));
                 commands.Add(BuildZstdStepCommand(tarPath, outputArchivePath));
                 return commands;
@@ -372,14 +361,11 @@ namespace Auto7z_WPF.Services
             return commands;
         }
 
-        /// <summary>
-        /// 计算 tar+zstd 两步流程的中间产物路径（&lt；名字&gt;.tar）。
-        /// </summary>
         public static string BuildIntermediateTarPath(string outputArchivePath)
         {
             if (string.IsNullOrWhiteSpace(outputArchivePath)) return outputArchivePath;
 
-            // 形如 name.tar.zst → name.tar
+            // 先剥掉 .zst 再交给 ChangeExtension，否则 x.tar.zst 会被换成 x.tar.tar。
             if (outputArchivePath.EndsWith(".tar.zst", StringComparison.OrdinalIgnoreCase))
             {
                 return outputArchivePath.Substring(0, outputArchivePath.Length - ".zst".Length);
@@ -388,9 +374,6 @@ namespace Auto7z_WPF.Services
             return Path.ChangeExtension(outputArchivePath, ".tar");
         }
 
-        /// <summary>
-        /// 生成单个压缩步骤的命令行（不含程序路径）。
-        /// </summary>
         private string BuildSingleCompressCommand(string formatValue, List<string> quotedSources, string outputArchivePath, AppConfig config, bool applyGenericSwitches)
         {
             var sb = new StringBuilder();
@@ -403,33 +386,29 @@ namespace Auto7z_WPF.Services
 
             if (!applyGenericSwitches) return sb.ToString();
 
-            // 密码：tar 不支持加密（7-Zip 会忽略 -p 但语义上不成立，这里直接不下发）；
-            // 空密码同样不下发，避免 7z 进入交互式输入密码而卡住。
+            // 空密码等同未设置密码；tar 不支持加密，两种情况都不应下发 -p。
             bool hasPassword = !string.IsNullOrEmpty(config.Password);
             if (hasPassword && SupportsEncryption(config.Format))
             {
                 sb.AppendFormat(" -p{0}", Quote(config.Password));
             }
 
+            // -mhe=on 加密的是文件头，没有密码时下发它没有意义。
             if (config.Format == ArchiveFormat.SevenZip)
             {
-                // 完全加密（同时加密文件名）：仅在设置了密码时才有意义
                 if (config.IsEncFileName && hasPassword)
                 {
                     sb.Append(" -mhe=on");
                 }
 
-                // 固实压缩
+                // -ms 是 7z 独有的固实块开关，其他格式没有这个概念。
                 sb.Append(config.IsSolidMode ? " -ms=on" : " -ms=off");
             }
 
-            // 压缩等级：-mx= 优先于运行模式的字典设置
             sb.AppendFormat(" -mx={0}", GetCompressionLevelValue(config));
 
-            // 运行模式：只控制线程数与字典大小，不重复下发 -mx。
             AppendRuntimeModeSwitches(sb, config);
 
-            // 分卷：仅在启用、指定了大小、且数据量确实超过分卷大小时才切分
             AppendVolumeSwitch(sb, config);
 
             return sb.ToString();
@@ -439,9 +418,6 @@ namespace Auto7z_WPF.Services
         {
             return string.Format("a -aoa -y {0} -tzstd {1} {2}", CommonSwitches, Quote(outputArchivePath), Quote(tarPath));
         }
-        #endregion
-
-        #region 压缩参数开关
 
 
         private static int GetCompressionLevelValue(AppConfig config)
@@ -457,92 +433,94 @@ namespace Auto7z_WPF.Services
             }
         }
 
-        /// <summary>
-        /// 追加运行模式相关的开关（线程数 / 字典大小）。
-        ///
-        /// 7-Zip 的 -md 会盖掉 -mx 预设的字典大小，跟两者的先后顺序无关。
-        /// 因此只有在使用“存储”等级（-mx=0，本就不需要字典）时才下发 -md；
-        /// 其余等级交给 -mx 自己决定字典，否则“标准”和“极限”会退化成同一档，
-        /// 用户选择的压缩等级形同虚设。
-        /// </summary>
         private static void AppendRuntimeModeSwitches(StringBuilder sb, AppConfig config)
         {
-            switch (config.Format)
-            {
-                case ArchiveFormat.SevenZip:
-                    switch (config.RuntimeMode)
-                    {
-                        case RuntimeModePreset.Low:
-                            // 低占用：单线程 + 小字典
-                            sb.Append(" -mmt1");
-                            AppendDictionarySwitch(sb, config, "8m");
-                            break;
-                        case RuntimeModePreset.High:
-                            sb.Append(" -mmt4");
-                            AppendDictionarySwitch(sb, config, "32m");
-                            break;
-                        case RuntimeModePreset.Balanced:
-                        default:
-                            sb.Append(" -mmt2");
-                            AppendDictionarySwitch(sb, config, "16m");
-                            break;
-                    }
-                    break;
+            sb.AppendFormat(" -mmt{0}", GetThreadCount(config.RuntimeMode));
 
-                case ArchiveFormat.Zip:
-                    // zip 的字典由 deflate 决定，只控制线程数
-                    switch (config.RuntimeMode)
-                    {
-                        case RuntimeModePreset.Low: sb.Append(" -mmt1"); break;
-                        case RuntimeModePreset.High: sb.Append(" -mmt4"); break;
-                        case RuntimeModePreset.Balanced:
-                        default: sb.Append(" -mmt2"); break;
-                    }
-                    break;
+            // -md 依赖 LZMA 系编码器，只有 7z 容器接受，其他格式下发会被拒绝，所以这里提前返回。
+            if (config.Format != ArchiveFormat.SevenZip) return;
+
+            AppendDictionarySwitch(sb, config);
+        }
+
+        private static int GetThreadCount(RuntimeModePreset mode)
+        {
+            switch (mode)
+            {
+                case RuntimeModePreset.Low: return 1;
+                case RuntimeModePreset.High: return _processorCount;
+                // 默认模式取一半核心但至少留 2 个，否则双核以下会退化成单线程。
+                default: return Math.Max(2, _processorCount / 2);
             }
         }
 
-        /// <summary>
-        /// 在不破坏用户所选压缩等级的前提下下发字典大小。
-        /// “存储”等级下 7-Zip 使用 Copy 方法，加 -md 反而会让它退回 LZMA2，
-        /// 因此此时只依赖 -mx=0 本身。
-        /// </summary>
-        private static void AppendDictionarySwitch(StringBuilder sb, AppConfig config, string dictionary)
+        private static void AppendDictionarySwitch(StringBuilder sb, AppConfig config)
         {
-            if (GetCompressionLevelValue(config) == 0) return;
-            sb.Append(" -md" + dictionary);
-        }
+            int level = GetCompressionLevelValue(config);
+            // 存储级别走 Copy 编码器，没有字典概念，此时下发 -md 只会被忽略或报参数错误。
+            if (level == 0) return;
 
+            // 只有极限级别才把字典提到高档，否则内存占用会随字典大小线性膨胀。
+            bool maximum = level >= 9;
+            string dictionary;
+            switch (config.RuntimeMode)
+            {
+                case RuntimeModePreset.Low: dictionary = maximum ? "16m" : "4m"; break;
+                case RuntimeModePreset.High: dictionary = maximum ? "64m" : "32m"; break;
+                default: dictionary = maximum ? "32m" : "16m"; break;
+            }
+
+            sb.Append(" -md").Append(dictionary);
+        }
+        #endregion
+
+        #region 分卷判定
+        /// <summary>
+        /// 仅在归档体积确实超过分卷大小时才追加 -v，避免产出无意义的单卷。
+        /// </summary>
         private static void AppendVolumeSwitch(StringBuilder sb, AppConfig config)
         {
-            // tar 不支持分卷：7-Zip 会生成 name.tar.001 但解不开，等于产出废文件
-            if (config.Format == ArchiveFormat.Tar) return;
+            if (!TryGetVolumeMegabytes(config.Format, config.Volume, out long volumeMb)) return;
 
-            // 分卷大小为 0（或非法）表示不分卷
-            if (!long.TryParse(config.Volume, NumberStyles.Integer, CultureInfo.InvariantCulture, out long volumeMb)) return;
-            if (volumeMb <= 0) return;
-
-            // 输入为空（空文件夹或空文件）时总大小为 0，此时不分卷：
-            // 否则会生成 name.7z.001 这样的单卷分卷文件，与普通压缩包的产物形式不一致。
+            // 总大小未知时分卷数量无法预估，按不分卷处理，界面上的分卷开关也据此禁用。
             if (config.TotalSize <= 0) return;
 
-            // 数据量不超过分卷大小时无需切分
             long volumeBytes = volumeMb * 1024L * 1024L;
             if (config.TotalSize <= volumeBytes) return;
 
             sb.AppendFormat(" -v{0}m", volumeMb);
         }
-        #endregion
-
-        #region 解压命令
-
 
         /// <summary>
-        /// 生成解压命令行（不含程序路径）。
-        /// 不写死 -t：7-Zip 会按文件头自动识别，这样 rar / gz / xz / cab / tar.zst 等格式也能解压。
+        /// 把配置里的分卷大小解析成 MB，tar 与非法值、零值都视为不可分卷。
         /// </summary>
-        /// <param name="config">解压配置。密码为 null 或空时不下发 -p，
-        /// 避免 7-Zip 进入交互式输入密码而卡住。</param>
+        private static bool TryGetVolumeMegabytes(ArchiveFormat format, string volume, out long volumeMb)
+        {
+            volumeMb = 0;
+
+            // tar 是连续字节流，切分后会失去可解析的结构；分卷大小为 0 或非法时同样拒绝，
+            // 这两类输入都要在体积预估之前就被挡掉。
+            if (format == ArchiveFormat.Tar) return false;
+
+            if (!long.TryParse(volume, NumberStyles.Integer, CultureInfo.InvariantCulture, out volumeMb)) return false;
+
+            return volumeMb > 0;
+        }
+
+        /// <summary>
+        /// 判断给定格式与配置是否允许分卷，供界面与体积预估共享同一套判定。
+        /// </summary>
+        public static bool CanSplitVolume(ArchiveFormat format, string volume)
+        {
+            return TryGetVolumeMegabytes(format, volume, out _);
+        }
+        #endregion
+
+
+        #region 解压命令与路径识别
+        /// <summary>
+        /// 拼装解压命令，目标目录不存在时由 7-Zip 自行创建。
+        /// </summary>
         public string BuildExtractCommand(string archivePath, string destinationDirectory, AppConfig config)
         {
             if (string.IsNullOrWhiteSpace(archivePath) || string.IsNullOrWhiteSpace(destinationDirectory))
@@ -551,9 +529,7 @@ namespace Auto7z_WPF.Services
             var sb = new StringBuilder();
             sb.AppendFormat("x -aoa -y {0} -o{1} {2}", CommonSwitches, Quote(destinationDirectory), Quote(archivePath));
 
-            // 密码是否下发取决于“存档实际是什么格式”，而不是界面上选中的生成格式：
-            // tar 存档本来就不加密，下发 -p 没有意义；
-            // 其余格式（7z / zip / rar…）都要下发，否则带密码的存档根本解不开。
+            // tar 不接受 -p，即使配置里存有密码也不能下发，否则整条解压命令会失败。
             if (config != null && !string.IsNullOrEmpty(config.Password) && SupportsEncryption(config.Format))
             {
                 sb.AppendFormat(" -p{0}", Quote(config.Password));
@@ -563,23 +539,18 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>
-        /// 判断存档是否为“分卷包”（name.7z.001 / name.7z.002 …）。
-        /// 分卷包没有 name.7z 本身，必须指向第一分卷才能解压。
+        /// 判断是否为分卷，既认 .001 后缀，也认逻辑名在而只有 .001 落地的情况。
         /// </summary>
         public static bool IsSplitArchive(string archivePath)
         {
             if (string.IsNullOrWhiteSpace(archivePath)) return false;
 
-            // 已经是第一分卷
             if (archivePath.EndsWith(".001", StringComparison.OrdinalIgnoreCase)) return true;
 
+            // 界面上选中的可能是逻辑名 x.7z，而磁盘上只有 x.7z.001，必须回退探测。
             return !File.Exists(archivePath) && File.Exists(archivePath + ".001");
         }
 
-        /// <summary>
-        /// 取分卷包的第一分卷路径（name.7z → name.7z.001）。
-        /// 不是分卷包时原样返回。
-        /// </summary>
         public static string ResolveFirstVolumePath(string archivePath)
         {
             if (string.IsNullOrWhiteSpace(archivePath)) return archivePath;
@@ -595,13 +566,13 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>
-        /// 判断存档是否为“压缩的 tar”（.tar.zst / .tar.gz 等），
-        /// 这类存档单步解压只会得到中间的 tar 文件，需要再解一层。
+        /// 判断是否为压缩过的 tar，这类文件是两层容器，不能靠单一 -t 硬指定格式。
         /// </summary>
         public static bool IsCompressedTar(string archivePath)
         {
             if (string.IsNullOrWhiteSpace(archivePath)) return false;
 
+            // 长后缀与短后缀是同一种格式的两种写法，两套都要认。
             string name = Path.GetFileName(archivePath).ToLowerInvariant();
             return name.EndsWith(".tar.zst", StringComparison.Ordinal)
                 || name.EndsWith(".tar.gz", StringComparison.Ordinal)
@@ -613,17 +584,17 @@ namespace Auto7z_WPF.Services
                 || name.EndsWith(".txz", StringComparison.Ordinal);
         }
 
-        /// <summary>
-        /// 按 Windows 命令行规则给参数加引号。
-        /// 反斜杠必须翻倍、引号必须用反斜杠转义，
-        /// 否则密码里含 \ 或 " 时 7-Zip 会报“命令行语法错误”（退出码 7）。
-        /// </summary>
+        #endregion
+        #region 命令行参数转义
         private static string Quote(string value)
         {
+            // 空值也产出 ""，否则命令行里会少一个位置参数，后面的开关全部错位。
             if (string.IsNullOrEmpty(value)) return "\"\"";
 
             var sb = new StringBuilder(value.Length + 2);
             sb.Append('"');
+            // 反斜杠必须成对翻倍：以反斜杠结尾的目录路径会把后面的引号转义掉，
+            // 参数边界一旦消失，紧随其后的开关就会被吞进路径里。
             for (int i = 0; i < value.Length; i++)
             {
                 char ch = value[i];
@@ -636,14 +607,12 @@ namespace Auto7z_WPF.Services
 
                 if (i == value.Length)
                 {
-                    // 结尾的连续反斜杠：需要翻倍，否则会吃掉闭合引号
                     sb.Append('\\', backslashCount * 2);
                     break;
                 }
 
                 if (value[i] == '"')
                 {
-                    // 引号前的反斜杠：翻倍后再补一个转义反斜杠
                     sb.Append('\\', backslashCount * 2 + 1);
                     sb.Append('"');
                 }
@@ -656,20 +625,18 @@ namespace Auto7z_WPF.Services
             sb.Append('"');
             return sb.ToString();
         }
-
         #endregion
 
-        #region 命令执行
 
-
+        #region 进程启动与输出排空
         /// <summary>
-        /// 异步执行 7-Zip 命令：stdout/stderr 同时异步读取（避免管道写满互相等待），
-        /// 支持取消，并在退出后返回完整输出供上层给出可读的错误原因。
+        /// 执行一次 7z.exe 并收集双路输出，超时或取消都通过杀死进程结束。
         /// </summary>
-        /// <param name="arguments">命令参数（不含 7z.exe 路径）。</param>
-        /// <param name="progress">进度回调，参数为百分比。</param>
-        /// <param name="cancellationToken">取消标记。</param>
-        /// <param name="timeout">超时时间，null 表示不限制。</param>
+        /// <param name="arguments">已拼装好的命令行参数。</param>
+        /// <param name="progress">进度回调，可为 null。</param>
+        /// <param name="cancellationToken">取消令牌。</param>
+        /// <param name="timeout">超时时长，为 null 表示不限时。</param>
+        /// <returns>本次调用的结果。</returns>
         public CommandResult ExecuteCommand(string arguments, Action<int> progress, CancellationToken cancellationToken, TimeSpan? timeout = null)
         {
             var result = new CommandResult();
@@ -693,6 +660,17 @@ namespace Auto7z_WPF.Services
             var stderrLock = new object();
             int lastPercent = -1;
 
+            // 单路结束不代表输出收完，必须两路都收到结束标记才算排空。
+            var outputDrained = new ManualResetEventSlim(false);
+            int drainedStreams = 0;
+
+            // e.Data == null 是异步读取端唯一可靠的流已读完信号。只 WaitForExit 不够：
+            // 带超时的 WaitForExit 不保证回调已经跑完，缺了这个标记，输出会被截断。
+            Action onStreamEnd = () =>
+            {
+                if (Interlocked.Increment(ref drainedStreams) >= 2) outputDrained.Set();
+            };
+
             try
             {
                 var startInfo = new ProcessStartInfo
@@ -703,15 +681,7 @@ namespace Auto7z_WPF.Services
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
-                    // 重定向并立即关闭标准输入：
-                    // 解压加密存档时 7-Zip 会等待用户从控制台输入密码，
-                    // 本程序不提供控制台，若不关闭 stdin，7-Zip 会一直挂起等待，
-                    // 表现为“解压无响应、界面卡住”。
-                    // 关闭后 7-Zip 会立即输出 “Enter password …” 并以退出码 255 结束，
-                    // 由上层弹窗向用户索取密码后重试。
                     RedirectStandardInput = true,
-                    // 命令行已带 -sccUTF-8，7-Zip 以 UTF-8 输出；
-                    // 按 UTF-8 解码。7z 的错误信息是 UTF-8，用别的编码会乱码。
                     StandardOutputEncoding = new UTF8Encoding(false),
                     StandardErrorEncoding = new UTF8Encoding(false)
                 };
@@ -720,20 +690,25 @@ namespace Auto7z_WPF.Services
                 process.Start();
                 TrackProcess(process);
 
-                // 关闭 stdin，让 7-Zip 立刻判定“无密码可用”而不是等待输入
-                try { process.StandardInput.Close(); } catch { /* 忽略 */ }
+                // 立刻关闭 stdin：7z 只在需要输入时才读它，保持打开会让进程停在等待输入而不退出。
+                try { process.StandardInput.Close(); } catch { /* 有意忽略：进程可能已自行退出，关不上不影响读取输出 */ }
 
                 process.OutputDataReceived += (sender, e) =>
                 {
-                    if (e.Data == null) return;
+                    if (e.Data == null)
+                    {
+                        onStreamEnd();
+                        return;
+                    }
+
                     lock (stdoutLock) { stdout.AppendLine(e.Data); }
 
                     if (progress == null) return;
 
-                    // 7-Zip 用 \r 覆盖同一行来刷进度，管道下偶尔一次送来多段；
-                    // 这里按 \r 再拆一遍，避免中间的更新被整段丢掉。
+                    // 一行里可能塞了多个用回车分隔的进度片段，先拆开再逐段匹配。
                     foreach (string chunk in e.Data.Split('\r'))
                     {
+                        // 只在百分比真正变化时上报，避免同一个数字反复刷新界面。
                         var match = _percentRegex.Match(chunk);
                         if (!match.Success) continue;
 
@@ -747,64 +722,27 @@ namespace Auto7z_WPF.Services
 
                 process.ErrorDataReceived += (sender, e) =>
                 {
-                    if (e.Data == null) return;
+                    if (e.Data == null)
+                    {
+                        onStreamEnd();
+                        return;
+                    }
+
                     lock (stderrLock) { stderr.AppendLine(e.Data); }
                 };
 
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
 
-                #endregion
-
-                #region 进程等待与取消
-
-                var startedAt = DateTime.UtcNow;
-                bool killIssued = false;
-                int iterationsAfterKill = 0;
-
-                while (!process.WaitForExit(PollIntervalMs))
-                {
-                    if (cancellationToken.IsCancellationRequested && !killIssued)
-                    {
-                        killIssued = true;
-                        result.Cancelled = true;
-                        TryKill(process);
-                    }
-
-                    if (!killIssued && timeout.HasValue && DateTime.UtcNow - startedAt > timeout.Value)
-                    {
-                        killIssued = true;
-                        result.TimedOut = true;
-                        TryKill(process);
-                    }
-
-                    if (killIssued && ++iterationsAfterKill > KillGraceIterations)
-                    {
-                        // 进程已无法回收，直接放弃等待，避免界面永久卡住
-                        result.Error = new TimeoutException(EnumText.GetErrorText("Err_ProcessNotExited", "7-Zip 进程未能在取消后退出"));
-                        break;
-                    }
-                }
-
-                // 参数为空的 WaitForExit 会等待异步输出读取完成，保证 stdout/stderr 完整
-                try { process.WaitForExit(); } catch { /* 进程已释放 */ }
-
-                result.ExitCode = SafeGetExitCode(process);
-
-                // 7-Zip 退出码语义：
-                //   0 = 全部成功
-                //   1 = 有警告，但内容已处理完成（例如个别文件被占用）——不能当失败
-                //   2 = 致命错误（文件不存在、密码错误、压缩包损坏）
-                //   7 = 命令行语法错误
-                result.Succeeded = !result.Cancelled
-                                   && !result.TimedOut
-                                   && (result.ExitCode == 0 || result.ExitCode == 1);
+                // 等待与收尾下沉到 WaitForProcess，让取消、超时、异常走同一条收尾路径。
+                WaitForProcess(process, result, cancellationToken, timeout, outputDrained);
             }
             catch (Exception ex)
             {
                 result.Error = ex;
                 result.Succeeded = false;
             }
+            // 无论成败都要取输出、注销跟踪并释放句柄，否则句柄会随每次调用累积。
             finally
             {
                 lock (stdoutLock) { result.StandardOutput = stdout.ToString().Trim(); }
@@ -818,18 +756,89 @@ namespace Auto7z_WPF.Services
                 }
                 catch
                 {
-                    // 忽略
+                    // 有意忽略：进程可能在这两句之间自己退出了，杀不掉不影响下面的结果收集
                 }
 
-                try { process.Dispose(); } catch { /* 忽略 */ }
+                try { process.Dispose(); } catch { /* 有意忽略：句柄可能已被回收，重复释放失败可忽略 */ }
             }
 
             return result;
         }
         #endregion
 
-        #region 进程收尾
 
+        #region 进程等待与收尾
+        /// <summary>
+        /// 轮询等待进程退出，期间响应取消与超时，退出后再等输出排空。
+        /// </summary>
+        private void WaitForProcess(Process process, CommandResult result,
+            CancellationToken cancellationToken, TimeSpan? timeout,
+            ManualResetEventSlim outputDrained)
+        {
+            var startedAt = DateTime.UtcNow;
+            bool killIssued = false;
+            int iterationsAfterKill = 0;
+
+            // 用带超时的轮询而不是阻塞 WaitForExit，否则等待期间既响应不了取消也判断不了超时。
+            while (!process.WaitForExit(PollIntervalMs))
+            {
+                if (cancellationToken.IsCancellationRequested && !killIssued)
+                {
+                    killIssued = true;
+                    result.Cancelled = true;
+                    TryKill(process);
+                }
+
+                if (!killIssued && timeout.HasValue && DateTime.UtcNow - startedAt > timeout.Value)
+                {
+                    killIssued = true;
+                    result.TimedOut = true;
+                    TryKill(process);
+                }
+
+                // 杀掉后仍会有短暂残留，超过宽限次数说明强杀没生效，只能带着错误返回。
+                if (killIssued && ++iterationsAfterKill > KillGraceIterations)
+                {
+                    result.Error = new TimeoutException(EnumText.GetErrorText("Err_ProcessNotExited", "7-Zip 进程未能在取消后退出"));
+                    break;
+                }
+            }
+
+            // 排空必须放在确认进程退出之后，否则等的是一个永远不会到来的结束标记；
+            // 放在 finally 释放进程对象之前，则是为了避免信号量被提前回收。
+            if (HasExited(process))
+            {
+                try
+                {
+                    outputDrained.Wait(OutputDrainTimeoutMs);
+                }
+                // 信号量已被释放时忽略即可，此时输出已经收完，不必把收尾动作变成异常。
+                catch (ObjectDisposedException)
+                {
+                    // 事件已被释放（正常收尾），视为排空完成
+                }
+            }
+
+            // 退出码取不到时是 -1，由下面的成功判定统一归为失败。
+            result.ExitCode = SafeGetExitCode(process);
+
+            result.Succeeded = !result.Cancelled
+                               && !result.TimedOut
+                               && (result.ExitCode == 0 || result.ExitCode == 1);
+        }
+
+
+        private static bool HasExited(Process process)
+        {
+            try
+            {
+                return process.HasExited;
+            }
+            catch
+            {
+                return true;
+            }
+        }
 
         private static int SafeGetExitCode(Process process)
         {
@@ -854,17 +863,16 @@ namespace Auto7z_WPF.Services
                 // 进程可能已退出
             }
         }
-
         #endregion
 
+
         #region 输出目录准备
-
-
         /// <summary>
-        /// 为压缩任务准备输出目录。
-        /// 输出目录为空时回退到第一个源文件所在目录；如果是文件夹，则放到其父目录，
-        /// 避免把输出目录建在待压缩的文件夹内部（会被一并打包并导致 7z 报错）。
+        /// 准备压缩产物的落地目录，必要时把落在源目录内部的候选路径退到父目录。
         /// </summary>
+        /// <param name="firstItem">第一个待压缩项，用于推断源根目录。</param>
+        /// <param name="outputDirectory">准备好的输出目录。</param>
+        /// <returns>准备成功时为 true。</returns>
         public bool TryPrepareCompressOutput(string outputPath, PendingFile firstItem, out string outputDirectory, out Exception error)
         {
             error = null;
@@ -876,15 +884,16 @@ namespace Auto7z_WPF.Services
                 return false;
             }
 
+            // 用户可能选的是目录，也可能直接选了一个已存在的归档文件，两种都要归一到目录。
             string candidate = FileSystemHelper.NormalizeDirectoryPath(outputPath);
 
-            // 用户把压缩包文件路径填进了“输出路径”，退回该文件所在目录
             if (FileSystemHelper.IsExistingFile(candidate))
             {
                 candidate = Path.GetDirectoryName(candidate);
             }
 
-            // 输入是文件夹时，输出必须放在它的上一级，否则输出目录会被打进压缩包
+            // 输出目录若落在源目录内部，7z 会把正在写入的归档再压进自己，
+            // 轻则体积暴涨，重则把输出目录越滚越大直到失败。
             if (firstItem.IsDirectory)
             {
                 string parent = Path.GetDirectoryName(firstItem.Path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
@@ -925,8 +934,7 @@ namespace Auto7z_WPF.Services
                 return false;
             }
 
-            // 在输出目录下创建一个安全命名的子文件夹，把压缩产物放进去。
-            // 每次任务一个独立目录，既避免覆盖已有文件，也不会出现 "xxx (2)" 这类名字。
+            // 每任务一个随机子目录，避免并发任务互相覆盖同名归档。
             string safeFolder = Path.Combine(candidate, FileSystemHelper.GenerateSafeFolderName());
             try
             {
@@ -941,15 +949,12 @@ namespace Auto7z_WPF.Services
             outputDirectory = safeFolder;
             return true;
         }
-        #endregion
-
-        #region 解压目录准备
 
 
         /// <summary>
-        /// 为解压任务准备输出目录：压缩包同级的“压缩包名”子目录，重名时自动追加序号。
-        /// 不再直接解压到压缩包所在目录，避免与用户已有文件混在一起被 -aoa 静默覆盖。
+        /// 准备解压目标目录，固定放在归档所在目录下的随机子目录里。
         /// </summary>
+        /// <param name="destinationDirectory">准备好的目标目录。</param>
         public bool TryPrepareExtractOutput(string archivePath, out string destinationDirectory, out Exception error)
         {
             error = null;
@@ -961,7 +966,7 @@ namespace Auto7z_WPF.Services
                 return false;
             }
 
-            // 分卷包没有 name.7z 本身，只有 name.7z.001 …，两者都要接受
+            // 分卷归档只有 .001 会真正落地，存在性检查必须连后缀一起看。
             if (!File.Exists(archivePath) && !File.Exists(archivePath + ".001"))
             {
                 error = new FileNotFoundException(EnumText.GetErrorText("Err_ArchiveNotFound", "压缩文件不存在"), archivePath);
@@ -984,20 +989,16 @@ namespace Auto7z_WPF.Services
             string folderName = Path.GetFileNameWithoutExtension(archivePath);
             if (string.IsNullOrWhiteSpace(folderName)) folderName = "Auto7z_Extract";
 
-            // 分卷包：name.7z.001 的无扩展名是 name.7z，去掉分卷后缀
             if (folderName.EndsWith(".001", StringComparison.OrdinalIgnoreCase))
             {
                 folderName = folderName.Substring(0, folderName.Length - 4);
             }
 
-            // .tar.gz / .tar.zst 这类双扩展名，取到 .tar 之前的部分
             if (folderName.EndsWith(".tar", StringComparison.OrdinalIgnoreCase))
             {
                 folderName = folderName.Substring(0, folderName.Length - 4);
             }
 
-            // 解压产物放进一个安全命名的子文件夹：每次任务一个独立目录，
-            // 既不会覆盖已有文件，也不会出现 "xxx (2)" 这类名字。
             string safeFolder = Path.Combine(parent, FileSystemHelper.GenerateSafeFolderName());
             try
             {
@@ -1014,16 +1015,16 @@ namespace Auto7z_WPF.Services
         }
         #endregion
 
-        #region 归档命名
 
-
+        #region 归档命名与产物收集
         /// <summary>
-        /// 计算压缩后的归档文件路径（输出目录 + 名称 + 扩展名），重名时自动追加序号。
+        /// 生成归档的最终路径，同名时自动追加序号，绝不覆盖已有文件。
         /// </summary>
         public string BuildArchiveFilePath(string outputDirectory, string baseName, AppConfig config)
         {
             string safeName = SanitizeFileName(string.IsNullOrWhiteSpace(baseName) ? "Archive" : baseName);
             string extension = ArchiveFormatMap.ToExtension(config.Format);
+            // .tar.zst 是复合扩展名，格式映射只给出 .tar，需要再补一段。
             if (config.Format == ArchiveFormat.Tar && config.Zstd)
             {
                 extension += ".zst";
@@ -1033,25 +1034,18 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>
-        /// 判断压缩任务是否真的产出了文件。
-        /// 启用分卷时 7-Zip 生成的是 name.7z.001 / name.7z.002 …，并不会生成 name.7z 本身，
-        /// 只判断 File.Exists(name.7z) 会永远失败，必须把分卷序号考虑进去。
+        /// 判断归档是否已经产出，分卷归档只检查首卷。
         /// </summary>
         public bool ArchiveExists(string archivePath)
         {
             if (string.IsNullOrWhiteSpace(archivePath)) return false;
             if (File.Exists(archivePath)) return true;
 
-            // 分卷：name.7z → name.7z.001
             if (File.Exists(archivePath + ".001")) return true;
 
             return false;
         }
 
-        /// <summary>
-        /// 收集压缩任务实际产出的文件（分卷时包含所有分卷）。
-        /// 用于失败时清理残留产物。
-        /// </summary>
         public List<string> CollectProducedFiles(string archivePath)
         {
             var files = new List<string>();
@@ -1063,7 +1057,6 @@ namespace Auto7z_WPF.Services
                 return files;
             }
 
-            // 分卷产物：name.7z.001、name.7z.002 …
             string directory = Path.GetDirectoryName(archivePath);
             string prefix = Path.GetFileName(archivePath) + ".";
             if (Directory.Exists(directory))
@@ -1072,7 +1065,7 @@ namespace Auto7z_WPF.Services
                 {
                     foreach (var f in Directory.EnumerateFiles(directory, prefix + "*"))
                     {
-                        // 只认 .001/.002 这类数字后缀，避免误伤同名文件
+                        // 只认纯数字后缀：归档名可能是别的文件名的前缀，不能让无关文件混进产物列表。
                         string suffix = f.Substring((Path.Combine(directory, prefix)).Length);
                         if (suffix.Length > 0 && suffix.All(char.IsDigit)) files.Add(f);
                     }
@@ -1095,16 +1088,16 @@ namespace Auto7z_WPF.Services
                 sb.Append(Array.IndexOf(invalid, ch) >= 0 ? '_' : ch);
             }
 
+            // Windows 不允许文件名以点结尾，去掉尾点后再判空。
             string result = sb.ToString().Trim().TrimEnd('.');
             return result.Length == 0 ? "Archive" : result;
         }
-
         #endregion
 
-        #region 清理与校验
 
+        #region 清理与哈希计算
         /// <summary>
-        /// 清理未完成的压缩/解压输出。
+        /// 删除未完成的中间目录，失败时静默忽略。
         /// </summary>
         public void CleanupUnfinished(string directoryPath)
         {
@@ -1112,39 +1105,33 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>
-        /// 判断文件是否为已知的压缩格式（按文件头魔数）。
+        /// 按文件头魔数判断是否为已知归档，不依赖扩展名。
         /// </summary>
         public bool IsArchiveFile(string filePath)
         {
             return ArchiveFormatMap.DetectByMagic(filePath) != null;
         }
 
-        /// <summary>
-        /// 获取文件或文件夹的字节大小，失败返回 -1。
-        /// </summary>
         public long GetSizeInBytes(string path)
         {
             return FileSystemHelper.GetSizeInBytes(path);
         }
 
-        #endregion
-
-        #region MD5 校验文件
 
         /// <summary>
-        /// 计算文件或文件夹内所有文件的 MD5，并写入同名 .md5 文件。
-        /// 默认不生成：仅在配置启用时由 ViewModel 调用。
+        /// 计算文件或目录的 SHA256 并写入校验文件，服务实例在方法内创建并释放。
         /// </summary>
-        public void GenerateMd5(string filePathOrFolder, Action<int> progress, CancellationToken cancellationToken)
+        public void GenerateSHA256(string filePathOrFolder, Action<int> progress, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(filePathOrFolder)) return;
 
-            using (var md5Service = new Md5Service())
+            using (var sha256Service = new SHA256Service())
             {
-                md5Service.CalculateMd5ToFile(filePathOrFolder, progress, cancellationToken);
+                sha256Service.CalculateSHA256ToFile(filePathOrFolder, progress, cancellationToken);
             }
         }
-
         #endregion
+
+
     }
 }

@@ -5,35 +5,12 @@ using System.Runtime.InteropServices;
 namespace Auto7z_WPF.Services
 {
     /// <summary>
-    /// 判定"程序是怎么被启动的"。
-    ///
-    /// 同样的 exe，用户可以用好几种方式启动它，而每种方式的期望不一样：
-    ///
-    ///   方式                        父进程        期望
-    ///   --------------------------  -----------  ----------------------------
-    ///   双击 exe                    explorer      出主窗口
-    ///   cmd 里敲命令                cmd/powershell 出命令行输出，**不出主窗口**
-    ///   资源管理器右键（外壳扩展）    explorer      出小对话框 + 进度窗口，**不出主窗口**
-    ///   把文件拖到 exe 图标上        explorer      同右键：**不出主窗口**
-    ///
-    /// 最后一种是拖拽：用户把文件拖到 exe 上，Windows 通过 explorer 启动本进程。
-    /// 它跟右键菜单的期望一致 —— 点了就走，不要冒出整个主窗口。
-    ///
-    /// 但它跟"双击 exe"在命令行参数上长得一样（都是直接给路径，
-    /// 没有 #共享内存 那种标记），光看参数分不出来，只能看父进程。
-    ///
-    /// 怎么判断
-    /// --------
-    /// 看父进程是谁：
-    ///   explorer.exe  —— 说明是资源管理器发起的（双击或拖拽）
-    ///   cmd / powershell / 其他 —— 说明是用户在终端里敲的
-    ///
-    /// 但双击和拖拽都是 explorer 父进程，还要再分一层：
-    ///   拖拽一定带文件路径参数；双击不带任何路径参数。
-    ///   所以：有路径参数 + 父进程是 explorer => 拖拽。
+    /// 判断本次启动的来源：父进程是 explorer 时视为资源管理器发起的拖拽或双击打开。
     /// </summary>
     public static class LaunchContext
     {
+        #region 原生声明
+        // 与 Win32 的 PROCESSENTRY32 逐字段对应，字段顺序和 szExeFile 的长度都不能改。
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
         private struct PROCESSENTRY32
         {
@@ -64,13 +41,12 @@ namespace Auto7z_WPF.Services
         [DllImport("kernel32.dll")]
         private static extern bool CloseHandle(IntPtr hObject);
 
+        #endregion
+        #region 启动来源判断
+        // 父进程在本次运行期间不会变，查一次就缓存，避免每次拖拽都做一遍进程快照。
         private static string _parentName;
         private static bool _parentChecked;
 
-        /// <summary>
-        /// 父进程的可执行文件名（小写，不带扩展名）。
-        /// 取不到返回空字符串。
-        /// </summary>
         public static string ParentProcessName
         {
             get
@@ -84,9 +60,7 @@ namespace Auto7z_WPF.Services
             }
         }
 
-        /// <summary>
-        /// 父进程是不是资源管理器。
-        /// </summary>
+        // 资源管理器打开文件时父进程就是 explorer，父进程名足以区分拖拽与命令行启动。
         public static bool ParentIsExplorer
         {
             get
@@ -96,29 +70,15 @@ namespace Auto7z_WPF.Services
             }
         }
 
-        /// <summary>
-        /// 本次启动是不是"把文件拖到 exe 上"。
-        ///
-        /// 判据：父进程是 explorer.exe（资源管理器发起的），
-        /// 且命令行里带了文件路径（拖拽必然带路径，双击不带）。
-        /// </summary>
-        /// <param name="hasPaths">命令行里解析出了文件路径。</param>
-        /// <returns>是否是拖拽启动。</returns>
+        // 只带参数还不够：快捷方式与文件关联同样会传路径，必须配合来源判断才不会误判成拖拽。
         public static bool IsDragAndDrop(bool hasPaths)
         {
             return hasPaths && ParentIsExplorer;
         }
 
-        /// <summary>
-        /// 查父进程的可执行文件名。
-        ///
-        /// 父进程 PID 用 ToolHelp32 快照拿（Process 类的 Parent 属性
-        /// 在 .NET Framework 里没有）。名字用 Process.GetProcessById 拿 ——
-        /// 不用快照再扫一遍，快照的枚举器扫到一半就断了，容易拿不到。
-        ///
-        /// 父进程可能已经退出（拖拽时启动器会先退），这时拿不到名字，
-        /// 返回空字符串，由调用方按"查不到就是非拖拽"处理。
-        /// </summary>
+        #endregion
+        #region 父进程查询
+        // 查询失败一律返回空串，调用方按非拖拽处理，不影响正常启动。
         private static string QueryParentProcessName()
         {
             try
@@ -128,13 +88,14 @@ namespace Auto7z_WPF.Services
 
                 try
                 {
+                    // 父进程可能已经退出，取不到进程时只能放弃判断。
                     string name = Process.GetProcessById((int)parentPid).ProcessName;
                     if (string.IsNullOrEmpty(name)) return string.Empty;
+                    // 系统返回的进程名大小写不固定，统一转小写后再与 explorer 比较才不会漏判。
                     return name.ToLowerInvariant();
                 }
                 catch
                 {
-                    // 父进程已经退出
                     return string.Empty;
                 }
             }
@@ -146,9 +107,7 @@ namespace Auto7z_WPF.Services
             return string.Empty;
         }
 
-        /// <summary>
-        /// 查父进程的 PID。
-        /// </summary>
+        // Toolhelp 快照遍历整个进程表，找到自己的 PID 后再取它的父 PID，.NET 没有等价的直接接口。
         private static uint QueryParentProcessId()
         {
             try
@@ -156,6 +115,7 @@ namespace Auto7z_WPF.Services
                 uint self = (uint)Process.GetCurrentProcess().Id;
 
                 IntPtr snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+                // 句柄为 -1 表示快照创建失败，直接当作查不到父进程。
                 if (snapshot == new IntPtr(-1)) return 0;
 
                 try
@@ -177,15 +137,17 @@ namespace Auto7z_WPF.Services
                 }
                 finally
                 {
+                    // 无论遍历是否成功都要关闭快照句柄，否则句柄会随每次调用累积。
                     CloseHandle(snapshot);
                 }
             }
             catch
             {
-                // 忽略
+                // 有意忽略：查询父进程失败时按「不是资源管理器」处理（返回 0）， // 调用方据此走非拖拽分支，不该把异常抛出去。
             }
 
             return 0;
         }
+        #endregion
     }
 }

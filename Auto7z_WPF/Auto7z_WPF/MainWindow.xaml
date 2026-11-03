@@ -18,14 +18,20 @@
         KeyboardNavigation.TabNavigation="Cycle">
 
     <WindowChrome.WindowChrome>
+        <!-- CaptionHeight 取整窗高度：无边框窗口靠它把整片标题区交回系统处理拖动，
+             同时又让 WindowBorder 里的控件继续可点。 -->
         <WindowChrome GlassFrameThickness="0" CornerRadius="0" CaptionHeight="{Binding ElementName=Auto7z, Path=ActualHeight}" UseAeroCaptionButtons="False" />
     </WindowChrome.WindowChrome>
 
+    <!-- AllowsTransparency 窗口必须配一个不透明的基底，否则整窗都是可穿透的点击区；
+         背景透明 + 这层 Border 才既有圆角投影又能正常接收拖放。 -->
     <Border x:Name="WindowBorder"
             Background="White"
             BorderBrush="#33000000"
             BorderThickness="2">
 
+        <!-- IsHitTestVisibleInChrome 必须置真：WindowChrome 把整窗算作标题栏之后，
+             里面的按钮默认会被当成拖动区域，点不动。 -->
         <Grid x:Name="RootGrid" ClipToBounds="True" WindowChrome.IsHitTestVisibleInChrome="True">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
@@ -58,7 +64,6 @@
                     </Grid>
 
                     <Grid Width="10"/>
-                    <!--Data的意思是：移动到(0,0)画线到(9,9)，再移动到(0,9)画线到(9,0)-->
                     <Grid x:Name="CloseButton"
                           Background="Transparent"
                           Width="15" Height="15"
@@ -117,10 +122,12 @@
 
             <Border x:Name="SidePanel" Grid.Column="1" Background="#FDFDFD" BorderBrush="#DDDDDD" BorderThickness="1,0,0,0">
 
+                <!-- 侧栏控件统一在这里定高与居中，省得每个控件重复写同一串属性。 -->
                 <Border.Resources>
                     <Style TargetType="TextBlock">
                         <Setter Property="VerticalAlignment" Value="Center"/>
                         <Setter Property="FontSize" Value="13"/>
+                        <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
                     </Style>
                     <Style TargetType="TextBox">
                         <Setter Property="Height" Value="24"/>
@@ -135,6 +142,7 @@
                         <Setter Property="Height" Value="24"/>
                         <Setter Property="Margin" Value="0,5"/>
                         <Setter Property="VerticalContentAlignment" Value="Center"/>
+                        <Setter Property="TextBlock.TextWrapping" Value="Wrap"/>
                     </Style>
                 </Border.Resources>
 
@@ -155,7 +163,7 @@
                                     <CheckBox x:Name="CheckBox_Portable" TabIndex="12" Content="{DynamicResource PortableCheckBox}" HorizontalAlignment="Left"/>
 
                                     <StackPanel Orientation="Horizontal" Margin="3,5">
-                                        <TextBlock Text="{DynamicResource RuntimeModeLabel}" Width="60"/>
+                                        <TextBlock Text="{DynamicResource RuntimeModeLabel}" Width="70"/>
                                         <ComboBox x:Name="ComboBox_RuntimeMode" TabIndex="13" Width="100">
                                             <ComboBoxItem Content="{DynamicResource RuntimeMode_Low}"/>
                                             <ComboBoxItem Content="{DynamicResource RuntimeMode_Balanced}"/>
@@ -188,18 +196,18 @@
                                 <StackPanel Margin="5,5">
 
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
-                                        <TextBlock Text="{DynamicResource VolumeSizeLabel}" Width="60"/>
+                                        <TextBlock Text="{DynamicResource VolumeSizeLabel}" Width="70"/>
                                         <TextBox x:Name="TextBox_Volume" TabIndex="20" Width="100"/>
                                         <TextBlock Text="{DynamicResource MBUnit}" Margin="4,0,0,0"/>
                                     </StackPanel>
 
                                     <StackPanel Orientation="Horizontal" Margin="10,10" Style="{DynamicResource StackPanelAddon2Style}">
-                                        <TextBlock Text="{DynamicResource GenerateMD5Label}" Width="60"/>
-                                        <CheckBox x:Name="CheckBox_GenerateMD5" TabIndex="21" Content="{DynamicResource GenerateMD5Content}" Style="{DynamicResource EncFileNameCheckBoxStyle}"/>
+                                        <TextBlock Text="{DynamicResource GenerateSHA256Label}" Width="70"/>
+                                        <CheckBox x:Name="CheckBox_GenerateSHA256" TabIndex="21" Content="{DynamicResource GenerateSHA256Content}" Style="{DynamicResource EncFileNameCheckBoxStyle}"/>
                                     </StackPanel>
 
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
-                                        <TextBlock Text="{DynamicResource ArchiveFormatLabel}" Width="60"/>
+                                        <TextBlock Text="{DynamicResource ArchiveFormatLabel}" Width="70"/>
                                         <ComboBox x:Name="ComboBox_Format" TabIndex="22" Width="100">
                                             <ComboBoxItem Content="7z" IsSelected="True"/>
                                             <ComboBoxItem Content="zip"/>
@@ -208,23 +216,26 @@
                                     </StackPanel>
 
                                     <StackPanel x:Name="StackPanel_Addon" Orientation="Horizontal" Margin="10,10" Style="{DynamicResource StackPanelAddonStyle}">
-                                        <TextBlock Text="{DynamicResource AddonOptionsLabel}" Width="60"/>
+                                        <TextBlock Text="{DynamicResource AddonOptionsLabel}" Width="70"/>
                                         <CheckBox x:Name="CheckBox_SolidMode" TabIndex="23" Content="{DynamicResource SolidModeContent}" Style="{DynamicResource SolidModeCheckBoxStyle}"/>
                                         <CheckBox x:Name="CheckBox_Zstd" TabIndex="24" Content="{DynamicResource ZstdContent}" Style="{DynamicResource ZstdCheckBoxStyle}"/>
                                     </StackPanel>
 
                                     <StackPanel x:Name="StackPanel_Addon2" Orientation="Horizontal" Margin="10,10" Style="{DynamicResource StackPanelAddon2Style}">
-                                        <TextBlock Text="{DynamicResource AddonOptionsLabel}" Width="60"/>
+                                        <TextBlock Text="{DynamicResource AddonOptionsLabel}" Width="70"/>
                                         <CheckBox x:Name="CheckBox_ENCFileName" TabIndex="25" Content="{DynamicResource EncFileNameContent}" Style="{DynamicResource EncFileNameCheckBoxStyle}"/>
                                     </StackPanel>
 
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
-                                        <TextBlock Text="{DynamicResource AddPasswordLabel}" Width="60"/>
+                                        <TextBlock Text="{DynamicResource AddPasswordLabel}" Width="70"/>
+                                        <!-- 密码用 TextBox 而不是 PasswordBox：PasswordBox 不接受 IME
+                                             的组合输入，中文密码根本打不进去；能输进去比看不见更要紧。
+                                             代价是这个框是明文显示的。 -->
                                         <TextBox x:Name="ZipPasswordInput" TabIndex="26" Width="100" Text="{Binding ZipPasswordInputText, UpdateSourceTrigger=PropertyChanged}" Style="{DynamicResource PasswordBoxZipStyle}"/>
                                     </StackPanel>
 
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
-                                        <TextBlock Text="{DynamicResource CompressionLevelLabel}" Width="60"/>
+                                        <TextBlock Text="{DynamicResource CompressionLevelLabel}" Width="70"/>
                                         <ComboBox x:Name="ComboBox_ZipLevel" TabIndex="27" Width="100" Style="{DynamicResource ZipLevelComboBoxStyle}">
                                             <ComboBoxItem Content="{DynamicResource Level_Store}"/>
                                             <ComboBoxItem Content="{DynamicResource Level_Normal}"/>
@@ -240,7 +251,8 @@
                             <ScrollViewer>
                                 <StackPanel Margin="5,5">
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
-                                        <TextBlock Text="{DynamicResource UnzipPasswordLabel}" Width="60"/>
+                                        <TextBlock Text="{DynamicResource UnzipPasswordLabel}" Width="70"/>
+                                        <!-- 与压缩密码框同因：这里的 TextBox 也是为了让中文密码能输入。 -->
                                         <TextBox x:Name="UnZipPasswordInput" TabIndex="30" Width="100"/>
                                     </StackPanel>
                                 </StackPanel>

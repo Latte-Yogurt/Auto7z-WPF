@@ -7,34 +7,7 @@ using Auto7z_WPF.Models;
 namespace Auto7z_WPF.Services
 {
     /// <summary>
-    /// 右键菜单模式的任务执行。
-    ///
-    /// 从资源管理器右键进来时不建主窗口：任务跑完进程就退出。
-    ///
-    /// 与命令行模式的区别：
-    ///   命令行模式 —— 控制台看得见，信息写控制台，多文件用 Y/N 问答
-    ///   右键菜单模式 —— 控制台看不见，用一个独立的进度窗口显示进度，
-    ///                   需要确认时弹小对话框（合并询问、输入密码）
-    ///
-    /// 进度窗口用的是 ProcessWindow，不是主窗口：
-    /// 右键压缩的预期是"点了就走"，冒出整个主窗口很突兀。
-    ///
-    /// 线程模型
-    /// --------
-    /// 任务本体在**后台线程**上跑，界面线程只负责调度与等待。
-    ///
-    /// 之前是在界面线程上同步跑的 —— 压缩一个几十兆的目录要好几秒，
-    /// 界面线程被占满的结果是：
-    ///   - 进度条不动、状态文字不变（进度回调是 BeginInvoke 投递的，
-    ///     界面线程不空出来就永远排在队列里）
-    ///   - 窗口整个卡住，标题栏、关闭按钮都点不动
-    ///   - 弹对话框也弹不出来（要等界面线程）
-    ///
-    /// 等待任务结束用的是**嵌套的 DispatcherFrame**，
-    /// 不是 Thread.WaitOne / EventWaitHandle.WaitOne ——
-    /// 后者在界面线程上会把消息泵整个卡住，窗口照样点不动。
-    /// 嵌套消息循环（跟 MessageService 弹对话框用的是同一套机制）
-    /// 会继续处理重绘与输入消息，所以进度条能刷新、窗口能拖动。
+    /// 右键菜单触发的任务执行器，只显示进度窗口，绝不会拉起主窗口。
     /// </summary>
     public class ShellMenuTaskRunner
     {
@@ -45,11 +18,12 @@ namespace Auto7z_WPF.Services
             _viewModel = viewModel;
         }
 
+        #region 任务调度
         /// <summary>
-        /// 跑一个任务，跑完返回。
+        /// 在后台线程执行任务，同时用进度窗口占住前台。
         /// </summary>
-        /// <param name="paths">要处理的路径。</param>
-        /// <param name="mode">模式开关：-A 自动、-Z 压缩、-U 解压。</param>
+        /// <param name="paths">待处理的路径。</param>
+        /// <param name="mode">命令行开关，决定压缩、解压还是自动分派。</param>
         public void Run(string[] paths, string mode)
         {
             if (paths == null || paths.Length == 0) return;
@@ -57,32 +31,31 @@ namespace Auto7z_WPF.Services
             _viewModel.SetPendingFiles(paths);
             _viewModel.CurrentRunMode = RunMode.ShellMenu;
 
-            // 进度窗口：整个任务期间开着，任务结束或取消后关掉。
-            // Window 不是 IDisposable，不能用 using，只能自己保证关掉。
+            // 从菜单点进来期望「点了就走」，只开进度窗口；完整主窗口会连带加载目录树等初始状态，既慢又突兀。
             var progress = new ProcessWindow();
             progress.Show();
 
-            // 任务结束信号。界面线程不直接阻塞等它，
-            // 而是用嵌套消息循环等 —— 期间界面照常响应。
             Exception failure = null;
 
-            // 嵌套消息循环。任务结束时由后台线程投递一个动作把循环退出掉。
             var frame = new DispatcherFrame();
 
             var worker = new Thread(() =>
             {
                 try
                 {
-                    // 进度回调从后台线程过来，要切回界面线程才能碰 WPF 控件。
                     Action<ProgressInfo> report = info =>
                     {
                         if (info == null) return;
                         var app = Application.Current;
                         if (app == null) return;
+                        // 进度回调来自后台线程，控件只能在 UI 线程上动，统一转投到 Dispatcher。
                         app.Dispatcher.BeginInvoke(new Action(() =>
                         {
-                            progress.SetStatus(_viewModel.GetStageText(info.Stage));
+                            // 7-Zip 的进度是流式吐出来的，百分比与阶段文字一起刷新才看得出还在动；
+                            // 只写日志不刷界面，用户会以为程序卡死了。
+                            progress.SetStatus(_viewModel.GetProgressDisplayText(info.Stage, info.Percent));
                             progress.SetProgress(info.Percent);
+                            // 失败时把进度条清回去，免得停在半截看起来像卡在中途。
                             if (info.Stage == ProgressStage.Failed) progress.SetProgress(0);
                         }));
                     };
@@ -91,27 +64,25 @@ namespace Auto7z_WPF.Services
                 }
                 catch (Exception ex)
                 {
+                    // 先存下来，等进度窗口关掉之后再写日志：
+                    // 在窗口生命周期里抛出去会把 PushFrame 的等待一起打断。
                     failure = ex;
                 }
                 finally
                 {
-                    // 让界面线程退出嵌套消息循环。
-                    // 投递而不是直接设 —— frame.Continue 必须在界面线程上改。
                     var app = Application.Current;
                     if (app != null)
                     {
+                        // 后台线程结束时必须让 PushFrame 退出，否则 UI 线程会一直停在这条语句上。
                         app.Dispatcher.BeginInvoke(new Action(() => frame.Continue = false));
                     }
                 }
             });
 
-            // 前台线程：进程不会在任务没跑完时提前退出。
+            // 非后台线程：任务跑完之前不能让进程提前退出，否则进度窗口会先消失。
             worker.IsBackground = false;
             worker.Start();
 
-            // 取消轮询：进度窗口的取消 / 关闭按钮只置一个标志，
-            // 真正的取消要由界面线程转成 CancellationToken 才能传到 7-Zip。
-            // 之前没人读这个标志 —— 点取消、点关闭都没有反应，任务照跑、窗口不动。
             var cancelTimer = new DispatcherTimer(DispatcherPriority.Background)
             {
                 Interval = TimeSpan.FromMilliseconds(150)
@@ -124,22 +95,19 @@ namespace Auto7z_WPF.Services
             };
             cancelTimer.Start();
 
-            // 标题栏的 X（Alt+F4）不许直接关：先转成取消请求，
-            // 否则窗口没了、7z 还在跑，压到一半的安全目录也没人清。
             progress.Closing += (s, e) =>
             {
                 if (progress.AllowClose) return;
+                // 任务还没结束就点关闭时不能直接关窗，先转成取消请求，
+                // 等后台线程真正收尾后再由下面的 AllowClose 放行。
                 e.Cancel = true;
                 progress.RequestCancel();
             };
 
-            // 界面线程用嵌套消息循环等任务结束。
-            // 期间消息泵继续转 —— 进度条能刷新、窗口能拖动、能弹对话框。
             Dispatcher.PushFrame(frame);
 
             cancelTimer.Stop();
 
-            // 让界面线程把最后的进度显示出来再关窗
             progress.AllowClose = true;
             progress.Close();
 
@@ -150,7 +118,9 @@ namespace Auto7z_WPF.Services
                     LogService.ErrorLevel.Error);
             }
         }
+        #endregion
 
+        #region 模式分派
         private void RunTask(string mode, Action<ProgressInfo> report)
         {
             switch (mode)
@@ -168,11 +138,11 @@ namespace Auto7z_WPF.Services
                     break;
 
                 default:
-                    // 没给模式开关就用自动模式，跟把文件拖进窗口一样：
-                    // 压缩包解开，其余的压起来
+                    // 菜单没有传开关时按自动模式走，与命令行不带选项时的行为保持一致。
                     _viewModel.RunAutoDispatchAndWait(report);
                     break;
             }
         }
+        #endregion
     }
 }

@@ -6,138 +6,98 @@ using System.Windows.Input;
 
 namespace Auto7z_WPF
 {
-    /// <summary>
-    /// 消息对话框。
-    ///
-    /// 两种用法：
-    ///   是/否询问 —— 标题栏文字加“是”“否”两个按钮
-    ///   单条提示 —— 只有“确定”一个按钮，用于错误与警告
-    ///
-    /// 用来代替 MessageBox：
-    /// MessageBox 是 Win32 模态框，在 WPF 的 Dispatcher 回调里调用会与 WPF 的消息循环互锁，
-    /// 表现为弹窗显示得出但点击无响应，任务一直卡住。
-    /// WPF 窗口没有这个问题。
-    /// </summary>
     public partial class MessageWindow : Window
     {
+        #region 构造与布局
         public MessageWindow()
         {
             InitializeComponent();
 
-            // 标题取自语言资源，跟随当前界面语言
+            // 标题走资源键现取，XAML 里那个只是设计期占位。
             Title = EnumText.GetResourceText("InfoTitle", "Info");
 
-            // 默认是“是/否”两个按钮的询问模式
+            // 默认按「是/否」两键布局，调用方要单按钮时再切到 ApplyOkButton。
             ApplyYesNoButtons();
 
+            // 无边框窗口自己处理拖动；左右方向键在确认与取消之间挪焦点。
             WindowHelper.EnableWindowDragging(this);
-            WindowHelper.EnableArrowNavigation(this,
-                this.FindName("ConfirmButton") as FrameworkElement,
-                this.FindName("CancelButton") as FrameworkElement);
+            WindowHelper.EnableArrowNavigation(this, ConfirmButton, CancelButton);
         }
 
-        /// <summary>
-        /// 把按钮文字设为“是 / 否”，两个按钮都显示。
-        /// </summary>
+        // 调用方在窗口关闭之后才知道用户选了「是」还是「否」，结论留在这个属性上。
+        public bool Confirmed { get; private set; }
+
+        // 「是/否」与「确定」两种形态共用同一组按钮，只改列位置与可见性，不另建控件。
         public void ApplyYesNoButtons()
         {
-            SetButtonText("ConfirmButton", "YesButton", "Yes");
-            SetButtonText("CancelButton", "NoButton", "No");
+            ConfirmButton.Content = EnumText.GetResourceText("YesButton", "Yes");
+            CancelButton.Content = EnumText.GetResourceText("NoButton", "No");
 
-            var cancel = this.FindName("CancelButton") as FrameworkElement;
-            if (cancel != null) cancel.Visibility = Visibility.Visible;
+            CancelButton.Visibility = Visibility.Visible;
+            // 中间的占位格撑开两键间距，取消键重新占回第三列。
+            PlaceHolderGrid.Visibility = Visibility.Visible;
 
-            var placeholder = this.FindName("PlaceHolderGrid") as FrameworkElement;
-            if (placeholder != null) placeholder.Visibility = Visibility.Visible;
-
-            // 询问模式下“是”在左、“否”在右
+            // 确认键回到第一列并拉伸，与取消键分列两端。
             MoveConfirmToColumn(0);
         }
 
-        /// <summary>
-        /// 把按钮文字设为“确定”，只留一个按钮并让它居中。
-        /// </summary>
         public void ApplyOkButton()
         {
-            SetButtonText("ConfirmButton", "OkButton", "OK");
+            ConfirmButton.Content = EnumText.GetResourceText("OkButton", "OK");
 
-            var cancel = this.FindName("CancelButton") as FrameworkElement;
-            if (cancel != null) cancel.Visibility = Visibility.Collapsed;
+            // 单按钮形态下第三列整个收起，确认键居中才不显得偏左。
+            CancelButton.Visibility = Visibility.Collapsed;
+            PlaceHolderGrid.Visibility = Visibility.Collapsed;
 
-            var placeholder = this.FindName("PlaceHolderGrid") as FrameworkElement;
-            if (placeholder != null) placeholder.Visibility = Visibility.Collapsed;
-
-            // 单按钮时挪到中间的弹性列，靠这个列居中
+            // 挪到中间列才能居中，此时左右两列都没有内容。
             MoveConfirmToColumn(1);
         }
 
-        /// <summary>
-        /// 设置按钮文字，优先用指定资源键，取不到时退回备用文本。
-        /// </summary>
-        private void SetButtonText(string elementName, string resourceKey, string fallback)
-        {
-            var button = this.FindName(elementName) as Button;
-            if (button != null) button.Content = EnumText.GetResourceText(resourceKey, fallback);
-        }
-
-        /// <summary>
-        /// 把“确定”按钮放到指定的列。
-        /// </summary>
+        // 两键布局靠拉伸补齐宽度，单键布局要居中，对齐方式必须跟着列位一起换。
         private void MoveConfirmToColumn(int column)
         {
-            var confirm = this.FindName("ConfirmButton") as FrameworkElement;
-            if (confirm == null) return;
-
-            confirm.SetValue(Grid.ColumnProperty, column);
-            confirm.HorizontalAlignment = column == 1 ? HorizontalAlignment.Center : HorizontalAlignment.Stretch;
+            ConfirmButton.SetValue(Grid.ColumnProperty, column);
+            ConfirmButton.HorizontalAlignment = column == 1 ? HorizontalAlignment.Center : HorizontalAlignment.Stretch;
         }
 
-        /// <summary>
-        /// 设置正文文字。
-        /// </summary>
+        #endregion
+        #region 文案与结论
         public void SetMessage(string text)
         {
-            var message = this.FindName("QuestionText") as TextBlock;
-            if (message != null && !string.IsNullOrWhiteSpace(text)) message.Text = text;
+            // 空文案不覆盖 XAML 里的默认提示，免得出现一个没有文字的询问框。
+            if (!string.IsNullOrWhiteSpace(text)) QuestionText.Text = text;
         }
 
-        /// <summary>
-        /// 设置标题文字。
-        /// 窗口标题栏与左上角的标题文字要一起改，
-        /// 否则错误提示的标题栏写着“错误”、左上角却还是“提示”。
-        /// </summary>
         public void SetTitle(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return;
 
+            // 标题要同时写到窗口与标题栏文本块，只改一处会看到两个不同的名字。
             Title = text;
-
-            var titleText = this.FindName("MessageTitle") as TextBlock;
-            if (titleText != null) titleText.Text = text;
+            MessageTitle.Text = text;
         }
 
-        /// <summary>用户是否点了“是”。</summary>
-        public bool Confirmed { get; private set; }
-
-        /// <summary>供“是”按钮调用的方法。</summary>
+        // 先落结论再关窗：Closed 之后外面才读得到 Confirmed。
         public void Confirm()
         {
             Confirmed = true;
             Close();
         }
 
-        /// <summary>供“否”按钮和标题栏关闭按钮调用的方法。</summary>
+        // 取消一律把结论置否，Esc 与点关闭都走这里。
         public void Cancel()
         {
             Confirmed = false;
             Close();
         }
 
-        /// <summary>
-        /// 回车是确定，Esc 是取消。
-        /// </summary>
+        #endregion
+        #region 键盘与按钮回调
+        // 放在 OnKeyDown 而不是 XAML 的 InputBindings：焦点在按钮上时按键先到窗口这一层，才能统一处理。
         protected override void OnKeyDown(KeyEventArgs e)
         {
+            // Esc 直接视为取消，这是这类小对话框的通行约定，鼠标不可用时也能退出。
+            // 标记已处理，按键不再往下传给焦点控件，避免二次触发。
             if (e.Key == Key.Escape)
             {
                 Cancel();
@@ -145,6 +105,7 @@ namespace Auto7z_WPF
                 return;
             }
 
+            // 回车等同点「是」，与确认按钮的 IsDefault 行为一致。
             if (e.Key == Key.Enter)
             {
                 Confirm();
@@ -152,9 +113,11 @@ namespace Auto7z_WPF
                 return;
             }
 
+            // 其它按键照常往下走，不拦截 Tab 与方向键。
             base.OnKeyDown(e);
         }
 
+        // 记一条日志：这类询问框出现在打包或解压中途，事后要能还原用户当时的选择。
         private void ConfirmButton_Click(object sender, RoutedEventArgs e)
         {
             new LogService().WriteLog(
@@ -173,14 +136,17 @@ namespace Auto7z_WPF
             Cancel();
         }
 
+        // 右上角关闭按取消处理，不让窗口关掉却留下一个悬空的结论。
         private void CloseButton_Click(object sender, MouseButtonEventArgs e)
         {
             Cancel();
         }
 
+        // 最小化不改变结论，窗口还开着，用户可以再回来选。
         private void MinimizeButton_Click(object sender, MouseButtonEventArgs e)
         {
             WindowState = WindowState.Minimized;
         }
+        #endregion
     }
 }

@@ -1,6 +1,8 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:sys="clr-namespace:System;assembly=mscorlib">
+    <!-- 本文件必须与 zh-CN.xaml、zh-TW.xaml 的 x:Key 集合完全一致：少一个键，
+         对应的 DynamicResource 会静默回落成空字符串，界面上只留一片空白。 -->
     <sys:String x:Key="Title">Auto7z</sys:String>
     <sys:String x:Key="TitleText">Select Operation Mode</sys:String>
     <sys:String x:Key="AutoModeButton">Auto Mode</sys:String>
@@ -39,8 +41,8 @@
     <sys:String x:Key="SolidModeContent">Solid</sys:String>
     <sys:String x:Key="ZstdContent">zstd</sys:String>
     <sys:String x:Key="EncFileNameContent">Encrypt names</sys:String>
-    <sys:String x:Key="GenerateMD5Label">MD5:</sys:String>
-    <sys:String x:Key="GenerateMD5Content">MD5 file</sys:String>
+    <sys:String x:Key="GenerateSHA256Label">SHA256:</sys:String>
+    <sys:String x:Key="GenerateSHA256Content">SHA256 file</sys:String>
     <sys:String x:Key="AddPasswordLabel">Password:</sys:String>
     <sys:String x:Key="CompressionLevelLabel">Level:</sys:String>
     <sys:String x:Key="Level_Store">Store</sys:String>
@@ -55,11 +57,9 @@
     <sys:String x:Key="NoButton">No</sys:String>
     <sys:String x:Key="YesButton">Yes</sys:String>
     <sys:String x:Key="CopyRightText">All rights reserved.</sys:String>
-    <!-- Password window -->
     <sys:String x:Key="PasswordWindowTitle">Enter password</sys:String>
     <sys:String x:Key="PasswordPromptText">Encrypted. Enter password:</sys:String>
     <sys:String x:Key="CancelTaskButton">Cancel</sys:String>
-    <!-- Setting tooltips -->
     <sys:String x:Key="Tip_TopMost">Keep the window above all other windows.</sys:String>
     <sys:String x:Key="Tip_AutoSave">Save all settings automatically when the app closes. Uncheck to keep the previous config.</sys:String>
     <sys:String x:Key="Tip_RuntimeMode">Controls resource usage while compressing: thread count and dictionary size. Low uses least memory, High is fastest.</sys:String>
@@ -70,7 +70,7 @@
     <sys:String x:Key="Tip_SolidMode">Solid compression merges files into one block for better ratio, but the whole block must be extracted. Recommended with multiple files.</sys:String>
     <sys:String x:Key="Tip_Zstd">Compress the tar package with zstd to produce a .tar.zst, which is significantly smaller.</sys:String>
     <sys:String x:Key="Tip_EncFileName">Encrypt file names as well. Requires a password first. Only supported by 7z.</sys:String>
-    <sys:String x:Key="Tip_GenerateMD5">Generate a .md5 checksum file next to the archive to verify its integrity.</sys:String>
+    <sys:String x:Key="Tip_GenerateSHA256">Generate a .sha256 checksum file next to the archive to verify its integrity.</sys:String>
     <sys:String x:Key="Tip_CompressionLevel">Compression level. Store = no compression (fastest); Normal = balanced; Ultra = smallest but slowest. Effective for 7z and zip; tar does not compress.</sys:String>
     <sys:String x:Key="Tip_ZipPassword">Password for compression. Leave empty for no encryption. The tar format does not support encryption.</sys:String>
     <sys:String x:Key="Tip_UnzipPassword">Password for extraction. Leave empty if the archive is not encrypted. tar archives need no password.</sys:String>
@@ -84,10 +84,9 @@
     <sys:String x:Key="InfoMessage">Info: </sys:String>
     <sys:String x:Key="WarningMessage">Warning: </sys:String>
     <sys:String x:Key="ProgressText">7z: {0}%</sys:String>
-    <sys:String x:Key="Md5ProgressText">MD5: {0}%</sys:String>
+    <sys:String x:Key="SHA256ProgressText">SHA256: {0}%</sys:String>
     <sys:String x:Key="ErrorMessage">An error occurred: </sys:String>
     <sys:String x:Key="MultiFilePackQuery">Multiple files have been detected. Do you want to package them into a single compressed file?</sys:String>
-    <!-- Task result messages -->
     <sys:String x:Key="Result_CompressDone">Compression done</sys:String>
     <sys:String x:Key="Result_ExtractDone">Extraction done</sys:String>
     <sys:String x:Key="Result_Failed">Failed</sys:String>
@@ -104,8 +103,7 @@
     <sys:String x:Key="Log_UnknownFormat">Unrecognized archive format in the config, using 7z: {0}</sys:String>
     <sys:String x:Key="Log_DialogConfirmed">Prompt: the user chose Yes</sys:String>
     <sys:String x:Key="Log_DialogCancelled">Prompt: the user chose No</sys:String>
-    <sys:String x:Key="Log_Md5Failed">Failed to generate the MD5 file: {0}</sys:String>
-    <!-- Error messages -->
+    <sys:String x:Key="Log_SHA256Failed">Failed to generate the SHA256 file: {0}</sys:String>
     <sys:String x:Key="Err_NoCompressInput">Nothing to compress</sys:String>
     <sys:String x:Key="Err_UnknownOutputDir">Cannot determine the output directory</sys:String>
     <sys:String x:Key="Err_OutputDirNotFound">Output directory does not exist: {0}</sys:String>
@@ -123,7 +121,6 @@
     <sys:String x:Key="Err_EmptyCommand">The command is empty</sys:String>
     <sys:String x:Key="Err_SevenZipExeMissing">7z.exe not found: {0}</sys:String>
 
-    <!-- Internal log texts -->
     <sys:String x:Key="Log_LanguageSwitchFailed">Failed to switch language ({0}): {1}</sys:String>
     <sys:String x:Key="Log_AutoExtractEach">Auto mode: extracting {0} archive(s) one by one</sys:String>
     <sys:String x:Key="Log_TaskException">Task failed: {0}</sys:String>
@@ -139,11 +136,13 @@
     <sys:String x:Key="Log_InnerTarFailed">Failed to extract the inner tar: {0}</sys:String>
     <sys:String x:Key="Log_OutputPathInvalid">The output path does not exist and was cleared: {0}</sys:String>
     <sys:String x:Key="Log_TaskCancelled">Task cancelled</sys:String>
+    <sys:String x:Key="Log_AutoMixed">Auto mode: mixed input, {0} archive(s) extracted one by one, {1} other item(s) compressed</sys:String>
+    <sys:String x:Key="Log_InputRejected">{0} input path(s) do not exist or cannot be accessed and were skipped</sys:String>
     <sys:String x:Key="ProcessWindowTitle">Processing</sys:String>
     <sys:String x:Key="ProcessWaiting">Preparing…</sys:String>
     <sys:String x:Key="ProcessStageCompress">Compressing…</sys:String>
     <sys:String x:Key="ProcessStageExtract">Extracting…</sys:String>
-    <sys:String x:Key="ProcessStageMd5">Calculating MD5…</sys:String>
+    <sys:String x:Key="ProcessStageSHA256">Calculating SHA256…</sys:String>
     <sys:String x:Key="ProcessStageFinished">Done</sys:String>
     <sys:String x:Key="ProcessStageFailed">Failed</sys:String>
     <sys:String x:Key="ProcessStageCancelled">Cancelled</sys:String>
@@ -158,6 +157,13 @@
     <sys:String x:Key="Console_TaskCancelled">Cancelled</sys:String>
     <sys:String x:Key="Console_ProgressCompress">7z processed...{0}%</sys:String>
     <sys:String x:Key="Console_ProgressExtract">7z processed...{0}%</sys:String>
-    <sys:String x:Key="Console_ProgressMd5">MD5 processed...{0}%</sys:String>
+    <sys:String x:Key="Console_ProgressSHA256">SHA256 processed...{0}%</sys:String>
     <sys:String x:Key="PasswordPrompt">This archive is encrypted. Please enter the password:</sys:String>
+    <sys:String x:Key="Err_InputNotFound">The specified file or folder was not found: {0}</sys:String>
+    <sys:String x:Key="Console_RegisterOk">Context menu registered</sys:String>
+    <sys:String x:Key="Console_RegisterFailed">Failed to register the context menu. Run as administrator.</sys:String>
+    <sys:String x:Key="Console_UnregisterOk">Context menu unregistered</sys:String>
+    <sys:String x:Key="Console_UnregisterFailed">Failed to unregister the context menu</sys:String>
+    <sys:String x:Key="Console_ShellDllMissing">Auto7zShell.dll not found, cannot register</sys:String>
+    <sys:String x:Key="Err_UnknownSwitch">Unknown option: {0}</sys:String>
 </ResourceDictionary>

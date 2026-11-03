@@ -2,6 +2,9 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:local="clr-namespace:Auto7z_WPF">
 
+    <!-- 无边框窗口的外观全部靠这里的模板撑起来：WPF 的默认模板会画出系统标题栏，
+         所以每个控件（含 TabItem、ComboBox 的下拉箭头）都得自己重画一遍。 -->
+
     <Style TargetType="TabItem">
         <Setter Property="Height" Value="35"/>
         <Setter Property="FontSize" Value="13"/>
@@ -79,7 +82,6 @@
                                     <Setter Property="Template">
                                         <Setter.Value>
                                             <ControlTemplate TargetType="Thumb">
-                                                <!-- 通过调整Border的Margin来调整视觉宽窄比调整ScrollBar的Width更为省力 -->
                                                 <Border Background="#666" CornerRadius="3" Margin="6,0"/>
                                             </ControlTemplate>
                                         </Setter.Value>
@@ -155,8 +157,6 @@
         </Style.Triggers>
     </Style>
 
-    <!-- 默认文本来自视图模型（模式默认提示 / 任务进度），
-         悬停与展开状态仍由下面的触发器覆盖，保持原有视觉行为 -->
     <Style x:Key="MainWindowTextStyle" TargetType="TextBlock">
         <Setter Property="Text" Value="{Binding MainText}"/>
         <Style.Triggers>
@@ -355,7 +355,7 @@
     </Style>
 
     <Style x:Key="OperationMenuButtonStyle" TargetType="RadioButton">
-        <Setter Property="Width" Value="150"/>
+        <Setter Property="Width" Value="160"/>
         <Setter Property="Height" Value="36"/>
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="BorderBrush" Value="Transparent"/>
@@ -368,7 +368,9 @@
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="4">
-                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <TextBlock Text="{TemplateBinding Content}"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">

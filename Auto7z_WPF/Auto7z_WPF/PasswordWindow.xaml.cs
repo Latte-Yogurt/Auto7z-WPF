@@ -1,80 +1,52 @@
 using Auto7z_WPF.Services;
 using System;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Input;
 
 namespace Auto7z_WPF
 {
-    /// <summary>
-    /// 密码输入窗口。
-    ///
-    /// 7-Zip 解压加密存档时，如果命令行没有提供密码，它会在 stdout 输出
-    /// “Enter password (will not be echoed):”并以退出码 255 结束。
-    /// 此时由主窗口调起本窗口收集密码，再把密码回传给 7-Zip 重试。
-    ///
-    /// 输入框用 TextBox：PasswordBox 不接受 IME 组合输入，中文密码打不进去。
-    ///
-    /// 本窗口只负责收集密码，不直接执行任何 7-Zip 命令。
-    /// </summary>
     public partial class PasswordWindow : Window
     {
+        #region 构造与对外接口
+        // 空密码也是合法输入（等于不加密），因此默认值用空串而不是 null。
         private string _password = string.Empty;
 
         public PasswordWindow()
         {
             InitializeComponent();
 
-            // 标题使用语言资源，跟随当前界面语言
+            // 标题按资源键现取；XAML 里的同一键只用于设计期。
             Title = EnumText.GetResourceText("PasswordWindowTitle", "Enter password");
 
-            Loaded += (s, e) =>
-            {
-                // 打开即聚焦输入框
-                var box = this.FindName("PasswordInput") as TextBox;
-                if (box != null) box.Focus();
-            };
+            // 等布局完成再抢焦点：构造阶段控件还没进可视树，Focus 会落空。
+            Loaded += (s, e) => PasswordInput.Focus();
 
+            // 无边框窗口自行处理拖动；左右方向键在确认与取消之间挪焦点。
             WindowHelper.EnableWindowDragging(this);
-            WindowHelper.EnableArrowNavigation(this,
-                this.FindName("ConfirmButton") as FrameworkElement,
-                this.FindName("CancelButton") as FrameworkElement);
+            WindowHelper.EnableArrowNavigation(this, ConfirmButton, CancelButton);
         }
 
-        /// <summary>
-        /// 用户输入的密码。未输入时为空字符串。
-        /// </summary>
+        // 密码只在窗口关闭后由调用方取一次，因此用只读属性暴露。
         public string Password => _password;
 
-        /// <summary>
-        /// 设置提示文字。
-        /// 密码输错时把“该压缩包已加密，请输入密码”换成“密码错误，第 N 次尝试…”，让用户知道上一次没通过。
-        /// </summary>
-        /// <param name="text">提示文字。</param>
+        // 提示语由调用方给出（例如「该压缩包已加密」），空串时保留 XAML 里的默认文案。
         public void SetPrompt(string text)
         {
-            var prompt = this.FindName("PromptText") as TextBlock;
-            if (prompt != null && !string.IsNullOrWhiteSpace(text)) prompt.Text = text;
+            if (!string.IsNullOrWhiteSpace(text)) PromptText.Text = text;
         }
 
-        /// <summary>
-        /// 用户是否点了确定（而非取消）。
-        /// </summary>
         public bool Confirmed { get; private set; }
 
-        /// <summary>
-        /// 供“确定”按钮调用的方法：取回输入的密码并关闭窗口。
-        /// </summary>
+        // 先落密码与结论再关窗：Closed 之后外面才读得到这两个值。
         public void Confirm(string password)
         {
+            // null 也归一成空串，调用方不必再判一次。
             _password = password ?? string.Empty;
             Confirmed = true;
             Close();
         }
 
-        /// <summary>
-        /// 供“取消”按钮调用的方法：不设置密码，直接关闭。
-        /// </summary>
+        // 取消要把密码清空，不能留下上一次输入的残留。
         public void Cancel()
         {
             _password = string.Empty;
@@ -82,14 +54,13 @@ namespace Auto7z_WPF
             Close();
         }
 
-        /// <summary>
-        /// 回车是确定，Esc 是取消。
-        ///
-        /// 窗口是无边框透明的，系统的默认按钮不一定生效，
-        /// 这里自己处理一遍最稳妥。
-        /// </summary>
+        #endregion
+        #region 键盘响应
+        // 放在 OnKeyDown 而不是按钮的 IsDefault/IsCancel：输入框里的回车先到窗口这一层，才能在按下时就取到文本。
         protected override void OnKeyDown(KeyEventArgs e)
         {
+            // Esc 视为放弃输入，语义与点取消相同。
+            // 标记已处理，避免按键继续下传引发第二次关闭。
             if (e.Key == Key.Escape)
             {
                 Cancel();
@@ -97,6 +68,7 @@ namespace Auto7z_WPF
                 return;
             }
 
+            // 回车确认，输完密码直接敲回车即可，不用去够确认按钮。
             if (e.Key == Key.Enter)
             {
                 ConfirmWithInput();
@@ -104,54 +76,40 @@ namespace Auto7z_WPF
                 return;
             }
 
+            // 其余按键照常下传，保证 Tab 与方向键可用。
             base.OnKeyDown(e);
         }
 
-        /// <summary>
-        /// 取回输入框里的密码并确认。
-        ///
-        /// 输入框用的是 TextBox 而不是 PasswordBox：PasswordBox 不接受 IME 的组合输入，
-        /// 中文密码打不进去。改成 TextBox 后密码是明文显示的，
-        /// 但压缩包的密码本来就允许中文，能输进去比看不见更重要。
-        /// </summary>
+        #endregion
+        #region 按钮回调
+        // 确认与回车共用同一条路径，两种入口拿到的结果不会出现分歧。
         private void ConfirmWithInput()
         {
-            var box = this.FindName("PasswordInput") as TextBox;
-            Confirm(box == null ? string.Empty : box.Text);
+            // PasswordInput 用 TextBox 而不是 PasswordBox：PasswordBox 收不到中文输入法的组合键，密码打不进去；代价是明文显示。
+            Confirm(PasswordInput.Text);
         }
 
-        /// <summary>
-        /// “确定”按钮：取回输入的密码并关闭。
-        /// </summary>
         private void ConfirmButton_Click(object sender, RoutedEventArgs e)
         {
             ConfirmWithInput();
         }
 
-        /// <summary>
-        /// “取消”按钮：不返回密码。
-        /// </summary>
         private void CancelButton_Click(object sender, RoutedEventArgs e)
         {
             Cancel();
         }
 
-        /// <summary>
-        /// 标题栏的关闭按钮。
-        /// </summary>
+        // 关闭按钮按取消处理，并顺手清掉已输入的密码。
         private void CloseButton_Click(object sender, MouseButtonEventArgs e)
         {
             Cancel();
         }
 
-        /// <summary>
-        /// 标题栏的最小化按钮。
-        /// </summary>
+        // 最小化不改结论，窗口还开着，用户可以再回来继续输入。
         private void MinimizeButton_Click(object sender, MouseButtonEventArgs e)
         {
             WindowState = WindowState.Minimized;
         }
-
-
+        #endregion
     }
 }

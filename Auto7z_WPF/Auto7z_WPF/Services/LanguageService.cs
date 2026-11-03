@@ -6,58 +6,66 @@ using System.Windows;
 namespace Auto7z_WPF.Services
 {
     /// <summary>
-    /// 多语言资源切换服务。
-    /// 负责在运行时替换 Application.Current.Resources.MergedDictionaries 中的语言资源字典，
-    /// 并在切换完成后触发 <see cref="LanguageChanged"/>，让界面文本（主提示语等）同步刷新。
+    /// 语言资源的加载与切换，支持的语言固定三种，未知语言一律回落到英文。
     /// </summary>
     public class LanguageService
     {
+        #region 语言资源与清单
+        // 用路径片段识别语言字典，切换时只移除这些，其他合并字典不受影响。
         private const string LanguagesFolder = "languages/";
 
-        /// <summary>界面提供的语言。顺序即界面里的排列顺序。</summary>
+        // 语言代号必须与 Resources/Languages 下的文件名一致，改这里要同步资源文件。
         private static readonly string[] _supportedLanguages = { "zh-CN", "zh-TW", "en-US" };
 
-        /// <summary>找不到匹配语言时的兜底语言。</summary>
         public const string FallbackLanguage = "en-US";
 
         private readonly string _assemblyName;
-        private readonly Uri _appResourceBase;
 
-        /// <summary>语言切换完成后触发。</summary>
+        private Uri _appResourceBase;
+
+        // pack:// URI 首次构造依赖 WPF 的 PackUriHelper，未启动 WPF 的宿主会抛 UriFormatException，
+        // 因此延迟到真正需要时再建，失败就留空。
+        private Uri AppResourceBase
+        {
+            get
+            {
+                if (_appResourceBase != null) return _appResourceBase;
+
+                try
+                {
+                    _appResourceBase = new Uri($"pack://application:,,,/{_assemblyName};component/", UriKind.Absolute);
+                }
+                catch
+                {
+                    _appResourceBase = null;
+                }
+
+                return _appResourceBase;
+            }
+        }
+
+        #endregion
         public event EventHandler LanguageChanged;
 
         public LanguageService()
         {
             _assemblyName = Assembly.GetExecutingAssembly().GetName().Name;
-            _appResourceBase = new Uri($"pack://application:,,,/{_assemblyName};component/", UriKind.Absolute);
         }
 
-        /// <summary>
-        /// 语言代码是否受支持。
-        /// </summary>
+        #region 系统语言与切换
         public static bool IsSupported(string languageCode)
         {
             return !string.IsNullOrWhiteSpace(languageCode)
                 && Array.Exists(_supportedLanguages, l => l.Equals(languageCode.Trim(), StringComparison.OrdinalIgnoreCase));
         }
 
-        /// <summary>
-        /// 受支持的语言代码列表。
-        /// </summary>
+        // 返回副本，避免调用方改到内部数组导致白名单失效。
         public static string[] GetSupportedLanguages()
         {
             return (string[])_supportedLanguages.Clone();
         }
 
-        /// <summary>
-        /// 按系统界面语言挑选一个受支持的语言。
-        ///
-        /// 系统的语言代码不一定是词典里的名字，比如简体中文在有些系统上是 zh-Hans、
-        /// zh-Hans-CN，繁体中文是 zh-Hant、zh-Hant-TW。
-        /// 这里先按完整名称匹配，匹配不上再按语言前缀归类，
-        /// 中文一律归到繁体，其余一律归到英文。
-        /// </summary>
-        /// <returns>受支持的语言代码。</returns>
+        // 先精确匹配支持列表；中文再按 Hant、TW、HK 判断简繁，其余语言回落英文。
         public static string ResolveSystemLanguage()
         {
             string cultureName = System.Globalization.CultureInfo.CurrentUICulture.Name;
@@ -68,7 +76,6 @@ namespace Auto7z_WPF.Services
                 if (supported.Equals(cultureName, StringComparison.OrdinalIgnoreCase)) return supported;
             }
 
-            // 按前缀判断语种
             if (cultureName.StartsWith("zh", StringComparison.OrdinalIgnoreCase))
             {
                 bool isTraditional = cultureName.IndexOf("Hant", StringComparison.OrdinalIgnoreCase) >= 0
@@ -81,9 +88,7 @@ namespace Auto7z_WPF.Services
             return FallbackLanguage;
         }
 
-        /// <summary>
-        /// 按当前语言代码重新加载语言资源字典。
-        /// </summary>
+        // 先摘掉旧的语言字典再挂新的，否则同一个资源键会因加载顺序不同而随机生效。
         public void SwitchLanguage(string languageCode)
         {
             if (!IsSupported(languageCode))
@@ -91,20 +96,22 @@ namespace Auto7z_WPF.Services
                 languageCode = FallbackLanguage;
             }
 
+            // 切换失败只记日志，界面保留旧语言继续运行。
             try
             {
                 var newDict = LoadLanguageDictionary(languageCode);
                 var merged = Application.Current.Resources.MergedDictionaries;
 
-                // 移除所有语言资源字典，只保留本次加载的这一个。
-                // 只替换“第一个匹配项”会留下重复字典：App.xaml 里的条目从未被替换过，
-                // 于是运行时加载的字典排在它后面，查找资源时旧语言仍然生效。
                 foreach (var dict in merged.Where(IsLanguageDictionary).ToList())
                 {
                     merged.Remove(dict);
                 }
 
                 merged.Add(newDict);
+
+                // 缓存不重建的话，后台线程仍会读到上一个语言的文案。
+                EnumText.RebuildTextCache(newDict, languageCode);
+
                 AppState.CurrentLanguage = languageCode;
             }
             catch (Exception ex)
@@ -112,14 +119,13 @@ namespace Auto7z_WPF.Services
                 new LogService().WriteLog(EnumText.GetErrorText("Log_LanguageSwitchFailed", "切换语言失败（{0}）：{1}", languageCode, ex.Message), LogService.ErrorLevel.Error);
             }
 
-            // 无论资源是否切换成功，都通知界面按当前语言刷新文本
             LanguageChanged?.Invoke(this, EventArgs.Empty);
         }
 
-        /// <summary>
-        /// 加载指定语言的资源字典。优先使用相对 URI，避免 App.xaml 中
-        /// 相对 URI 与代码中绝对 pack URI 混用时需要维护两套路径写法。
-        /// </summary>
+        #endregion
+        #region 语言字典加载
+        // 先用相对 URI 让 WPF 从当前程序集解析；宿主未启动 WPF 时这一步会失败，
+        // 才用 pack:// 绝对地址兜底。
         private ResourceDictionary LoadLanguageDictionary(string languageCode)
         {
             try
@@ -131,18 +137,18 @@ namespace Auto7z_WPF.Services
             }
             catch
             {
-                // 备用：显式 pack URI
+                Uri baseUri = AppResourceBase;
+                // 没有可用的程序集基址就说明两种方式都行不通，把原始异常抛给上层记录。
+                if (baseUri == null) throw;
+
                 return new ResourceDictionary
                 {
-                    Source = new Uri(_appResourceBase, $"Resources/Languages/{languageCode}.xaml")
+                    Source = new Uri(baseUri, $"Resources/Languages/{languageCode}.xaml")
                 };
             }
         }
 
-        /// <summary>
-        /// 判断资源字典是否为语言资源字典。同时识别源程序集里的相对路径
-        /// 与 pack URI 两种写法（后者需要忽略大小写与  ；component/ 前缀差异）。
-        /// </summary>
+        // 按路径片段判断而不是比较完整 URI，相对地址与 pack:// 两种来源都能识别。
         private static bool IsLanguageDictionary(ResourceDictionary dict)
         {
             var source = dict?.Source?.OriginalString;
@@ -150,5 +156,6 @@ namespace Auto7z_WPF.Services
 
             return source.Replace('\\', '/').ToLowerInvariant().Contains(LanguagesFolder);
         }
+        #endregion
     }
 }
