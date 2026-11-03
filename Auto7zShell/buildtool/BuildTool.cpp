@@ -1,13 +1,3 @@
-// 构建 Auto7zShell 外壳扩展。
-//
-// 做成 exe 而不是 bat, 是为了不让人随手改构建步骤。
-// 需要 Visual Studio 的 x64 工具链, 靠 vcvars64.bat 把环境变量准备好。
-//
-// 用法:
-//   buildtool.exe            构建
-//   buildtool.exe --clean    先删掉 build 目录再构建
-//   buildtool.exe --vcvars <路径>   指定 vcvars64.bat 的位置
-//   buildtool.exe --help     显示说明
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -19,25 +9,19 @@
 #include <string>
 #include <vector>
 
+// 除 wmain 外全部收进匿名命名空间，避免和 CRT 或系统头里的符号撞名
 namespace
 {
+    // 三个目录全从 exe 自身位置推出来，工具在哪儿被调用都不影响结果
     struct BuildContext
     {
-        std::wstring projectDir;   // 组件根目录
-        std::wstring srcDir;       // 源码目录
-        std::wstring outDir;       // 产物目录
-        std::wstring vcvars;       // vcvars64.bat 的位置
-        bool clean = false;        // 构建前是否清空产物目录
+        std::wstring projectDir;
+        std::wstring srcDir;
+        std::wstring outDir;
+        std::wstring vcvars;
+        bool clean = false;
     };
 
-    // 往控制台写一行。
-    //
-    // 用 WriteConsoleW 而不是 wprintf: 控制台代码页是 GBK(936),
-    // wprintf 会把中文按 UTF-8 写过去, 显示出来全是问号。
-    // 按控制台的代码页把宽字符转成多字节。
-    //
-    // 输出被重定向到文件或管道时 WriteConsoleW 用不了, 只能自己转。
-    // 直接 fwrite 宽字符会写出乱码, 因为文件里存的是多字节。
     std::string ToConsoleBytes(const std::wstring &text)
     {
         UINT codePage = GetConsoleOutputCP();
@@ -55,6 +39,7 @@ namespace
         return result;
     }
 
+    // 控制台支持宽字符就直接写 Unicode，被重定向到文件或管道时 WriteConsoleW 会失败，再退回按代码页转换的字节流
     void WriteLineTo(HANDLE handle, const std::wstring &text)
     {
         std::wstring line = text + L"\n";
@@ -66,7 +51,6 @@ namespace
             return;
         }
 
-        // 输出被重定向, 按代码页转成多字节再写
         std::string bytes = ToConsoleBytes(line);
         FILE *stream = (handle == GetStdHandle(STD_ERROR_HANDLE)) ? stderr : stdout;
         fwrite(bytes.data(), 1, bytes.size(), stream);
@@ -83,7 +67,6 @@ namespace
         WriteLineTo(GetStdHandle(STD_ERROR_HANDLE), text);
     }
 
-    // 拼接路径
     std::wstring JoinPath(const std::wstring &left, const wchar_t *right)
     {
         std::wstring result = left;
@@ -93,7 +76,6 @@ namespace
         return result;
     }
 
-    // 路径所在的目录, 末尾不带分隔符
     std::wstring DirectoryOf(const std::wstring &path)
     {
         size_t pos = path.find_last_of(L"\\/:");
@@ -118,7 +100,6 @@ namespace
                (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     }
 
-    // 建目录, 已存在就当成功
     bool MakeDirectory(const std::wstring &path)
     {
         if (DirectoryExists(path))
@@ -134,7 +115,6 @@ namespace
                GetLastError() == ERROR_ALREADY_EXISTS;
     }
 
-    // 删一个目录下的所有东西, 目录本身保留
     void RemoveDirectoryContent(const std::wstring &path)
     {
         std::wstring pattern = JoinPath(path, L"*");
@@ -156,6 +136,7 @@ namespace
             }
             else
             {
+                // 产物可能带只读属性，不先摘掉 DeleteFileW 会失败，--clean 就删不干净
                 SetFileAttributesW(item.c_str(), FILE_ATTRIBUTE_NORMAL);
                 DeleteFileW(item.c_str());
             }
@@ -164,7 +145,7 @@ namespace
         FindClose(find);
     }
 
-    // 跑一条命令, 返回退出码
+    // vcvars64.bat 设的环境变量只活在自己的 cmd 会话里，所以编译、资源、链接三步必须拼进同一次调用，分开执行后两步就没有编译环境
     int RunCommand(const std::wstring &commandLine, const std::wstring &workingDir)
     {
         std::wstring full = L"cmd.exe /c \"" + commandLine + L"\"";
@@ -176,6 +157,7 @@ namespace
         std::vector<wchar_t> mutableCommand(full.begin(), full.end());
         mutableCommand.push_back(L'\0');
 
+        // CREATE_NO_WINDOW 是为了不在每次构建时闪一个黑窗口
         if (!CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE,
                             CREATE_NO_WINDOW, nullptr,
                             workingDir.empty() ? nullptr : workingDir.c_str(),
@@ -189,15 +171,16 @@ namespace
         GetExitCodeProcess(process.hProcess, &exitCode);
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
+        // 配 /c 时 cmd 会把最后一条命令的退出码原样带出来，链接失败自然就是非零
         return static_cast<int>(exitCode);
     }
 
-    // 找 vcvars64.bat, 按常见的安装位置挨个试
+    // 用户显式指定就不再猜，只核对文件在不在
     std::wstring FindVcvars(const std::wstring &userGiven)
     {
         if (!userGiven.empty())
         {
-            // 用户指定了路径, 文件不在就直接说清楚
+            // 指定了却不存在的路径直接报错，不悄悄退回自动探测，否则编出来的东西和预期不符还查不到原因
             if (!FileExists(userGiven))
             {
                 PrintErrorLine(L"指定的 vcvars64.bat 不存在: " + userGiven);
@@ -206,6 +189,7 @@ namespace
             return userGiven;
         }
 
+        // 只按安装器的默认位置猜，装在自定义目录的用户请用 --vcvars 指定
         static const wchar_t *kCandidates[] = {
             L"C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat",
             L"C:\\Program Files\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat",
@@ -219,28 +203,21 @@ namespace
 
         for (const wchar_t *candidate : kCandidates)
         {
+            // 候选按顺序取第一个存在的，不比对版本号，装了多套时以列表靠前的为准
             if (FileExists(candidate))
                 return candidate;
         }
         return L"";
     }
 
-    // 用默认浏览器打开下载页
+    // 找不到工具链时顺手开下载页，报错文字写得再细，多数人也不会自己去翻下载地址
     void OpenDownloadPage()
     {
-        try
-        {
-            ShellExecuteW(nullptr, L"open",
-                          L"https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022",
-                          nullptr, nullptr, SW_SHOWNORMAL);
-        }
-        catch (...)
-        {
-            // 打不开就算了, 链接已经打印出来了
-        }
+        ShellExecuteW(nullptr, L"open",
+                      L"https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022",
+                      nullptr, nullptr, SW_SHOWNORMAL);
     }
 
-    // 找不到工具链时, 给出下载步骤并直接拉起浏览器。
     void PrintMissingToolchain()
     {
         PrintErrorLine(L"需要 Visual Studio Build Tools 的 x64 工具链才能编译。");
@@ -268,12 +245,14 @@ namespace
     }
 }
 
+// 走 wmain 而不是 main，路径参数本来就是宽字符，省掉一次从 ANSI 代码页的转换
 int wmain(int argc, wchar_t **argv)
 {
     BuildContext context;
 
     wchar_t exePath[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    // 以 exe 所在目录为基准，不依赖调用方的当前目录
     context.projectDir = DirectoryOf(exePath);
     context.srcDir = JoinPath(context.projectDir, L"src");
     context.outDir = JoinPath(context.projectDir, L"build");
@@ -301,7 +280,7 @@ int wmain(int argc, wchar_t **argv)
         }
     }
 
-    // 工具放在 buildtool 子目录里, 组件根目录在上一层
+    // exe 可能被单独拷进 build 子目录里运行，找不到 src 就往上退一层再试
     if (!DirectoryExists(context.srcDir))
         context.projectDir = DirectoryOf(context.projectDir);
     context.srcDir = JoinPath(context.projectDir, L"src");
@@ -313,7 +292,6 @@ int wmain(int argc, wchar_t **argv)
         return 1;
     }
 
-    // 工具链准备: 借 vcvars64.bat 把 MSVC 的环境变量设置好。
     std::wstring vcvars = FindVcvars(context.vcvars);
     if (vcvars.empty())
     {
@@ -341,14 +319,7 @@ int wmain(int argc, wchar_t **argv)
     std::wstring resFile = JoinPath(context.outDir, L"ShellResource.res");
     std::wstring dll = JoinPath(context.outDir, L"Auto7zShell.dll");
 
-    // 三步放在同一个 cmd 会话里做。
-    //
-    // vcvars64.bat 靠修改当前进程的环境变量生效, 它是个批处理,
-    // 在子进程里跑改不到我们这边, 搬回来又容易出岔子。
-    // 让同一个 cmd 先跑 vcvars 再跑 cl 与 link, 环境变量自然是对的。
-    // vcvars64.bat 与编译放在同一个 cmd 会话里做。
-    // vcvars 靠修改当前进程的环境变量生效, 它是个批处理,
-    // 在子进程里跑改不到我们这边, 搬回来又容易出岔子。
+    // /utf-8 让 cl 按 UTF-8 读源码，中文字符串才不会被代码页截断；/MT 静态链接 CRT，DLL 拷到别的机器上不用再带运行库
     std::wstring script =
         L"call \"" + vcvars + L"\" >nul && "
         L"cl /nologo /c /utf-8 /EHsc /O2 /MT /W3 /DUNICODE /D_UNICODE"
@@ -360,6 +331,7 @@ int wmain(int argc, wchar_t **argv)
         L" ole32.lib shell32.lib advapi32.lib shlwapi.lib user32.lib gdi32.lib";
 
     PrintLine(L"编译并链接...");
+    // 工作目录设在 src，cl 生成的 .obj 就落在源码旁边，和手工编译的结果一致
     int result = RunCommand(script, context.srcDir);
     if (result != 0)
     {

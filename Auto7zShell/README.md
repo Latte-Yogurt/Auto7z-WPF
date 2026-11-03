@@ -4,9 +4,9 @@ Windows 资源管理器右键菜单扩展。右键文件或文件夹时提供「
 
 用 C++ 写成独立的 COM 组件（`Auto7zShell.dll`），由主程序 `Auto7z.exe` 在命令行下注册。
 
-> 这份文档只讲 C++ 组件这一侧。组件被拉起之后主程序怎么表现
-> （不弹主窗口、进度显示在小进度窗口、提问用小对话框），
-> 见 [`Auto7z_WPF`](../Auto7z_WPF/README.md) 与[根 README](../README.md)。
+> 这份文档只讲 C++ 组件这一侧（注册表、菜单项、传参协议、作用范围）。
+> 组件被拉起之后主程序怎么表现 —— 不弹主窗口、进度显示在小进度窗口、提问用小对话框 ——
+> 属于 WPF 主程序那一侧，不在本文件范围内。
 
 ## 目录结构
 
@@ -180,8 +180,6 @@ HKCU\Software\Auto7z
 
 `DllUnregisterServer` 删 Approved 时删的也是 `HKEY_LOCAL_MACHINE` 那一份 —— 与注册时写入的同一个键，两边对得上，卸载后不会留下残留条目。
 
-（早期版本这里删的是 `HKEY_CURRENT_USER`，与注册写入的 `HKLM` 对不上，导致 `HKLM` 下的 Approved 条目永远留着。已修正。）
-
 ### 四个容易踩的坑
 
 **一、菜单挂载点要写 `HKLM\Software\Classes`**
@@ -217,7 +215,13 @@ HKCU\Software\Auto7z
 
 跟 `ShellExtension.cpp` 里的 `kStringCompressZhCN` 等常量对应。读不到语言时用英文那套。
 
-图标取主程序的图标：组件从注册表 `CLSID\...\Auto7z\MainExePath` 找到 `Auto7z.exe`，用 `ExtractIconEx` 取小图标（菜单用 16 像素那个），再画成位图给菜单项。取不到就菜单项不带图标，不影响用。
+图标取主程序的图标：组件从注册表 `CLSID\...\Auto7z\MainExePath` 找到 `Auto7zGUI.exe`（回退 `Auto7z.exe`），
+用 `ExtractIconExW` 先取 16 像素的小图标，取不到再取大图标缩到菜单尺寸（`HALFTONE` 平滑），
+最后画成位图交给菜单项。取不到就菜单项不带图标，不影响用。
+
+图标和位图都是**进程内只取一次、只画一次**（`LoadMainIcon` / `LoadMainMenuBitmap` 里的函数内静态变量）。
+`MIIM_BITMAP` 只保存句柄：既不复制位图，也不会在菜单销毁时释放它，每次弹菜单都新建一张
+等于在资源管理器进程里按次泄漏 GDI 句柄。
 
 注册表里没有 `MainExePath` 时，组件回退到「dll 同目录下的 `Auto7z.exe`」来找主程序。
 
@@ -232,16 +236,25 @@ HKCU\Software\Auto7z
 选中的文件列表**不走命令行**，走命名共享内存：
 
 ```
-Auto7z.exe #<映射名>:<字节数>:<事件名> [-A|-Z|-U]
+Auto7zGUI.exe #<映射名>:<字节数>:<事件名> [-z|-uz]
 ```
 
-映射名与事件名由组件随机生成，主程序按名字打开共享内存，从里面读出以 `\0` 分隔的 UTF-16 路径列表。共享内存第一个 `wchar_t` 是 0，表示后面按 UTF-16 读。
+组件只会传这两个开关：压缩 `-z`、解压 `-uz`（见 `ShellExtension.cpp` 的 `InvokeCommand`）。
+不传开关时主程序按自动模式处理。
+
+映射名与事件名由组件生成，形如 `Auto7zShellMap<PID><序号>` / `Auto7zShellEvent<PID><序号>`——
+唯一性靠「进程 id + 进程内自增序号」。主程序按名字打开共享内存，从里面读出以 `\0` 分隔的
+UTF-16 路径列表。共享内存第一个 `wchar_t` 是 0，表示后面按 UTF-16 读。
 
 用共享内存是为了绕开命令行的长度上限（32767 字符）—— 一次选中上百个长路径时命令行装不下。
 
-句柄的生命周期：组件写完数据后**保持句柄打开**，等主程序读完才关。命名共享内存最后一个句柄关闭时对象就销毁了，提前关掉主程序就读不到了。
+句柄的生命周期：组件写完数据后**保持句柄打开**，等主程序读完才关。命名共享内存最后一个句柄
+关闭时对象就销毁了，提前关掉主程序就读不到了。这个等待放在**后台线程**里做
+（`StartChildHandoff`），不在 `InvokeCommand` 里同步等 —— 后者是在资源管理器的界面线程上，
+子进程要是没起来（exe 被挪走、被杀毒软件挡住），右键菜单会整个卡住。
 
-主程序读完会 `SetEvent` 通知组件，组件 `WaitForSingleObject` 等这个信号，最多等 30 秒；超时就直接放掉，不让句柄一直占着。
+主程序读完会 `SetEvent` 通知组件，后台线程收到后关句柄；最多等 30 秒，超时就直接放掉。
+`DllCanUnloadNow` 会把这个后台线程也算进去，线程没走完就不让 dll 卸载。
 
 ## 作用范围
 
@@ -285,7 +298,7 @@ C++ 里 GUID 没有重载 `operator==`，比较的是地址，永远不相等。
 
 ## 检查组件是否正常
 
-工具在 `..\testtools\`，说明见那里的 README。工具二进制放在**各自的目录里**（`..\testtools\cs\shellcheck\shellcheck.exe` 这种），先编译再跑：
+工具在 `..\testtools\`，用 Python 3 驱动；编译好的二进制放在**各自的目录里**（`..\testtools\cs\shellcheck\shellcheck.exe` 这种），先编译再跑：
 
 ```powershell
 # 在 Auto7zShell\ 目录下执行
