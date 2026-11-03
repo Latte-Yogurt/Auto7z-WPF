@@ -6,7 +6,7 @@ r"""一键回归测试。
 凡是声称"已修"的条目必须有对应自动化测试且通过。
 
 包含:
-    regress.py      主回归（T01–T22：格式/等级/分卷/MD5/密码/日志/边界/便携…）
+    regress.py      主回归（T01–T22：格式/等级/分卷/SHA256/密码/日志/边界/便携…）
     cs_check.py     静态检查（命名类型一致性、文档标签、路径边界、死分支）
     find_dead2.py   废键与三语词典一致性
 
@@ -83,7 +83,14 @@ def t_main_regress(res, app):
 
 
 def t_static(res, app):
-    """静态检查：命名类型一致性、文档标签、路径边界、死分支。"""
+    """静态检查：命名类型一致性、文档标签、路径边界、空 catch。
+
+    空 catch 分两档：
+      已说明（`catch { /* 为什么吞 */ }`）—— 登记，不判失败；
+      未说明（光秃秃吞掉异常）      —— **判失败**。
+    规则是「异常可以吞，但必须写明为什么」。
+    2026-11-02 起由「只计数不判失败」改为判失败（原先 7 处存量为不判失败项）。
+    """
     print("")
     print("=== 静态检查 ===")
     src = PROJECT
@@ -91,13 +98,14 @@ def t_static(res, app):
     out = (r.stdout or "") + (r.stderr or "")
     m = re.search(r"TOTAL PROBLEMS:\s*(\d+)", out)
     n = int(m.group(1)) if m else -1
-    # 静态检查报出来的是"已知的现存问题"，不判失败，但要报出来让人知道
-    detail = "TOTAL PROBLEMS=%s" % n
+    reg = re.search(r"REGISTERED:\s*(\d+)", out)
+    nreg = int(reg.group(1)) if reg else -1
+    detail = "问题=%s｜已说明的空 catch=%s" % (n, nreg)
     if n > 0:
         for line in out.splitlines():
             if line.strip().startswith("!!"):
-                detail += " | " + line.strip()[3:60]
-    res.add("静态检查（已知问题计数）", True, detail)
+                detail += " | " + line.strip()[3:70]
+    res.add("静态检查（空 catch 必须写明原因）", n == 0, detail)
     return out
 
 
@@ -272,6 +280,66 @@ def t_guardprobe(res, app):
     res.add("递归删除守卫运行时验证", ok, detail)
 
 
+def t_resultprobe(res, app):
+    """任务结果的颜色契约（运行时）：取消/失败红字、成功绿字。
+
+    与 behaviorcheck BC11–BC13 配对：
+      behaviorcheck  —— 静态：源码里有没有该有的调用与属性名
+      resultprobe    —— 运行时：真的建 ViewModel、调 SetResult，
+                        在 PropertyChanged 回调里看通知的属性名与颜色依据
+
+    静态只证明「代码写了」，运行时才证明「通知发对了、颜色依据取对了」。
+    """
+    print("")
+    print("=== 结果颜色契约（运行时）===")
+    probe = HERE / "cs" / "resultprobe" / "resultprobe.exe"
+    if not probe.exists():
+        res.add("结果颜色契约（运行时）", False, "探针未编译（cs\\resultprobe\\resultprobe.exe）")
+        return
+    # 探针是 .NET 控制台程序，输出跟着控制台代码页走，这里不假定编码：
+    # 直接看退出码与「不符」的行数。退出码 0 = 探针自己认为全部符合预期。
+    r = run([str(probe), str(app)], encoding="gbk")
+    out = (r.stdout or "") + (r.stderr or "")
+    total = len([l for l in out.splitlines() if l.strip().startswith(("OK ", "!! "))])
+    bad = len([l for l in out.splitlines() if l.strip().startswith("!! ")])
+    ok = r.returncode == 0 and bad == 0 and total > 0
+    if total == 0:
+        detail = "输出未能正确解析（未读到检查项）"
+    else:
+        detail = "检查 %d 项，不符 %d 项" % (total, bad)
+    res.add("结果颜色契约（运行时）", ok, detail)
+
+
+def t_sha256probe(res, app):
+    """本项目计算服务（Services/SHA256Service.cs）的功能契约（运行时）。
+
+    sha256probe —— 运行时：本项目这一份算得对不对
+
+    为什么要单独一项：T04 只走完整压缩链路、断言「产出的 .sha256 对得上」，
+    测不出行格式、有没有 BOM、目录递归、坏文件跳过、进度单调这些细节；
+    bench B1/B3 只看吞吐，不断言正确性。
+    """
+    print("")
+    print("=== 本项目计算服务（运行时）===")
+    probe = HERE / "cs" / "sha256probe" / "sha256probe.exe"
+    if not probe.exists():
+        res.add("本项目计算服务运行时验证", False, "探针未编译（cs\\build_all.py sha256probe）")
+        return
+    work = TEMP.sub("sha256probe")
+    # 探针输出跟着控制台代码页走，这里不假定编码：
+    # 退出码 0 = 探针内部已逐项判定通过。
+    r = run([str(probe), str(app), str(work)], encoding="gbk")
+    out = (r.stdout or "") + (r.stderr or "")
+    total = len([l for l in out.splitlines() if l.strip().startswith(("OK ", "!! "))])
+    bad = len([l for l in out.splitlines() if l.strip().startswith("!! ")])
+    ok = r.returncode == 0 and bad == 0 and total > 0
+    if total == 0:
+        detail = "输出未能正确解析（未读到检查项）"
+    else:
+        detail = "检查 %d 项，不符 %d 项" % (total, bad)
+    res.add("本项目计算服务运行时验证", ok, detail)
+
+
 def t_no_ghost(res, app):
     """收尾检查：系统里不该留下右键菜单注册（幽灵注册）。"""
     print("")
@@ -322,6 +390,8 @@ def main():
         t_shellreg(res, app)
         t_rename(res, app)
         t_guardprobe(res, app)
+        t_resultprobe(res, app)
+        t_sha256probe(res, app)
         t_no_ghost(res, app)
     finally:
         res.summary()

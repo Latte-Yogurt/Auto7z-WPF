@@ -72,6 +72,57 @@ function WaitWindow([int]$processId, [int]$seconds) {
   return $null
 }
 
+# 用外壳扩展那套共享内存协议，把路径交给 Auto7zGUI.exe，让它进「右键菜单模式」。
+#
+# 为什么不直接跑 dataprobe + Auto7zShell.dll：
+#   外壳扩展会去注册表读「主程序路径」，机器上装过一份 Auto7z 时它指向安装目录里的
+#   旧版本，于是被测的就不是当前构建了。这里用同一套 #映射名:字节数:事件名 协议
+#   直接启动当前构建的 Auto7zGUI.exe —— 走的是完全相同的分支
+#   （ShellCommandService 认出 # 前缀 -> fromShell=true -> RunFromShellMenu），
+#   只是不经过外壳扩展。外壳扩展本身另有 shellcheck/scopeprobe/iconprobe 覆盖。
+#
+# 返回一个包含 Exe / Arg / Signal / Map 的对象；调用方用完要 Dispose 句柄。
+function StartShellMenu([string[]]$paths, [string]$exePath) {
+  # MemoryMappedFile / EventWaitHandle 都在 mscorlib 里，不用额外 Add-Type。
+
+  $totalChars = 1   # 开头一个标记字符
+  foreach ($p in $paths) { $totalChars += $p.Length + 1 }
+  $totalBytes = $totalChars * 2
+
+  $suffix = ([guid]::NewGuid().ToString("N")).Substring(0, 8)
+  $mapName = "Auto7zUiProbeMap$suffix"
+  $eventName = "Auto7zUiProbeEvent$suffix"
+
+  $mapping = [System.IO.MemoryMappedFiles.MemoryMappedFile]::CreateNew(
+    $mapName, $totalBytes, [System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::ReadWrite)
+
+  $accessor = $mapping.CreateViewAccessor(0, $totalBytes,
+    [System.IO.MemoryMappedFiles.MemoryMappedFileAccess]::ReadWrite)
+  $buffer = New-Object byte[] $totalBytes
+  $position = 2   # 跳过开头的标记（2 字节 = 1 个 wchar）
+  foreach ($p in $paths) {
+    $encoded = [System.Text.Encoding]::Unicode.GetBytes($p)
+    [Array]::Copy($encoded, 0, $buffer, $position, $encoded.Length)
+    $position += $encoded.Length
+    $buffer[$position] = 0; $buffer[$position + 1] = 0
+    $position += 2
+  }
+  $accessor.WriteArray(0, $buffer, 0, $totalBytes)
+  $accessor.Flush()
+  $accessor.Dispose()
+
+  # 映射句柄不能关：命名映射对象靠句柄存活，子进程还没读完就关了会读不到。
+  $signal = New-Object System.Threading.EventWaitHandle(
+    $false, [System.Threading.EventResetMode]::ManualReset, $eventName)
+
+  return [pscustomobject]@{
+    Exe = $exePath
+    Arg = "#$mapName`:$totalBytes`:$eventName"
+    Signal = $signal
+    Map = $mapping
+  }
+}
+
 # ---------------- 准备数据 ----------------
 $src = Join-Path $work 'payload'
 if (-not (Test-Path $src)) {
@@ -85,8 +136,11 @@ Log("样本目录: $src  $([int](((Get-ChildItem $src | Measure-Object Length -S
 try {
   if ($Scenario -eq 'gui') {
     Log('=== 场景：GUI 主窗口进度（MainText）===')
-    $app = Start-Process $App -PassThru
-    $win = WaitWindow $app.Id 20
+    # 进程句柄不能叫 $app：PowerShell 变量名不区分大小写，$app 与参数 $App
+    # 是同一个变量，而 $App 带 [string] 类型约束，赋 Process 进去会被强制转成字符串，
+    # 后面 $app.Id 就恒为 null，窗口永远等不到。
+    $guiProc = Start-Process $App -PassThru
+    $win = WaitWindow $guiProc.Id 20
     if (-not $win) { throw '主窗口没有出现' }
     Log("主窗口: [$($win.Current.Name)]")
     Shot 'gui_01_idle'
@@ -101,7 +155,9 @@ try {
     $deadline = (Get-Date).AddSeconds($HoldSeconds + 8)
     while ((Get-Date) -lt $deadline) {
       $texts = ReadTexts $win
-      $progressLine = $texts | Where-Object { $_ -match '7z|MD5|%' } | Select-Object -First 1
+      # 窗口标题就是 Auto7z，里面也含 7z，直接按 7z 过滤会把标题当成进度。
+      # 改成只认带百分号或 MD5 的那条。
+      $progressLine = $texts | Where-Object { $_ -match '%|MD5' } | Select-Object -First 1
       if ($progressLine) { $seen[$progressLine] = $true }
       if ($seen.Count -in 1,3,8) { Shot ("gui_progress_{0}" -f $seen.Count) }
       if ($texts -match '完成|失败') { break }
@@ -110,26 +166,18 @@ try {
     Log("观察到的进度文本 $($seen.Count) 种：")
     $seen.Keys | Sort-Object | ForEach-Object { Log("   $_") }
     Shot 'gui_99_final'
-    $app.CloseMainWindow() | Out-Null
-    $app.WaitForExit(8000) | Out-Null
+    $guiProc.CloseMainWindow() | Out-Null
+    $guiProc.WaitForExit(8000) | Out-Null
   }
 
   if ($Scenario -eq 'shellmenu') {
     Log('=== 场景：右键菜单进度窗口 + 取消 ===')
-    $dp = Join-Path $repo 'testtools\cs\dataprobe\dataprobe.exe'
     $target = $src   # 传整个目录：压缩时间长一点，才看得到进度与取消
-    $dpProc = Start-Process $dp -ArgumentList ("`"$dll`" `"$clsid`" `"$target`"") -PassThru
-    Log("dataprobe 已启动 pid=$($dpProc.Id) 目标=$target")
+    $menu = StartShellMenu @($target) $App
+    Log("启动外壳菜单模式: $($menu.Exe) 参数 $($menu.Arg)")
+    $gui = Start-Process $menu.Exe -ArgumentList "`"$($menu.Arg)`" -Z" -PassThru
+    Log("Auto7zGUI 已启动 pid=$($gui.Id) 目标=$target")
 
-    # 等 Auto7zGUI.exe（外壳扩展启动的那个）出现
-    $gui = $null
-    $deadline = (Get-Date).AddSeconds(20)
-    while ((Get-Date) -lt $deadline) {
-      $gui = Get-Process Auto7zGUI -ErrorAction SilentlyContinue | Select-Object -First 1
-      if ($gui) { break }
-      Start-Sleep -Milliseconds 150
-    }
-    if (-not $gui) { throw '右键菜单模式没有拉起 Auto7zGUI.exe' }
     $win = WaitWindow $gui.Id 20
     if (-not $win) { throw '进度窗口没有出现' }
     Log("进度窗口: [$($win.Current.Name)] pid=$($gui.Id)")
@@ -139,14 +187,27 @@ try {
     $deadline = (Get-Date).AddSeconds(5)
     while ((Get-Date) -lt $deadline) {
       $pct = ReadProgress $win
-      $txt = (ReadTexts $win | Where-Object { $_ -notmatch '^Auto7z$' } | Select-Object -First 1)
-      $samples += "pct=$pct txt=$txt"
+      # 进度窗口正文是 PromptText，标题栏文字也是同一个词，
+      # 所以把窗口里所有文本都记下来，而不是只取第一个 ——
+      # 只看第一个会读到标题，看不出正文有没有带上百分比。
+      $all = ReadTexts $win
+      $txt = ($all | Where-Object { $_ -notmatch '^Auto7z$' } | Select-Object -First 1)
+      $samples += "pct=$pct txt=$txt all=$($all -join ',')"
       Start-Sleep -Milliseconds 400
     }
     $distinct = ($samples | Select-Object -Unique)
     Log("进度采样 $($samples.Count) 次，不同取值 $($distinct.Count) 种：")
     $distinct | Select-Object -First 8 | ForEach-Object { Log("   $_") }
     Shot 'shell_02_running'
+
+    # 新需求：进度窗口正文要带实时百分比（"7z 已处理...42%"）。
+    # 只看进度条数值不够 —— 条在动但文字不动，用户照样看不出数字。
+    $percentTexts = @($samples | Where-Object { $_ -match '[0-9]+\s*%' })
+    if ($percentTexts.Count -gt 0) {
+      Log("正文带百分比的采样 $($percentTexts.Count) 种：" + ($percentTexts | Select-Object -First 3) -join ' | ')
+    } else {
+      Log('!! 进度窗口正文没有出现百分比，需求没生效')
+    }
 
     # 用户层动作：关窗口（等同 Alt+F4 / 标题栏 X）→ 应转成取消
     Log('发送 WinClose（模拟用户点关闭）')
@@ -158,8 +219,11 @@ try {
     Log("残留 7z 进程=$left7z")
     $outDirs = @(Get-ChildItem $src -Directory -Filter '*' -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^[A-Za-z0-9_\-]{20,}$' })
     Log("样本目录下的安全输出目录残留=$($outDirs.Count)")
-    if (-not $dpProc.HasExited) { $dpProc.Kill() }
     Shot 'shell_99_after'
+
+    # 事件句柄由子进程读过后置位，映射才允许释放
+    try { [void]$menu.Signal.WaitOne(5000); $menu.Signal.Dispose() } catch { }
+    try { $menu.Map.Dispose() } catch { }
   }
 }
 finally {

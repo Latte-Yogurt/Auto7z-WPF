@@ -4,7 +4,6 @@ using System.IO;
 using System.Reflection;
 using System.Threading;
 
-// 验证语言判定: 各种系统语言代码应映射到哪个界面语言
 class LangCheck
 {
     static int Main(string[] a)
@@ -18,7 +17,6 @@ class LangCheck
         Console.WriteLine("支持的语言: " + string.Join(", ", (string[])supported.Invoke(null, null)));
         Console.WriteLine("");
 
-        // 模拟不同的系统 UI 文化
         string[] cultures = {
             "zh-CN", "zh-TW", "en-US",
             "zh-Hans", "zh-Hans-CN", "zh-Hant", "zh-Hant-TW",

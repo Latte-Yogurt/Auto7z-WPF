@@ -12,9 +12,6 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 
-// Tab 顺序检查
-//   1) 运行时: 走一圈 Tab, 看焦点落在哪些控件上
-//   2) 静态: 解析 XAML 里的 TabIndex, 按 (TabIndex, 出现顺序) 排出的序列
 class TabOrder
 {
     static string lp;
@@ -100,7 +97,6 @@ class TabOrder
 
         var visited = new List<FrameworkElement>();
 
-        // 找到全部可聚焦控件, 按 TabIndex 排好序
         var all = new List<FrameworkElement>();
         Collect(win, all);
         var focusables = all.Where(IsFocusable).ToList()
@@ -110,7 +106,6 @@ class TabOrder
         L("    可聚焦控件 " + focusables.Count + " 个 (按 TabIndex 排序):");
         foreach (var e in focusables) L("      " + Describe(e));
 
-        // 逐个设焦点, 看能否拿到
         L("    逐个设焦点:");
         foreach (var e in focusables)
         {

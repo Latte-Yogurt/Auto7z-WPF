@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -8,11 +8,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
-// 模拟外壳扩展的行为, 验证主程序能不能正确接收:
-//   1) #映射名:字节数:事件名 的共享内存传参
-//   2) 一次传多个文件
-//   3) -A / -Z / -U 模式开关
-//   4) 单实例: 第二次启动把文件交给已有实例
 class ShellProto
 {
     const string MapName = "Auto7zShellTestMap";
@@ -26,8 +21,6 @@ class ShellProto
         problems++;
     }
 
-    // 按外壳扩展的写法把路径写进共享内存。
-    // 映射句柄必须一直握着, 命名映射对象靠句柄存活。
     static string WriteMap(List<string> paths, out MemoryMappedFile mapping, out EventWaitHandle signal)
     {
         int totalChars = 1;
@@ -62,7 +55,6 @@ class ShellProto
         return "#" + mapName + ":" + totalBytes + ":" + eventName;
     }
 
-    // 两个可执行体都算「本程序的实例」：交接与清理都要数到
     static Process[] AppProcesses()
     {
         return Process.GetProcessesByName("Auto7z")
@@ -77,33 +69,25 @@ class ShellProto
 
     static int Main(string[] a)
     {
-        // "共 N 个文件"那条是 Info 级的日志, 默认级别 Warning 写不出来。
-        // 跑之前先调成 Info, 读完记得还原。
         string configPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Auto7z", "Auto7z.xml");
-        string originalLevel = null;
+            "Auto7z", "Auto7z.json");
+        // 配置是标准 JSON。这里用简单的字符串定位改一个键：
+        // 探针是独立 exe，不该为了改一个值把整个 JSON 解析器搬进来。
+        string originalConfig = null;
         if (File.Exists(configPath))
         {
             try
             {
-                var doc = System.Xml.Linq.XDocument.Load(configPath);
-                var root = doc.Root;
-                var node = root == null ? null : root.Element("ErrorLevel");
-                if (node != null)
-                {
-                    originalLevel = node.Value;
-                    node.Value = "Info";
-                    doc.Save(configPath);
-                }
+                originalConfig = File.ReadAllText(configPath, new UTF8Encoding(false));
+                string patched = ReplaceJsonString(originalConfig, "ErrorLevel", "Info");
+                if (patched != null) File.WriteAllText(configPath, patched, new UTF8Encoding(false));
             }
             catch { }
         }
 
         string exe = a[0];
 
-        // 图形入口是另一个可执行体：Auto7z.exe 只做命令行（不带参数时打印用法就退出），
-        // 需要「起一个常驻实例」的用例必须用 Auto7zGUI.exe。
         string guiExe = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(exe)) ?? ".", "Auto7zGUI.exe");
         if (!File.Exists(guiExe)) guiExe = exe;
 
@@ -117,7 +101,6 @@ class ShellProto
         MemoryMappedFile map1, map2, map3, map4;
         EventWaitHandle sig1, sig2, sig3, sig4;
 
-        // 造几个测试文件
         var files = new List<string>();
         for (int i = 0; i < 3; i++)
         {
@@ -126,14 +109,12 @@ class ShellProto
             files.Add(path);
         }
 
-        // ---------- 1) 共享内存传多个文件 ----------
         Console.WriteLine("=== T1: 共享内存传 3 个文件 ===");
         string arg = WriteMap(files, out map1, out sig1);
         Console.WriteLine("  命令行参数: " + arg);
         expectedCount = 3;
-        RunTask(exe, new[] { arg, "-Z" }, workDir, logDir, "共享内存传多文件");
+        RunTask(exe, new[] { arg, "-z" }, workDir, logDir, "共享内存传多文件");
 
-        // ---------- 2) 长路径: 命令行放不下的场景 ----------
         Console.WriteLine("");
         Console.WriteLine("=== T2: 200 个文件(命令行会超长) ===");
         var many = new List<string>();
@@ -145,20 +126,17 @@ class ShellProto
         }
         string arg2 = WriteMap(many, out map2, out sig2);
         expectedCount = 200;
-        RunTask(exe, new[] { arg2, "-Z" }, workDir, logDir, "200 个文件");
+        RunTask(exe, new[] { arg2, "-z" }, workDir, logDir, "200 个文件");
 
-        // ---------- 3) 模式开关 ----------
         Console.WriteLine("");
-        Console.WriteLine("=== T3: 模式开关 -Z / -U / -A ===");
+        Console.WriteLine("=== T3: 模式开关 -z / -uz / -a ===");
 
-        // -Z: 压缩, 传普通文件
         {
             string arg3 = WriteMap(files, out map3, out sig3);
             expectedCount = 3;
-            RunTask(exe, new[] { arg3, "-Z" }, workDir, logDir, "模式 -Z");
+            RunTask(exe, new[] { arg3, "-z" }, workDir, logDir, "模式 -z");
         }
 
-        // -U: 解压, 要传真的压缩包, 否则解不开
         {
             string zipDir = Path.Combine(workDir, "zip");
             Directory.CreateDirectory(zipDir);
@@ -169,29 +147,26 @@ class ShellProto
                 string arg3 = WriteMap(new List<string> { zipPath }, out map3, out sig3);
                 expectedCount = 1;
                 expectExtractLog = true;
-                RunTask(exe, new[] { arg3, "-U" }, workDir, logDir, "模式 -U");
+                RunTask(exe, new[] { arg3, "-uz" }, workDir, logDir, "模式 -uz");
                 expectExtractLog = false;
             }
             else
             {
-                Bad("模式 -U: 造不出测试用的压缩包");
+                Bad("模式 -uz: 造不出测试用的压缩包");
             }
         }
 
-        // -A: 自动模式, 普通文件会各自压缩, 走的是另一条日志
         {
             string arg3 = WriteMap(files, out map3, out sig3);
-            expectedCount = 0;   // 自动模式不打"共 N 个文件"
-            RunTask(exe, new[] { arg3, "-A" }, workDir, logDir, "模式 -A");
+            expectedCount = 0;
+            RunTask(exe, new[] { arg3, "-a" }, workDir, logDir, "模式 -a");
         }
 
-        // ---------- 4) 直接给路径(拖到 exe 上) ----------
         Console.WriteLine("");
         Console.WriteLine("=== T4: 直接给路径 ===");
         expectedCount = 3;
-        RunTask(exe, new[] { "-Z" }.Concat(files).ToArray(), workDir, logDir, "直接路径");
+        RunTask(exe, new[] { "-z" }.Concat(files).ToArray(), workDir, logDir, "直接路径");
 
-        // ---------- 5) 单实例 ----------
         Console.WriteLine("");
         Console.WriteLine("=== T5: 单实例 ===");
         var first = Process.Start(new ProcessStartInfo(guiExe) { UseShellExecute = false });
@@ -200,7 +175,6 @@ class ShellProto
         Console.WriteLine("  第一个实例启动后, 进程数 = " + count);
         if (count < 1) Bad("第一个实例没起来");
 
-        // 再起一个, 应该把文件交过去然后自己退出
         string arg4 = WriteMap(files, out map4, out sig4);
         var second = Process.Start(new ProcessStartInfo(guiExe, "\"" + arg4 + "\"") { UseShellExecute = false });
         Thread.Sleep(5000);
@@ -223,18 +197,13 @@ class ShellProto
         }
 
         Console.WriteLine("");
-        if (originalLevel != null && File.Exists(configPath))
+        if (originalConfig != null && File.Exists(configPath))
         {
             try
             {
-                var doc = System.Xml.Linq.XDocument.Load(configPath);
-                var root = doc.Root;
-                var node = root == null ? null : root.Element("ErrorLevel");
-                if (node != null)
-                {
-                    node.Value = originalLevel;
-                    doc.Save(configPath);
-                }
+                // 整份还原：改键只动了 ErrorLevel，但还原整份文本最保险，
+                // 不会漏掉产品在运行期间自己写回的其他键。
+                File.WriteAllText(configPath, originalConfig, new UTF8Encoding(false));
             }
             catch { }
         }
@@ -243,7 +212,31 @@ class ShellProto
         return 0;
     }
 
-    // 跑一次任务, 返回生成的 7z 数量
+    // 把标准 JSON 里某个字符串键的值换掉；找不到就返回 null。
+    static string ReplaceJsonString(string text, string key, string value)
+    {
+        string needle = "\"" + key + "\"";
+        int position = text.IndexOf(needle, StringComparison.Ordinal);
+        if (position < 0) return null;
+
+        int colon = text.IndexOf(':', position + needle.Length);
+        if (colon < 0) return null;
+
+        int start = colon + 1;
+        while (start < text.Length && (text[start] == ' ' || text[start] == '\t' ||
+                                       text[start] == '\r' || text[start] == '\n'))
+        {
+            start++;
+        }
+
+        if (start >= text.Length || text[start] != '"') return null;
+
+        int end = text.IndexOf('"', start + 1);
+        if (end < 0) return null;
+
+        return text.Substring(0, start + 1) + value + text.Substring(end);
+    }
+
     static int RunTask(string exe, string[] args, string workDir, string logDir, string label)
     {
         int before = CountArchives(workDir);
@@ -253,12 +246,6 @@ class ShellProto
         psi.Arguments = string.Join(" ", Array.ConvertAll(args, Quote));
         psi.UseShellExecute = false;
         psi.WorkingDirectory = workDir;
-        // 不重定向输出: 管道缓冲区写满会把应用卡住
-        //
-        // stdin 必须断开: 不重定向的话子进程会继承本进程(stdin)的控制台,
-        // 而控制台模式问"是否合并"时要读一行 —— 读不到就永远卡在那里,
-        // 表现为"没收到文件"。
-        // 断开之后读操作立刻返回 null, 程序按"没给输入"的分支走, 不会卡住。
         psi.RedirectStandardInput = true;
 
         Console.WriteLine("    命令行: " + psi.Arguments);
@@ -266,10 +253,6 @@ class ShellProto
         Process p = Process.Start(psi);
         try { p.StandardInput.Close(); } catch { }
 
-        // 右键菜单模式（共享内存传参）会弹 MessageWindow 问"是否合并为一个压缩包"。
-        // 那个对话框是模态的，程序会等用户点按钮才继续；
-        // 自动化环境里没有人点，任务就永远停在那里，测出来是"没收到文件"。
-        // 这里替用户点一下"是"（合并），让流程能跑完。
         int answered = AutoConfirmMergeDialog(p, 8000);
 
         Thread.Sleep(6000);
@@ -290,17 +273,6 @@ class ShellProto
         return created;
     }
 
-    // 找到被测进程的对话框并按回车确认。
-    //
-    // 右键菜单模式（共享内存传参）会弹 MessageWindow 问"是否合并为一个压缩包"。
-    // 那个对话框是模态的，程序要等用户点按钮才继续；自动化环境里没有人点，
-    // 任务就永远停在那里，测出来是"没收到文件"。
-    //
-    // 为什么用回车而不是找按钮点：
-    //   WPF 的按钮不是原生 Win32 控件，整个窗口只有一个 HwndWrapper，
-    //   FindWindowEx 枚举不到按钮（已实测：枚举出来只有一个窗口，没有子按钮）。
-    //   但对话框的"确定"按钮是 IsDefault="True"，回车就等于点它。
-    //   所以：找到可见的对话框窗口，发一个 Enter 即可。
     static int AutoConfirmMergeDialog(Process p, int timeoutMs)
     {
         int clicked = 0;
@@ -378,11 +350,8 @@ class ShellProto
 
     static int expectedCount = 0;
 
-    // 解压模式的日志文案不一样, 单独标记
     static bool expectExtractLog = false;
 
-    // 记录每个日志文件当前的长度, 之后只读新增的部分。
-    // 普通日志与问题日志分开存, 谁新谁旧不一定, 不能只看最新的那个。
     static Dictionary<string, long> GetLogLengths(string logDir)
     {
         var lengths = new Dictionary<string, long>();
@@ -394,7 +363,6 @@ class ShellProto
         return lengths;
     }
 
-    // 从新增的日志里读"接收 N 个项目"
     static int GetReceivedCount(string logDir, Dictionary<string, long> before)
     {
         if (!Directory.Exists(logDir)) return 0;
@@ -416,12 +384,10 @@ class ShellProto
 
             if (expectExtractLog)
             {
-                // 解压模式: 看"解压尝试 1: exit=0"
                 if (text.Contains("\u89e3\u538b\u5c1d\u8bd5")) return 1;
                 continue;
             }
 
-            // 控制台模式下没有主窗口, 日志里记的是"用户选择合并为单个压缩包，共 N 个文件"
             foreach (string line in text.Split('\n'))
             {
                 int at = line.IndexOf("\u5171 ");
@@ -443,7 +409,6 @@ class ShellProto
         return count;
     }
 
-    // 用 7z 造一个测试用的压缩包
     static void RunSevenZip(string workDir, string zipPath, List<string> files)
     {
         string sevenZip = Path.Combine(
@@ -467,7 +432,6 @@ class ShellProto
         p.WaitForExit(15000);
     }
 
-    // 给参数加引号, 免得路径里的空格把命令行拆开
     static string Quote(string value)
     {
         return "\"" + value.Replace("\"", "\\\"") + "\"";

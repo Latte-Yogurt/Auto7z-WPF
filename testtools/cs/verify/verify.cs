@@ -6,11 +6,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
 
-// 验证:
-// 1) MessageWindow 询问模式按钮文字是"是/否"
-// 2) MessageWindow 错误模式按钮文字是"确定", 且居中
-// 3) PasswordWindow 设置提示后文字确实变了
-// 4) 两种模式能来回切
 class Verify
 {
     static string lp;

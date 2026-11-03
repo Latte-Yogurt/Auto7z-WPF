@@ -123,36 +123,89 @@ def check_naming(sources, findings):
 
 
 # ---------------------------------------------------------------- ② 死分支
+CATCH_HEAD = re.compile(r"\bcatch\b\s*(?:\([^)]*\))?\s*\{")
+COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+
+
+def _strip_code(inner):
+    """去掉注释，返回 (剩余代码, 注释文本)。"""
+    comments = " ".join(m.group(0) for m in COMMENT_RE.finditer(inner))
+    code = COMMENT_RE.sub("", inner)
+    return code, comments
+
+
+def _empty_catch_body(text, brace_idx):
+    """从 { 起做括号配对，返回 (是否只有注释没有语句, 注释文本)。
+
+    必须做配对而不是只看一行：`catch` 与 `}` 分行、中间只有注释的写法
+    单行正则完全漏掉（这是原先工具的一个盲区）。
+    """
+    depth = 0
+    i = brace_idx
+    buf = []
+    while i < len(text):
+        c = text[i]
+        if c == "{":
+            depth += 1
+            i += 1
+            continue
+        if c == "}":
+            depth -= 1
+            if depth == 0:
+                code, comments = _strip_code("".join(buf))
+                return code.strip() == "", comments
+            i += 1
+            continue
+        if depth >= 1:
+            buf.append(c)
+        i += 1
+    return False, ""
+
+
 def check_dead_branch(sources, findings):
-    """空 catch / 空 if / 恒假条件 / 空代码块。"""
+    """空 catch / 恒假条件。
+
+    空 catch 分两档：
+      已说明 —— 吞掉异常但写了原因（`catch { /* 删不掉不影响结果 */ }`），登记但不判失败；
+      未说明 —— 光秃秃地吞掉异常，判失败。
+    规则：**异常可以吞，但必须写明为什么吞**。
+    """
     for p in sources:
         if p.suffix != ".cs":
             continue
-        lines = read(p).splitlines()
+        text = read(p)
+        lines = text.splitlines()
+
+        for m in CATCH_HEAD.finditer(text):
+            empty, comments = _empty_catch_body(text, m.end() - 1)
+            if not empty:
+                continue
+            line = text[:m.start()].count("\n") + 1
+            reason = comments.strip().strip("/*").strip()
+            if len(reason) >= 4:
+                findings.append({
+                    "class": "② 空 catch（已说明）",
+                    "file": p.name,
+                    "line": line,
+                    "detail": "空 catch，已写明原因：%s" % reason[:60],
+                    "registered": True,
+                })
+            else:
+                findings.append({
+                    "class": "② 空 catch（未说明）",
+                    "file": p.name,
+                    "line": line,
+                    "detail": "空 catch 吞掉异常且没有说明原因",
+                })
+
+        # if (false) / if (true) 之类恒定条件
         for i, l in enumerate(lines):
-            s = l.strip()
-            # 空 catch { } 或只有注释
-            if re.search(r"catch\s*(\([^)]*\))?\s*\{\s*\}\s*$", s):
+            if re.search(r"\bif\s*\(\s*(false|true|0|1)\s*\)", l.strip()):
                 findings.append({
                     "class": "② 死分支/空 catch",
                     "file": p.name,
                     "line": i + 1,
-                    "detail": "空 catch：异常被静默吞掉" + s[:60],
-                })
-            elif re.search(r"catch\s*(\([^)]*\))?\s*\{\s*(/\*.*?\*/)?\s*\}\s*$", s):
-                findings.append({
-                    "class": "② 死分支/空 catch",
-                    "file": p.name,
-                    "line": i + 1,
-                    "detail": "空 catch（只带注释）：异常被静默吞掉",
-                })
-            # if (false) / if (true) 之类恒定条件
-            if re.search(r"\bif\s*\(\s*(false|true|0|1)\s*\)", s):
-                findings.append({
-                    "class": "② 死分支/空 catch",
-                    "file": p.name,
-                    "line": i + 1,
-                    "detail": "恒定条件的 if：分支永远不会走" + s[:60],
+                    "detail": "恒定条件的 if：分支永远不会走" + l.strip()[:60],
                 })
 
 
@@ -257,28 +310,41 @@ def main():
     check_doc_tags(sources, findings)
     check_path_guard(sources, findings)
 
+    problems = [f for f in findings if not f.get("registered")]
+    registered = [f for f in findings if f.get("registered")]
+
     if "--json" in sys.argv:
         print(json.dumps(findings, ensure_ascii=False, indent=2))
-        return 1 if findings else 0
+        return 1 if problems else 0
 
     print("=" * 70)
     print("Auto7z 静态检查: %s" % root)
     print("扫描文件 %d 个" % len(sources))
     print("=" * 70)
-    if not findings:
-        print("(无问题)")
-        return 0
+
     by_class = {}
-    for f in findings:
+    for f in problems:
         by_class.setdefault(f["class"], []).append(f)
     for cls in sorted(by_class):
         print()
         print("--- %s (%d) ---" % (cls, len(by_class[cls])))
         for f in by_class[cls]:
             print("  !! %s:%s  %s" % (f["file"], f["line"] or "-", f["detail"]))
+
+    if registered:
+        print()
+        print("--- 已登记（不计失败）(%d) ---" % len(registered))
+        for f in registered:
+            print("  -- %s:%s  %s" % (f["file"], f["line"] or "-", f["detail"]))
+
+    if not problems:
+        print()
+        print("(无问题)")
+
     print()
-    print("TOTAL PROBLEMS: %d" % len(findings))
-    return 1
+    print("TOTAL PROBLEMS: %d" % len(problems))
+    print("REGISTERED: %d" % len(registered))
+    return 1 if problems else 0
 
 
 if __name__ == "__main__":

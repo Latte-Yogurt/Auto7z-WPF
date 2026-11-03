@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 r"""命令行相关的测试:
-- -h 显示用法
-- -A / -Z / -U 三种模式
+- -H / -h 显示用法
+- -A / -Z / -uz 三种模式
 - -r / -ur 被识别成开关(只验解析, **不执行注册** —— 那要提权, 会弹 UAC)
 - 拖到 exe 图标 = 命令行参数, 走的是同一条路
 """
@@ -94,6 +94,28 @@ def bad(s):
     print("  !! " + s)
 
 
+def decode_console(raw):
+    """解控制台输出的字节。
+
+    不能写死编码：产品写出的编码**跟着控制台代码页走**——
+    cmd 默认 936(GBK)，换成 `chcp 65001` 就是 UTF-8。
+    写死 gbk 之后，在 UTF-8 控制台上跑测试会把所有中文断言变成假失败
+    （T7 的"无法识别"提示就是这样丢掉的）。
+
+    做法与 run_system_test.py / regress.py 一致：两种都试，取没有替换字符的那一份。
+    """
+    if not raw:
+        return ""
+    for enc in ("utf-8", "gbk"):
+        try:
+            text = raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+        if "\ufffd" not in text:
+            return text
+    return raw.decode("gbk", "replace")
+
+
 def run(args, timeout=25, stdin=None, exe=None):
     """跑一次程序, 返回 (退出码, 输出)
 
@@ -105,11 +127,11 @@ def run(args, timeout=25, stdin=None, exe=None):
                            stderr=subprocess.STDOUT,
                            stdin=subprocess.DEVNULL if stdin is None else stdin,
                            timeout=timeout)
-        return r.returncode, r.stdout.decode("gbk", "replace")
+        return r.returncode, decode_console(r.stdout)
     except subprocess.TimeoutExpired as e:
         raw = e.stdout or b""
         if isinstance(raw, bytes):
-            raw = raw.decode("gbk", "replace")
+            raw = decode_console(raw)
         return None, raw
     except Exception as e:
         return -1, str(e)
@@ -140,14 +162,14 @@ def main():
 
     if code is None or code != 0:
         bad("-h: 退出码不对")
-    for expect in ("-A", "-Z", "-U", "-r", "-ur", "-h"):
+    for expect in ("-a", "-z", "-uz", "-r", "-ur", "-h"):
         if expect not in out:
             bad("-h: 说明里缺少 %s" % expect)
 
     # ---------- T2: 三种模式 ----------
     say("")
-    say("=== T2: 模式开关 -A / -Z / -U ===")
-    for mode, expect_zip in [("-Z", True), ("-A", True), ("-U", False)]:
+    say("=== T2: 模式开关 -a / -z / -uz ===")
+    for mode, expect_zip in [("-z", True), ("-a", True), ("-uz", False)]:
         d = work / ("mode" + mode)
         d.mkdir(parents=True, exist_ok=True)
         f = d / ("文件.txt")
@@ -157,10 +179,10 @@ def main():
         archives = list(d.rglob("*.7z"))
         say("  [%s] 退出码=%s 压缩包=%d 个" % (mode, code, len(archives)))
 
-        if mode == "-U":
+        if mode == "-uz":
             # 解压模式: 普通文件解不开, 不应有压缩包
             if archives:
-                bad("-U: 普通文件不该被压缩")
+                bad("-uz: 普通文件不该被压缩")
         else:
             if not archives:
                 bad("%s: 没有生成压缩包" % mode)
@@ -227,6 +249,27 @@ def main():
     #   把它们识别成开关（而不是当成文件路径）。
     if not check_switch_parsing():
         bad("-r / -ur 参数解析: 开关没有被正确识别")
+
+    # ---------- T7: 未知开关必须报错并以退出码 2 结束 ----------
+    say("")
+    say("=== T7: 未知开关被拒绝 ===")
+    #
+    # 这一项长期没有覆盖：早期产品把 -X 这类拼错的开关**静默忽略**，
+    # 照常压缩并返回 0 —— 脚本会把「参数写错了」当成「任务成功」。
+    # 现在的契约是：报一行「无法识别的选项」，打印用法，退出码 2，且不产出任何压缩包。
+    d = work / "unknown"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "目标.txt"
+    f.write_text("内容", encoding="utf-8")
+    code, out = run(["-X", str(f)], timeout=20)
+    archives = list(d.rglob("*.7z"))
+    say("  退出码=%s 压缩包=%d 个" % (code, len(archives)))
+    if code != 2:
+        bad("未知开关: 退出码应为 2，实际 %s" % code)
+    if archives:
+        bad("未知开关: 不该产出压缩包")
+    if "无法识别" not in out and "Unknown option" not in out:
+        bad("未知开关: 没有给出「无法识别」的提示")
 
     say("")
     say("=== 问题汇总 (%d) ===" % len(ISSUES))

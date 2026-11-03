@@ -109,17 +109,17 @@ def case_merge(r):
 
 
 def case_failure_exit_code(r):
-    print("\n=== C3  失败路径：退出码必须非 0（#3 的回归保护）===")
+    print("\n=== C3  失败路径：退出码必须非 0（退出码语义：0 成功 / 1 失败或取消 / 2 没跑）===")
     code, out, elapsed = r.cmd(
         r.exe_line('-Z "%s"' % (r.work / "根本不存在.bin")) + " & echo MARK %TIME%")
     match = re.search(r"MARK (\S+)", out)
     print("  退出码(of cmd)=%d 用时=%.2fs" % (code, elapsed))
     # 退出码要从被测进程直接取，cmd 里的 %ERRORLEVEL% 在复合命令行里会被提前展开
-    direct = subprocess.run([str(r.app), "-Z", str(r.work / "根本不存在.bin")],
+    direct = subprocess.run([str(r.app), "-z", str(r.work / "根本不存在.bin")],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
     print("  被测进程退出码=%d 输出行数=%d" % (direct.returncode, len(decode_console(direct.stdout).strip().splitlines())))
     if direct.returncode == 0:
-        r.bad("失败任务退出码仍为 0（对应 releasefix #3，本轮复现）")
+        r.bad("失败任务退出码仍为 0（退出码语义要求失败必须是 1）")
     else:
         r.ok("失败退出码非 0")
 
@@ -159,8 +159,8 @@ def case_password(r):
 
 
 def case_missing_input(r):
-    print("\n=== C5  输入不存在：必须报错且退出码非 0（B2 的回归保护）===")
-    for args, name in (("-Z", "不存在的输入"), ("-U", "不存在的压缩包")):
+    print("\n=== C5  输入不存在：必须报错且退出码非 0（退出码语义：2 = 没跑）===")
+    for args, name in (("-z", "不存在的输入"), ("-uz", "不存在的压缩包")):
         direct = subprocess.run([str(r.app), args, str(r.work / "no_such_entry.bin")],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
         out = decode_console(direct.stdout).strip()
@@ -174,7 +174,7 @@ def case_relative_path(r):
     sub = r.work / "rel"
     sub.mkdir(exist_ok=True)
     (sub / "rel.txt").write_text("relative content", encoding="utf-8")
-    proc = subprocess.run([str(r.app), "-Z", "rel.txt"], cwd=str(sub),
+    proc = subprocess.run([str(r.app), "-z", "rel.txt"], cwd=str(sub),
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
     out = decode_console(proc.stdout)
     made = list(sub.rglob("*.7z"))

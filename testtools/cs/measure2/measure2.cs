@@ -5,7 +5,6 @@ using System.Text;
 using System.Windows;
 using System.Windows.Media;
 
-// 测量各语言下对话框内文本宽度, 检查是否超出可用宽度
 class Measure2
 {
     static double Width(string text, string font, double size, FontWeight weight)
@@ -35,11 +34,8 @@ class Measure2
     {
         string langDir = a[0];
 
-        // MessageWindow: 300x150, Grid Margin=8 -> 可用 284
-        // PasswordWindow: 300x150, Grid Margin=8 -> 可用 284
         const double avail = 284;
 
-        // 需要检查的文本
         string[] keys = {
             "MultiFilePackQuery", "PasswordPromptText", "PasswordWrongAttempt",
             "YesButton", "NoButton", "OkButton", "ConfirmButton", "CancelTaskButton"
@@ -57,11 +53,9 @@ class Measure2
                 string text = ReadKey(f, key);
                 if (text == null) { Console.WriteLine("  " + key + ": (缺失)"); problems++; continue; }
 
-                // 标题用 13px 粗体, 正文与按钮用 13px 常规
                 bool isTitle = key == "MultiFilePackQuery" || key == "PasswordPromptText" || key == "PasswordWrongAttempt";
                 double w = Width(text, "Microsoft YaHei Light", 13, isTitle ? FontWeights.Normal : FontWeights.Normal);
 
-                // 可换行的文本按 284 宽折行后不溢出; 不可换行的按钮文本单行
                 bool wraps = isTitle;
                 string verdict;
                 if (wraps)

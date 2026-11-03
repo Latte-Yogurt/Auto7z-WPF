@@ -58,9 +58,9 @@ CHECKS = [
      "Services/SevenZipService.cs",
      r"(?:\s+\d+)?\s*[+\-]"),
 
-    ("BC5", "D25", "右键菜单注册同步必须能被 SkipShellMenuSync 关掉",
+    ("BC5", "D25", "右键菜单注册同步必须能被 SkipShellMenuSync 关掉（仅 Debug）",
      "ViewModel/Auto7zViewModel.cs",
-     "if (!SkipShellMenuSync)"),
+     "if (SkipShellMenuSync) return true;"),
 
     ("BC6", "D06", "必须调用 AttachConsole(ATTACH_PARENT_PROCESS)",
      "Services/ConsoleAttach.cs",
@@ -81,6 +81,18 @@ CHECKS = [
     ("BC10", "D22", "控制台密码必须真的读一行输入",
      "ViewModel/Auto7zViewModel.cs",
      "ReadConsoleLine()"),
+
+    ("BC11", "D29", "结果通知的属性名必须是 ResultText（SetProperty 从方法调用时要显式传名）",
+     "ViewModel/Auto7zViewModel.cs",
+     'SetProperty(ref _resultText, text ?? string.Empty, nameof(ResultText))'),
+
+    ("BC12", "D29", "失败路径必须给出失败结果（红字），不能只弹窗不写结果",
+     "ViewModel/Auto7zViewModel.cs",
+     'SetResult(EnumText.GetResourceText("Result_Failed", "Failed"), failed: true);'),
+
+    ("BC13", "D30", "右键菜单进度窗口的正文必须带实时百分比",
+     "Services/ShellMenuTaskRunner.cs",
+     "GetProgressDisplayText(info.Stage, info.Percent)"),
 ]
 
 

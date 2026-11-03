@@ -2,8 +2,6 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-// 查菜单项有没有图标:
-// GetMenuItemInfo 读 hbmpItem, 有位图就说明图标挂上了。
 class IconProbe
 {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -115,7 +113,6 @@ class IconProbe
         public int EnumDAdvise(out IntPtr e) { e = IntPtr.Zero; return 0; }
     }
 
-    // MENUITEMINFOW
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct MENUITEMINFO
     {
@@ -163,7 +160,6 @@ class IconProbe
         IntPtr menuObj;
         createInstance(factory, IntPtr.Zero, GuidPtr("{000214E4-0000-0000-C000-000000000046}"), out menuObj);
 
-        // 先 Initialize 才有路径, 不然加不出菜单项
         string sample = args.Length > 2 ? args[2] : null;
         if (sample != null)
         {
@@ -221,7 +217,6 @@ class IconProbe
                 Console.Write("  [{0}] '{1}'  位图={2}", i, label, hasBitmap ? "有" : "无");
                 if (hasBitmap)
                 {
-                    // 看看位图里有没有非空像素, 全透明等于没图标
                     IntPtr bits = Marshal.AllocHGlobal(32 * 32 * 4);
                     try
                     {

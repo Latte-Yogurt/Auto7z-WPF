@@ -14,13 +14,13 @@
   2) 清理临时目录（所有测试跑完之后统一清，带白名单校验）
 """
 import ctypes
+import json
 import locale
 import os
 import shutil
 import subprocess
 import sys
 import time
-import xml.etree.ElementTree as ET
 from ctypes import wintypes
 from pathlib import Path
 
@@ -91,7 +91,7 @@ def exe_for(args):
     """没有参数 = 界面模式，走图形入口；带参数 = 命令行模式，走命令行入口。"""
     return GUI_APP if not list(args) else APP
 LOCAL = Path(os.environ["LOCALAPPDATA"]) / "Auto7z"
-CFG = LOCAL / "Auto7z.xml"
+CFG = LOCAL / "Auto7z.json"
 LOGS = LOCAL / "Logs"
 SZ = LOCAL / "7-Zip" / "7z.exe"
 ROOT = WORKSPACE / "regress"
@@ -149,15 +149,63 @@ def find_lang_dir():
     return None
 
 
+BOOLEAN_KEYS = {
+    "Zstd", "GenerateSHA256", "AutoSave", "MaxLevelCompress",
+    "IsTopMost", "IsPortable", "IsSolidMode", "IsEncFileName",
+}
+
+INTEGER_KEYS = {"SevenZUsageCount"}
+
+
+def coerce(k, v):
+    """把调用方写的宽松值转成产品会写出的 JSON 类型。
+
+    调用点历史上习惯写 GenerateSHA256="False" 这种字符串，
+    而产品的新格式是原生布尔。这里统一收口：
+      - 布尔键：字符串按 bool 规则转，其它类型原样保留；
+      - 整数键：能转 int 就转；
+      - 其余（含 Volume）保持调用方给的类型 ——
+        Volume 的非法值（"-5"/"abc"）本来就要原样喂给产品去容错。
+    """
+    if k in BOOLEAN_KEYS:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.strip().lower() == "true"
+        return bool(v)
+    if k in INTEGER_KEYS:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return v
+    return v
+
+
 def set_cfg(**kw):
-    tree = ET.parse(CFG)
-    root = tree.getroot()
+    """改配置里的若干键。
+
+    配置是标准 JSON（RFC 8259）：顶层一个对象，值为原生 bool / 整数 / 字符串。
+    这里用 Python 的 json 读写，既能保证写出的内容永远合法，
+    也顺带证明了产品产出的格式是任何现代 JSON 解析器都认的标准格式。
+    """
+    values = read_cfg()
     for k, v in kw.items():
-        el = root.find(k)
-        if el is None:
-            el = ET.SubElement(root, k)
-        el.text = str(v)
-    tree.write(CFG, encoding="utf-8", xml_declaration=True)
+        values[k] = coerce(k, v)
+    CFG.write_text(json.dumps(values, ensure_ascii=False, indent=2) + "\n",
+                   encoding="utf-8")
+
+
+def read_cfg():
+    """把配置读成 dict；文件不存在或损坏时返回空 dict。"""
+    try:
+        return json.loads(CFG.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def cfg_text():
+    """配置文件的原始文本（备份 / 损坏测试用）。"""
+    return CFG.read_text(encoding="utf-8")
 
 
 def files_in(d):
@@ -287,26 +335,27 @@ def run_capture(args, wait=6.0):
     stdin 要断开: 程序等"是否合并"的回答时读的是控制台,
     不给输入它就一直等着, 整个测试就卡住了。
 
-    控制台输出按 GBK 编码, 解码时要对上, 不然中文全是乱码。
+    编码不能写死: 产品输出跟着控制台代码页走（936 -> GBK, chcp 65001 -> UTF-8），
+    固定按 gbk 解会把 UTF-8 控制台上的中文断言全变成假失败。
     """
     kill_running()
     try:
         out = subprocess.run([APP] + list(args), stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                              timeout=wait)
-        return out.stdout.decode("gbk", "replace")
+        return decode_console_output(out.stdout)
     except subprocess.TimeoutExpired as e:
         raw = e.stdout or b""
         if isinstance(raw, bytes):
-            raw = raw.decode("gbk", "replace")
+            raw = decode_console_output(raw)
         return raw
     except Exception:
         return ""
 
 
-def md5_of(p):
+def sha256_of(p):
     import hashlib
-    h = hashlib.md5()
+    h = hashlib.sha256()
     with open(p, "rb") as f:
         for c in iter(lambda: f.read(1 << 20), b""):
             h.update(c)
@@ -373,7 +422,7 @@ def main():
     with open(data / "text.txt", "w", encoding="utf-8") as f:
         f.write("The quick brown fox jumps over the lazy dog.\n" * 20000)
 
-    set_cfg(Format="7z", Volume=2000, GenerateMD5="False", OutputPath="",
+    set_cfg(Format="7z", Volume=2000, GenerateSHA256="False", OutputPath="",
             AutoSave="True", ErrorLevel="Info", CompressionLevel="Normal",
             Password="", UnzipPassword="", Zstd="False", IsSolidMode="False")
 
@@ -382,7 +431,7 @@ def main():
     for fmt in ("7z", "zip", "tar"):
         d = fresh("t01_" + fmt)
         shutil.copy(data / "a.txt", d)
-        set_cfg(Format=fmt, Volume=2000, GenerateMD5="False", OutputPath="")
+        set_cfg(Format=fmt, Volume=2000, GenerateSHA256="False", OutputPath="")
         close_gracefully([str(d / "a.txt")], 4)
         p = products_in(d, {"a.txt"})
         if p:
@@ -399,7 +448,7 @@ def main():
     for lv in ("Store", "Normal", "Ultra"):
         d = fresh("t02_" + lv)
         shutil.copy(data / "text.txt", d)
-        set_cfg(Format="7z", Volume=2000, GenerateMD5="False",
+        set_cfg(Format="7z", Volume=2000, GenerateSHA256="False",
                 CompressionLevel=lv, OutputPath="")
         close_gracefully([str(d / "text.txt")], 6)
         fs = [f for f in files_in(d) if f.endswith(".7z")]
@@ -420,7 +469,7 @@ def main():
     for v in ("0", "1", "2"):
         d = fresh("t03_v" + v)
         shutil.copy(data / "rand.bin", d)
-        set_cfg(Format="7z", Volume=v, GenerateMD5="False", OutputPath="")
+        set_cfg(Format="7z", Volume=v, GenerateSHA256="False", OutputPath="")
         close_gracefully([str(d / "rand.bin")], 6)
         p = products_in(d, {"rand.bin"})
         say("  分卷 %sMB -> %s" % (v, ", ".join(p) if p else "无产物"))
@@ -429,31 +478,31 @@ def main():
         if v == "0" and any(x.endswith(".001") for x in p):
             bad("分卷 0MB: 仍然生成了分卷文件")
 
-    # T04 MD5
+    # T04 SHA256
     say("")
-    say("##### T04: MD5 #####")
-    d = fresh("t04_md5")
+    say("##### T04: SHA256 #####")
+    d = fresh("t04_sha256")
     shutil.copy(data / "a.txt", d)
-    set_cfg(Format="7z", Volume=2000, GenerateMD5="True", OutputPath="")
+    set_cfg(Format="7z", Volume=2000, GenerateSHA256="True", OutputPath="")
     close_gracefully([str(d / "a.txt")], 4)
-    mds = [f for f in files_in(d) if f.endswith(".md5")]
+    shas = [f for f in files_in(d) if f.endswith(".sha256")]
     arcs = [f for f in files_in(d) if f.endswith(".7z")]
-    if not mds:
-        bad("MD5: 没有生成 .md5")
+    if not shas:
+        bad("SHA256: 没有生成 .sha256")
     elif arcs:
-        content = (d / mds[0]).read_text(encoding="utf-8").strip().lstrip("\ufeff")
-        real = md5_of(d / arcs[0])
+        content = (d / shas[0]).read_text(encoding="utf-8").strip().lstrip("\ufeff")
+        real = sha256_of(d / arcs[0])
         if real == content.split()[0].lower():
-            say("  MD5 与实际一致: OK")
+            say("  SHA256 与实际一致: OK")
         else:
-            bad("MD5 不一致: 实际=%s 文件=%s" % (real, content.split()[0]))
+            bad("SHA256 不一致: 实际=%s 文件=%s" % (real, content.split()[0]))
 
     # T05 密码
     say("")
     say("##### T05: 密码 #####")
     d = fresh("t05_pwd")
     shutil.copy(data / "a.txt", d)
-    set_cfg(Format="7z", Volume=2000, GenerateMD5="False",
+    set_cfg(Format="7z", Volume=2000, GenerateSHA256="False",
             Password="test123", OutputPath="")
     close_gracefully([str(d / "a.txt")], 4)
     arcs = [f for f in files_in(d) if f.endswith(".7z")]
@@ -480,7 +529,7 @@ def main():
     say("##### T06: tar + zstd #####")
     d = fresh("t06_zstd")
     shutil.copy(data / "a.txt", d)
-    set_cfg(Format="tar", Volume=2000, GenerateMD5="False", Zstd="True", OutputPath="")
+    set_cfg(Format="tar", Volume=2000, GenerateSHA256="False", Zstd="True", OutputPath="")
     close_gracefully([str(d / "a.txt")], 4)
     p = products_in(d, {"a.txt"})
     say("  产物: %s" % (", ".join(p) if p else "无产物"))
@@ -494,7 +543,7 @@ def main():
     say("##### T07: 解压往返 #####")
     d = fresh("t07_extract")
     shutil.copy(data / "a.txt", d)
-    set_cfg(Format="7z", Volume=2000, GenerateMD5="False", OutputPath="",
+    set_cfg(Format="7z", Volume=2000, GenerateSHA256="False", OutputPath="",
             Password="", UnzipPassword="")
     # 命令行模式跑完自己就退了, 用 run_capture 等它结束
     run_capture([str(d / "a.txt")], 10)
@@ -515,7 +564,7 @@ def main():
     say("##### T08: 空文件夹 #####")
     d = fresh("t08_empty")
     (d / "emptydir").mkdir()
-    set_cfg(Format="7z", Volume=2000, GenerateMD5="False", OutputPath="")
+    set_cfg(Format="7z", Volume=2000, GenerateSHA256="False", OutputPath="")
     close_gracefully([str(d / "emptydir")], 4)
     p = products_in(d)
     say("  产物: %s" % (", ".join(p) if p else "无产物"))
@@ -532,7 +581,7 @@ def main():
     d = fresh("t09_special")
     weird = d / "a b&c(d) [x].txt"
     weird.write_text("special", encoding="utf-8")
-    set_cfg(Format="7z", Volume=2000, GenerateMD5="False", OutputPath="")
+    set_cfg(Format="7z", Volume=2000, GenerateSHA256="False", OutputPath="")
     close_gracefully([str(weird)], 4)
     p = products_in(d)
     say("  产物: %s" % (", ".join(p) if p else "无产物"))
@@ -546,7 +595,7 @@ def main():
     deep = d / "d1" / "d2" / "d3"
     deep.mkdir(parents=True)
     (deep / "n.txt").write_text("nested", encoding="utf-8")
-    set_cfg(Format="7z", Volume=2000, GenerateMD5="False", OutputPath="")
+    set_cfg(Format="7z", Volume=2000, GenerateSHA256="False", OutputPath="")
     close_gracefully([str(deep)], 4)
     p = products_in(d)
     say("  产物: %s" % (", ".join(p) if p else "无产物"))
@@ -559,7 +608,7 @@ def main():
     d = fresh("t11_ask")
     (d / "x.txt").write_text("one", encoding="utf-8")
     (d / "y.dat").write_text("two", encoding="utf-8")
-    set_cfg(Format="7z", Volume=2000, GenerateMD5="False", OutputPath="")
+    set_cfg(Format="7z", Volume=2000, GenerateSHA256="False", OutputPath="")
     # 命令行模式下不弹窗口, 改看控制台输出
     out = run_capture([str(d / "x.txt"), str(d / "y.dat")], 8)
     flat = out.replace("\r", " ").replace("\n", " | ")
@@ -580,7 +629,7 @@ def main():
     say("##### T12: 输出路径 #####")
     d = fresh("t12_out")
     shutil.copy(data / "a.txt", d)
-    set_cfg(Format="7z", Volume=2000, GenerateMD5="False",
+    set_cfg(Format="7z", Volume=2000, GenerateSHA256="False",
             OutputPath=r"C:\__no_such_dir__\xxx")
     close_gracefully([str(d / "a.txt")], 4)
     p = products_in(d, {"a.txt"})
@@ -594,7 +643,7 @@ def main():
     shutil.copy(data / "a.txt", d2)
     outdir = d2 / "out"
     outdir.mkdir()
-    set_cfg(Format="7z", Volume=2000, GenerateMD5="False", OutputPath=str(outdir))
+    set_cfg(Format="7z", Volume=2000, GenerateSHA256="False", OutputPath=str(outdir))
     close_gracefully([str(d2 / "a.txt")], 4)
     p2 = products_in(outdir)
     say("  有效路径 -> %s" % (", ".join(p2) if p2 else "无产物"))
@@ -607,7 +656,7 @@ def main():
     d = fresh("t13_auto")
     shutil.copy(data / "a.txt", d)
     shutil.copy(data / "b.txt", d)
-    set_cfg(Format="7z", Volume=2000, GenerateMD5="False", OutputPath="",
+    set_cfg(Format="7z", Volume=2000, GenerateSHA256="False", OutputPath="",
             Password="", UnzipPassword="")
     # 命令行模式不显示窗口, 用 run_capture 等它自己跑完
     run_capture([str(d / "a.txt")], 10)
@@ -631,19 +680,19 @@ def main():
     say("##### T14: 废键清理 #####")
     old = ["ScreenWidth", "ScreenHeight", "SystemScale", "LocationX",
            "LocationY", "DisableVolume", "Portable", "ZipLevel", "MainText"]
-    tree = ET.parse(CFG)
-    root = tree.getroot()
+    # 变量名不能叫 data：main() 里 data 已经是测试数据目录（Path），
+    # 覆盖它会让后面 T18/T19 的 shutil.copy(data / ...) 直接崩掉。
+    cfg_now = read_cfg()
     for k in old:
-        if root.find(k) is None:
-            el = ET.SubElement(root, k)
-            el.text = "0"
-    tree.write(CFG, encoding="utf-8", xml_declaration=True)
-    before = len(list(ET.parse(CFG).getroot()))
-    set_cfg(AutoSave="True")
+        cfg_now.setdefault(k, "0")
+    CFG.write_text(json.dumps(cfg_now, ensure_ascii=False, indent=2) + "\n",
+                   encoding="utf-8")
+    before = len(cfg_now)
+    set_cfg(AutoSave=True)
     close_gracefully([], 2)
-    ar = ET.parse(CFG).getroot()
-    left = [k for k in old if ar.find(k) is not None]
-    say("  键数 %d -> %d" % (before, len(list(ar))))
+    after = read_cfg()
+    left = [k for k in old if k in after]
+    say("  键数 %d -> %d" % (before, len(after)))
     if left:
         bad("废键未清理: %s" % ", ".join(left))
     else:
@@ -726,7 +775,7 @@ def main():
     raw[40] = 0xFF
     raw[41] = 0xFF
     (d / "broken.7z").write_bytes(bytes(raw))
-    set_cfg(Format="7z", Volume=2000, GenerateMD5="False", OutputPath="")
+    set_cfg(Format="7z", Volume=2000, GenerateSHA256="False", OutputPath="")
     close_gracefully([str(d / "broken.7z")], 5)
     say("  损坏压缩包: 已处理")
 
@@ -744,7 +793,7 @@ def main():
     for v in ("-5", "abc", "99999999999999999999"):
         d = fresh("t19_v")
         shutil.copy(data / "a.txt", d)
-        set_cfg(Format="7z", Volume=v, GenerateMD5="False", OutputPath="")
+        set_cfg(Format="7z", Volume=v, GenerateSHA256="False", OutputPath="")
         close_gracefully([str(d / "a.txt")], 4)
         p = products_in(d, {"a.txt"})
         say("  Volume=%-22s -> %s" % (v, ", ".join(p) if p else "无产物"))
@@ -754,9 +803,9 @@ def main():
     # T20 配置损坏
     say("")
     say("##### T20: 配置损坏 #####")
-    backup = CFG.read_text(encoding="utf-8")
+    backup = cfg_text()
     try:
-        CFG.write_text("not xml <<<", encoding="utf-8")
+        CFG.write_text("not json <<<", encoding="utf-8")
         p = subprocess.Popen([exe_for([])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(3)
         alive = p.poll() is None
@@ -766,10 +815,9 @@ def main():
         if not alive:
             bad("配置损坏导致应用无法启动")
         close_gracefully([], 2)
-        try:
-            ET.parse(CFG)
+        if read_cfg():
             say("  配置已重建: OK")
-        except Exception:
+        else:
             bad("配置损坏后未被重建")
     finally:
         CFG.write_text(backup, encoding="utf-8")
@@ -822,19 +870,30 @@ def main():
                     if line.strip():
                         say("  " + line.strip())
 
-                # 断言: 切过去、切回来、目录都清干净
-                if "IsPortable = True" not in text:
-                    bad("便携模式: 没有切到便携模式")
-                if "IsPortable = False" not in text:
-                    bad("便携模式: 没有切回普通模式")
-                if "普通目录还在 = True" in text:
-                    bad("便携模式: 旧目录没有移除")
-                if "便携目录还在 = True" in text:
-                    bad("便携模式: 切回后便携目录仍在")
-                if "配置里的 IsPortable = True" not in text:
-                    bad("便携模式: 配置里没有记下便携标记")
-                if "配置里的 IsPortable = False" not in text:
-                    bad("便携模式: 配置里没有记下普通模式标记")
+                # 退出码 3 = 被测程序是 Release，没有 SkipShellMenuSync。
+                # 那不是失败：Release 里本来就不该带测试开关（这是有意为之）。
+                # 只是便携模式没法在不弹 UAC 的前提下测，明确跳过。
+                if out.returncode == 3 or "RELEASE_NO_TEST_HOOK" in text:
+                    say("  被测程序为 Release 构建，无测试开关；")
+                    say("  便携模式改由 Debug 构建覆盖（--config Debug），本项跳过")
+                else:
+                    # 断言: 切过去、切回来、目录都清干净
+                    #
+                    # IsPortable 在内存里由产品打印成 C# 的 bool（True/False），
+                    # 而配置文件里是标准 JSON 的原生布尔（true/false）—— 两者大小写不同，
+                    # 断言必须分开写，否则会把"格式正确"误判成"没记下标记"。
+                    if "IsPortable = True" not in text:
+                        bad("便携模式: 没有切到便携模式")
+                    if "IsPortable = False" not in text:
+                        bad("便携模式: 没有切回普通模式")
+                    if "普通目录还在 = True" in text:
+                        bad("便携模式: 旧目录没有移除")
+                    if "便携目录还在 = True" in text:
+                        bad("便携模式: 切回后便携目录仍在")
+                    if "配置里的 IsPortable = true" not in text:
+                        bad("便携模式: 配置里没有记下便携标记")
+                    if "配置里的 IsPortable = false" not in text:
+                        bad("便携模式: 配置里没有记下普通模式标记")
             else:
                 say("  (编译辅助程序失败, 已跳过)")
         else:

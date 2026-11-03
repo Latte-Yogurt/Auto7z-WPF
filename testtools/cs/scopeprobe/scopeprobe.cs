@@ -2,10 +2,6 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-// 外壳扩展的作用范围自检:
-// 走一遍资源管理器的调用流程, 看各类目标下会不会出现菜单项。
-//   普通文件 / 文件夹  -> 应该出现 2 项
-//   回收站 / 虚拟路径  -> 不应该出现菜单项
 class ScopeProbe
 {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

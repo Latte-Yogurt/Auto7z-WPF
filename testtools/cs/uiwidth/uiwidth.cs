@@ -11,9 +11,6 @@ using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Threading;
 
-// UI 文本自检
-//   1) 运行时: 把不含图片的窗口(MessageWindow / PasswordWindow)量一遍
-//   2) 静态: 把三个词典里的每个键都量一遍宽度
 class UiWidth
 {
     static string lp;
@@ -56,8 +53,6 @@ class UiWidth
             CheckWindow(asm, "Auto7z_WPF.PasswordWindow", "PasswordWindow", loc);
         }
 
-        // 主窗口与关于窗口带图片资源, 在这个宿主里创建不出来,
-        // 改成静态分析 XAML: 把绑定到资源键的文本量一遍
         L("");
         L("========== 静态 XAML 文本检查 ==========");
         CheckXamlText(Path.Combine(Path.GetDirectoryName(langDir), ".."), langDir);
@@ -105,17 +100,12 @@ class UiWidth
                 string value = m.Groups[2].Value;
                 if (string.IsNullOrWhiteSpace(value)) continue;
 
-                // 悬停提示与日志不显示在固定宽度的控件里, 不受宽度限制
                 if (key.StartsWith("Tip_") || key.StartsWith("Log_") || key.StartsWith("Err_"))
                     continue;
 
-                // 控制台文案只打在 cmd 里, 不进任何固定宽度的控件, 同样不受宽度限制
                 if (key.StartsWith("Console_"))
                     continue;
 
-                // 会换行显示的文案: 对话框正文与主窗口结果提示
-                // PasswordPrompt / PasswordWrongAttempt 显示在 PasswordWindow 的提示区，
-                // 那里是 TextWrapping="Wrap"，会换行，不受单行宽度限制
                 if (key == "MultiFilePackQuery" || key == "Result_PartialWarning" ||
                     key == "PasswordPrompt" || key == "PasswordWrongAttempt")
                     continue;
@@ -133,7 +123,6 @@ class UiWidth
         }
     }
 
-    // 静态检查 XAML: 找出绑定了资源键且宽度固定的控件, 用该语言的文案量宽度
     static void CheckXamlText(string projectDir, string langDir)
     {
         foreach (string loc in new[] { "zh-CN", "en-US", "zh-TW" })
@@ -183,7 +172,6 @@ class UiWidth
         }
     }
 
-    // 读词典: 键 -> 文案
     static Dictionary<string, string> ReadDictionary(string path)
     {
         var dict = new Dictionary<string, string>();
@@ -211,7 +199,6 @@ class UiWidth
         return dict;
     }
 
-    // 找出所有控件的起始标签
     static List<string> FindControlTags(string text)
     {
         var result = new List<string>();
@@ -244,7 +231,6 @@ class UiWidth
         return result;
     }
 
-    // 从标签里读属性值
     static string ReadAttribute(string tag, string attribute)
     {
         int idx = tag.IndexOf(attribute + "=", StringComparison.Ordinal);
@@ -402,7 +388,6 @@ class UiWidth
 
     static double MeasureWidth(string content) { return MeasureWidth(content, null); }
 
-    // 用元素自己的字体量, 否则量出来的宽度和实际排版对不上
     static double MeasureWidth(string content, FrameworkElement e)
     {
         try

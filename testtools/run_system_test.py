@@ -103,7 +103,7 @@ def decode_console(raw):
       - 用了 chcp 65001 的 cmd        -> 输出是 UTF-8
     （程序启动时会借父 cmd 的控制台，编码也跟着父 cmd 的代码页走。）
 
-    办法：两种都试一遍，取"解码后中文正常"的那���。
+    办法：两种都试一遍，取"解码后中文正常"的那一份。
     UTF-8 优先试，因为 UTF-8 解 GBK 几乎不会乱成合法中文，
     反过来则不然。
     """
@@ -199,7 +199,7 @@ def t_cmdline_password(res, app):
     pwfile.write_bytes("测试密码123".encode("gbk"))
     outfile = work / "out.txt"
 
-    run_to_file([str(app), "-U", str(enc)], pwfile, outfile)
+    run_to_file([str(app), "-uz", str(enc)], pwfile, outfile)
     text = decode_console(outfile.read_bytes())
 
     ok_prompt = "请输入密码" in text
@@ -231,7 +231,7 @@ def t_cmdline_merge(res, app):
     ynfile.write_bytes("N".encode("gbk"))
     outfile = work / "out.txt"
 
-    run_to_file([str(app), "-Z", str(a), str(b)], ynfile, outfile)
+    run_to_file([str(app), "-z", str(a), str(b)], ynfile, outfile)
     text = decode_console(outfile.read_bytes())
 
     ok_q = "Y/N" in text or "是否合并" in text
@@ -278,6 +278,19 @@ def t_shell_extension(res, app):
             res.add(name, ok and r.returncode == 0, "退出码=%d" % r.returncode)
 
 
+def kill_running():
+    """结束还在跑的 Auto7z 进程。
+
+    程序是单实例的：上一个还在跑的话，新起的会认为已有实例，
+    把文件交过去就自己退了。单实例那项测试对残留进程最敏感 ——
+    有残留时「第二个实例应自己退出」会被误判成通过，交接项反而崩。
+    """
+    for image in ("Auto7z.exe", "Auto7zGUI.exe"):
+        subprocess.run(["taskkill", "/F", "/IM", image],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.3)
+
+
 def t_shellproto(res, app):
     """共享内存传参协议 + 单实例。"""
     print("")
@@ -286,6 +299,10 @@ def t_shellproto(res, app):
     if not exe.exists():
         res.add("shellproto", False, "工具没编译, 跳过")
         return
+
+    # 这一项要验单实例交接，跑之前必须没有任何 Auto7z 在跑
+    kill_running()
+
     work = TEMP.path / "shellproto"
     if work.exists():
         import shutil
@@ -302,7 +319,7 @@ def t_ui_checks(res, app):
     这几个工具的报告方式不一样：
       verify / uiwidth  —— 打印 "TOTAL PROBLEMS: N"
       taborder          —— 写 taborder.txt，stdout 不说话
-      langcheck        —— 打印支持的��言与映射表，不报问题数
+      langcheck        —— 打印支持的语言与映射表，不报问题数
     所以分开判断，不能一把尺子量到底。
     """
     print("")

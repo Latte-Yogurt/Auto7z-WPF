@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 r"""审查弃用方法与废键值:
 - 词典里的键有没有被引用
-- public 方法有没有人调用
+- public 方法有没有被人调用
 - 配置文件里的键有没有被代码读取
 """
 import io
+import json
 import os
 import re
 import sys
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 # 默认指向主工程目录；可以传一个路径参数来审查别的副本（变异测试要用）。
@@ -16,7 +16,7 @@ from pathlib import Path
 _default = Path(r"C:\Users\Mocha\Desktop\VSProject\Auto7z Project\Auto7z_WPF\Auto7z_WPF")
 PROJECT = Path(sys.argv[1]) if len(sys.argv) > 1 else _default
 LANG_DIR = PROJECT / "Resources" / "Languages"
-CFG = Path(os.environ["LOCALAPPDATA"]) / "Auto7z" / "Auto7z.xml"
+CFG = Path(os.environ["LOCALAPPDATA"]) / "Auto7z" / "Auto7z.json"
 
 # 收集全部源码
 sources = []
@@ -75,10 +75,15 @@ print("=" * 66)
 print("三、配置文件里的键")
 print("=" * 66)
 if CFG.exists():
-    root = ET.parse(CFG).getroot()
-    for c in root:
-        read = ('"%s"' % c.tag) in all_text
-        print("  %-20s %s" % (c.tag, "被代码引用" if read else "!! 无人引用"))
+    try:
+        values = json.loads(CFG.read_text(encoding="utf-8"))
+    except Exception as e:
+        values = None
+        print("  !! 配置不是合法 JSON: %s" % e)
+    if values is not None:
+        for name in values:
+            read = ('"%s"' % name) in all_text
+            print("  %-20s %s" % (name, "被代码引用" if read else "!! 无人引用"))
 else:
     print("  (配置不存在)")
 

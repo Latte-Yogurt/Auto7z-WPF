@@ -4,10 +4,6 @@ using System.Reflection;
 using System.Text;
 using System.Windows;
 
-// 验证便携模式切换(直接调用应用里的真实逻辑):
-//   1) 勾选便携 -> 数据目录搬到程序目录的 .config\Auto7z
-//   2) 取消勾选 -> 数据目录搬回 %LOCALAPPDATA%\Auto7z
-//   3) 键值先保存再搬目录
 class Portable
 {
     static string lp;
@@ -51,14 +47,10 @@ class Portable
 
         string localDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Auto7z");
-        // 程序目录按 Auto7z.exe 算, 不按 portable.exe。
-        // AppPaths.GetProgramDirectory() 取的是 GetEntryAssembly().Location,
-        // 在测试进程里指向 portable.exe, 那是测试工具的位置, 不是程序的位置。
         string programDir = Path.GetDirectoryName(asmPath);
         string portableRoot = Path.Combine(programDir, ".config");
         string portableDir = Path.Combine(portableRoot, "Auto7z");
 
-        // 准备一个普通模式的数据目录: 配置 + 组件目录 + 日志目录
         PrepareLocal(localDir);
         L("### 准备好的普通目录");
         DumpTree(localDir);
@@ -67,22 +59,18 @@ class Portable
         var vm = Activator.CreateInstance(vmType);
         var setPortable = vmType.GetMethod("SetPortableMode", BindingFlags.Public | BindingFlags.Instance);
 
-        // 跳过"右键菜单注册状态"的同步。
-        //
-        // 切换便携模式时产品会去注册/注销右键菜单，那要提权写注册表，
-        // Windows 会弹 UAC 让用户点确认 —— 跑一次测试打扰一次。
-        // 而这个测试要验的是"数据目录有没有搬对"，注册表只是搬目录的副产物，
-        // 跟被测逻辑无关。关掉之后行为只差"右键菜单没跟着切换"。
         var skipProp = vmType.GetProperty("SkipShellMenuSync", BindingFlags.Public | BindingFlags.Instance);
-        if (skipProp != null && skipProp.CanWrite)
+        if (skipProp == null || !skipProp.CanWrite)
         {
-            skipProp.SetValue(vm, true, null);
-            L("### 已跳过右键菜单注册同步（避免 UAC）");
+            L("### RELEASE_NO_TEST_HOOK");
+            L("  被测程序是 Release 构建，没有 SkipShellMenuSync。");
+            L("  便携模式测试需要跳过右键菜单注册（否则会弹 UAC），");
+            L("  请改用 Debug 构建：--config Debug");
+            return 3;
         }
-        else
-        {
-            L("### !! 找不到 SkipShellMenuSync，注册同步不会被跳过");
-        }
+
+        skipProp.SetValue(vm, true, null);
+        L("### 已跳过右键菜单注册同步（避免 UAC）");
         L("");
 
         L("### 切到便携模式");
@@ -107,11 +95,6 @@ class Portable
         DumpTree(localDir);
         L("");
 
-        // 收尾：确保系统里没留下右键菜单注册。
-        //
-        // 上面已经把 SkipShellMenuSync 置成 true 了，
-        // 所以切换过程中产品根本没去注册，这里也就不会有残留 ——
-        // 不需要注销，也就不需要 UAC。
         L("### 收尾：检查右键菜单注册");
         L("  系统里没有右键菜单注册（注册同步已被跳过），无需注销（不会弹 UAC）");
         L("");
@@ -122,8 +105,6 @@ class Portable
 
     static void PrepareLocal(string localDir)
     {
-        // 递归删除前做边界校验：
-        // 这个目录是 %LOCALAPPDATA%\Auto7z，删错了影响的是用户的真实数据。
         if (Directory.Exists(localDir))
         {
             string full = Path.GetFullPath(localDir);
@@ -138,8 +119,9 @@ class Portable
         }
         Directory.CreateDirectory(Path.Combine(localDir, "7-Zip"));
         Directory.CreateDirectory(Path.Combine(localDir, "Logs"));
-        File.WriteAllText(Path.Combine(localDir, "Auto7z.xml"),
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?><Configuration><IsPortable>False</IsPortable></Configuration>");
+        // 配置是标准 JSON；这里手写一份最小可读文件，产品会补齐缺失的键。
+        File.WriteAllText(Path.Combine(localDir, "Auto7z.json"),
+            "{\n  \"IsPortable\": false\n}\n", new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(localDir, "Logs", "probe.log"), "x");
     }
 
@@ -157,10 +139,37 @@ class Portable
         if (!File.Exists(configPath)) return "(config not found)";
         try
         {
-            var doc = System.Xml.Linq.XDocument.Load(configPath);
-            if (doc.Root == null) return "(no root)";
-            var node = doc.Root.Element("IsPortable");
-            return node == null ? "(key missing)" : node.Value;
+            // 配置是标准 JSON。这里做最小解析而不是引 System.Text.Json：
+            // 探针是独立 exe，不该为了读一个键带进额外的依赖。
+            string text = File.ReadAllText(configPath, Encoding.UTF8);
+            int key = text.IndexOf("\"IsPortable\"", StringComparison.Ordinal);
+            if (key < 0) return "(key missing)";
+
+            int colon = text.IndexOf(':', key);
+            if (colon < 0) return "(key missing)";
+
+            int start = colon + 1;
+            while (start < text.Length && (text[start] == ' ' || text[start] == '\t' ||
+                                           text[start] == '\r' || text[start] == '\n'))
+            {
+                start++;
+            }
+
+            // 值可能是原生 true/false，也可能被手工写成带引号的 "True"
+            if (start < text.Length && text[start] == '"')
+            {
+                int end = text.IndexOf('"', start + 1);
+                return end < 0 ? "(unterminated)" : text.Substring(start + 1, end - start - 1);
+            }
+
+            int stop = start;
+            while (stop < text.Length && text[stop] != ',' && text[stop] != '}' &&
+                   text[stop] != '\r' && text[stop] != '\n')
+            {
+                stop++;
+            }
+
+            return text.Substring(start, stop - start).Trim();
         }
         catch (Exception e) { return "read failed: " + e.Message; }
     }

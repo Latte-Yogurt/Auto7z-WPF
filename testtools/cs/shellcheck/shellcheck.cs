@@ -2,9 +2,6 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-// 外壳扩展自检:
-// 走资源管理器加载外壳扩展的那条路, 并把菜单项读出来。
-// 用法: shellcheck.exe <dll路径> <CLSID> [文件路径]
 class ShellCheck
 {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -73,7 +70,6 @@ class ShellCheck
         public IntPtr hUnkForRelease;
     }
 
-    // 只提供 CF_HDROP 的极简 IDataObject, 模拟资源管理器给的那个
     [ComVisible(true)]
     class DropDataObject : IDataObject
     {
@@ -90,8 +86,8 @@ class ShellCheck
             int total = 20 + chars * 2;
             IntPtr mem = Marshal.AllocHGlobal(total);
             for (int i = 0; i < total; i++) Marshal.WriteByte(mem, i, 0);
-            Marshal.WriteInt32(mem, 0, 20);      // pFiles 偏移
-            Marshal.WriteInt32(mem, 16, 1);     // fWide
+            Marshal.WriteInt32(mem, 0, 20);
+            Marshal.WriteInt32(mem, 16, 1);
             Marshal.Copy(_file.ToCharArray(), 0, mem + 20, _file.Length);
             Marshal.WriteInt16(mem, 20 + chars * 2 - 2, 0);
 
@@ -168,7 +164,6 @@ class ShellCheck
 
             if (hr == 0)
             {
-                // 先 Initialize 才有选中路径, 不然加不出菜单项
                 if (sample != null)
                 {
                     IntPtr vt = Marshal.ReadIntPtr(menuObj);
@@ -197,7 +192,6 @@ class ShellCheck
                     Marshal.ReadIntPtr(menuVtable, 3 * IntPtr.Size), typeof(QueryContextMenuDelegate));
 
                 IntPtr hMenu = CreatePopupMenu();
-                // 返回值是加了几个菜单项, 不是 0
                 int used = queryContextMenu(menuObj, hMenu, 0, 0x8000, 0x8001, 0);
                 Console.WriteLine("  QueryContextMenu   = " + used + " (菜单项数)");
                 if (used < 0) problems++;
@@ -205,7 +199,6 @@ class ShellCheck
                 int count = GetMenuItemCount(hMenu);
                 Console.WriteLine("  菜单项数 = " + count);
                 if (count < 2) problems++;
-                // 返回值要跟实际插入的项数一致
                 if (used != count) problems++;
 
                 for (int i = 0; i < count; i++)
