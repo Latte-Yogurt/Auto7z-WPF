@@ -18,7 +18,7 @@ A Windows GUI archiver built on 7-Zip ZS (7-Zip 22.01 ZS v1.5.5 R3, x64).
 
 Drag files onto the window, or right-click them in Explorer and pick **Compress with Auto7z** / **Extract with Auto7z**. It can also be driven from the command line.
 
-- GUI: drag in files or folders, pick format, level, password, split size, MD5, solid mode, encrypted file names.
+- GUI: drag in files or folders, pick format, level, password, split size, SHA256, solid mode, encrypted file names.
 - Explorer context menu: a native COM shell extension adds two entries to the right-click menu.
 - Command line: scriptable, no GUI, progress on stdout, exits when done.
 - Portable mode: all data lives next to the exe, nothing left in `%LOCALAPPDATA%`.
@@ -93,8 +93,8 @@ Auto7z Project/
 └── testtools/               regression and system test scripts
 ```
 
-Each part has its own README: [`Auto7zShell`](Auto7zShell/README.md),
-[`Auto7z_WPF`](Auto7z_WPF/README.md), [`testtools`](testtools/README.md).
+Each of the three sub-directories carries its own `README.md`: its layout, build
+steps and the details specific to that part live there.
 
 ### Building
 
@@ -127,13 +127,16 @@ Copy the resulting `Auto7zShell.dll` next to `Auto7z.exe` — the application lo
 ```
 Auto7z.exe [options] [files or folders...]
 
-  -A            automatic mode (default): unpack archives, compress the rest
-  -Z            compress
-  -U            unpack
+  -a            automatic mode (default): unpack archives, compress the rest
+  -z            compress
+  -uz           unpack
   -r            register the Explorer context menu (needs administrator)
   -ur           unregister the Explorer context menu (needs administrator)
   -h            show this help
 ```
+
+The switches are case-insensitive (`-A` == `-a`), but the canonical spelling is
+the lower-case one printed by `-h`.
 
 Command line mode never opens a window. Progress goes to the console and the
 process exits when the task is done.
@@ -159,6 +162,18 @@ apart by looking at the parent process: Explorer started it, so it is a
 drag-and-drop.
 
 ### Registering the context menu
+
+```bat
+Auto7z.exe -r
+Auto7z.exe -ur
+```
+
+Registration writes to `HKEY_LOCAL_MACHINE\Software\Classes`, so it needs administrator rights. When the process is not elevated, it runs `regsvr32` with the `runas` verb and the user gets a UAC prompt.
+
+The extension is a traditional `IContextMenu` extension, so on Windows 11 the entries live under **Show more options**.
+
+The menu text follows the interface language. The application records the current language under `HKCU\Software\Auto7z`, and the extension reads it from there. When that key is missing, the extension falls back to the `Language` key in `Auto7z.json`, and to English after that.
+
 ### Exit codes
 
 `Auto7z.exe` reports the outcome to the caller, so scripts and scheduled tasks
@@ -170,9 +185,10 @@ can tell success from failure:
 | 1 | the task ran but failed or was cancelled |
 | 2 | nothing ran: missing/unknown arguments, or none of the input paths exist |
 
-Relative input paths are accepted (`Auto7z.exe -Z file.txt` inside the file's
+Relative input paths are accepted (`Auto7z.exe -z file.txt` inside the file's
 folder works); they are resolved to absolute paths before the output folder is
 chosen.
+
 ### Progress and cancelling
 
 Progress comes straight from 7-Zip's own `-bsp1` stream and is parsed per percentage point,
@@ -180,17 +196,6 @@ so the number moves in the console, in the main window's status text and in the 
 progress window used by the context menu. In the context-menu mode, closing the small
 progress window is a **cancel**: the 7-Zip child process is killed and the half-written
 folder is deleted before the window disappears.
-
-```bat
-Auto7z.exe -r
-Auto7z.exe -ur
-```
-
-Registration writes to `HKEY_LOCAL_MACHINE\Software\Classes`, so it needs administrator rights. When the process is not elevated, it runs `regsvr32` with the `runas` verb and the user gets a UAC prompt.
-
-The extension is a traditional `IContextMenu` extension, so on Windows 11 the entries live under **Show more options**.
-
-The menu text follows the interface language. The application records the current language under `HKCU\Software\Auto7z`, and the extension reads it from there. When that key is missing, the extension falls back to the `Language` element in `Auto7z.xml`, and to English after that.
 
 ### How it works
 
@@ -223,7 +228,7 @@ No NuGet packages. The only bundled dependency is the 7-Zip ZS build.
 
 把文件拖进窗口，或者在资源管理器里右键选「用 Auto7z 压缩」「用 Auto7z 解压」。也可以从命令行调用。
 
-- 图形界面：拖入文件或文件夹，可选格式、压缩等级、密码、分卷大小、MD5、固实压缩、加密文件名。
+- 图形界面：拖入文件或文件夹，可选格式、压缩等级、密码、分卷大小、SHA256、固实压缩、加密文件名。
 - 资源管理器右键菜单：原生 COM 外壳扩展，在右键菜单里加两项。
 - 命令行：可脚本化，不弹界面，进度输出到控制台，任务做完就退出。
 - 便携模式：数据全放在程序旁边，`%LOCALAPPDATA%` 里不留东西。
@@ -293,8 +298,7 @@ Auto7z Project/
 └── testtools/               回归测试与系统测试脚本
 ```
 
-各部分另有自己的说明：[`Auto7zShell`](Auto7zShell/README.md)、
-[`Auto7z_WPF`](Auto7z_WPF/README.md)、[`testtools`](testtools/README.md)。
+三个子目录各自带一份 `README.md`：该部分的目录结构、编译步骤与专属细节都在那里。
 
 ### 编译
 
@@ -327,13 +331,15 @@ Auto7zShell\buildtool\buildtool.exe --vcvars "C:\Program Files\Microsoft Visual 
 ```
 Auto7z.exe [选项] [文件或目录...]
 
-  -A            自动模式（默认）：压缩包解开、其余的压起来
-  -Z            压缩
-  -U            解压
+  -a            自动模式（默认）：压缩包解开、其余的压起来
+  -z            压缩
+  -uz           解压
   -r            注册右键菜单（需要管理员权限）
   -ur           注销右键菜单（需要管理员权限）
   -h            显示帮助
 ```
+
+开关不区分大小写（`-A` 与 `-a` 等价），以 `-h` 打印出来的小写写法为准。
 
 命令行模式不弹窗口。进度输出到控制台，任务做完进程就退出。
 
@@ -353,23 +359,6 @@ Auto7z.exe [选项] [文件或目录...]
 程序靠看父进程来区分：父进程是 explorer，说明是拖拽。
 
 ### 注册右键菜单
-### 退出码
-
-`Auto7z.exe` 会把结果告诉调用方，脚本与计划任务据此判断成败：
-
-| 码 | 含义 |
-|---|---|
-| 0 | 全部成功（`-h` 打印用法也算成功） |
-| 1 | 任务跑了但失败，或被取消 |
-| 2 | 根本没跑：参数缺失/无法识别，或输入路径一个都不存在 |
-
-相对路径可用（在文件所在目录里 `Auto7z.exe -Z file.txt` 能正常压缩）——
-程序会先把它转成绝对路径，再推导输出目录。
-### 进度与取消
-
-进度直接取自 7-Zip 的 `-bsp1` 输出，按百分点解析：控制台、主窗口状态文字、
-右键菜单用的小进度窗口显示的是同一串数字。右键菜单模式下，**关掉小进度窗口就是取消**——
-7-Zip 子进程会被结束，压到一半的目录会在窗口消失前删掉。
 
 ```bat
 Auto7z.exe -r
@@ -380,7 +369,26 @@ Auto7z.exe -ur
 
 这是传统的 `IContextMenu` 扩展，Windows 11 上两项在「显示更多选项」里。
 
-菜单文字跟着界面语言走。主程序把当前语言记在 `HKCU\Software\Auto7z` 下，组件从那儿读。读不到就回退去读 `Auto7z.xml` 里的 `Language` 元素，再读不到就用英文。
+菜单文字跟着界面语言走。主程序把当前语言记在 `HKCU\Software\Auto7z` 下，组件从那儿读。读不到就回退去读 `Auto7z.json` 里的 `Language` 键，再读不到就用英文。
+
+### 退出码
+
+`Auto7z.exe` 会把结果告诉调用方，脚本与计划任务据此判断成败：
+
+| 码 | 含义 |
+|---|---|
+| 0 | 全部成功（`-h` 打印用法也算成功） |
+| 1 | 任务跑了但失败，或被取消 |
+| 2 | 根本没跑：参数缺失/无法识别，或输入路径一个都不存在 |
+
+相对路径可用（在文件所在目录里 `Auto7z.exe -z file.txt` 能正常压缩）——
+程序会先把它转成绝对路径，再推导输出目录。
+
+### 进度与取消
+
+进度直接取自 7-Zip 的 `-bsp1` 输出，按百分点解析：控制台、主窗口状态文字、
+右键菜单用的小进度窗口显示的是同一串数字。右键菜单模式下，**关掉小进度窗口就是取消**——
+7-Zip 子进程会被结束，压到一半的目录会在窗口消失前删掉。
 
 ### 大概原理
 
