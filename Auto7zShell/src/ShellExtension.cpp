@@ -1,4 +1,3 @@
-
 #include "ShellProtocol.h"
 
 #include <windows.h>
@@ -13,10 +12,10 @@
 #include <string>
 #include <vector>
 
-// 全部实现收在匿名命名空间里，对外只留 Dll* 导出符号，免得和主程序或别的扩展重名
+// 全部实现收在匿名命名空间里，对外只留 Dll* 导出符号，免得和主程序或别的扩展重名。
 namespace {
 
-// 这个号同时写进注册表和主程序的注册流程，改了必须重新注册，否则资源管理器仍按旧号找组件
+// 这个 CLSID 同时写进注册表与主程序的注册流程，改了必须重新注册，否则资源管理器仍按旧号找组件。
 const CLSID kClassId = {
     0x6C3F8A21,
     0x4B7D,
@@ -25,11 +24,11 @@ const CLSID kClassId = {
 
 const wchar_t kClassName[] = L"Auto7z Shell Extension";
 
-// 谓词名是脚本和 GetCommandString 认的稳定标识，不跟着界面语言变
+// 谓词名是脚本与 GetCommandString 认的稳定标识，不随界面语言变化。
 const wchar_t kVerbCompress[] = L"Auto7z.Compress";
 const wchar_t kVerbExtract[] = L"Auto7z.Extract";
 
-// 语言段按百位分开，201 留给繁体、301 留给英文，运行时按配置挑一组
+// 字符串资源按语言分段：101 段简体、201 段繁体、301 段英文，运行时按配置挑一组。
 const int kStringCompressZhCN = 101;
 const int kStringExtractZhCN = 102;
 const int kStringCompressZhTW = 201;
@@ -43,36 +42,37 @@ const int kStringExtractDefault = kStringExtractEnUS;
 const UINT kCmdCompress = 0;
 const UINT kCmdExtract = 1;
 
-// 子进程迟迟不来读共享内存时的兜底上限，超过就无条件释放，免得句柄跟着资源管理器常驻
+// 子进程迟迟不来读共享内存时的兜底上限，超时即无条件释放，免得句柄跟着资源管理器常驻。
 const DWORD kHandoffTimeoutMs = 30000;
 
+// 主程序与图形入口都按同目录查找，外壳扩展只负责把路径拼成绝对路径。
 const wchar_t kMainExeName[] = L"Auto7z.exe";
 
 const wchar_t kGuiExeName[] = L"Auto7zGUI.exe";
 
 const wchar_t kHandlerKeyName[] = L"Auto7z";
 
-// 自身模块句柄要留着，LoadStringW 取菜单文字和注册时取 DLL 路径都得靠它
 HMODULE g_module = nullptr;
 
+// 这三个计数由多个线程并发修改，读写一律走 Interlocked，避免读到撕裂的中间值。
 LONG g_refCount = 0;
 
 LONG g_lockCount = 0;
 
-// 还在等子进程取数据的后台线程数，DllCanUnloadNow 必须把它算进去
+// 待交接的子进程数计入 DllCanUnloadNow 的判定，否则资源管理器会在子进程还没取数据时卸载组件。
 LONG g_pendingHandoffs = 0;
 
+// 对象引用计数在构造函数与析构函数里配对增减，DllCanUnloadNow 靠它判断是否已无活动对象。
 inline void AddObjectRef() { InterlockedIncrement(&g_refCount); }
 inline void ReleaseObjectRef() { InterlockedDecrement(&g_refCount); }
 
-// 这几个计数由多个线程并发改，取值也走 Interlocked，避免读到撕裂的中间值
 inline LONG ReadLong(volatile LONG *value)
 {
     return InterlockedCompareExchange(value, 0, 0);
 }
 
 
-// 注册表键名只认花括号大写形式的 GUID，这里现拼，省得再维护一份字符串常量
+// 注册表只认「{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}」这种带花括号的写法，C++ 的 CLSID 常量不能直接写进去。
 void FormatClassId(wchar_t *buffer, size_t bufferChars)
 {
     _snwprintf_s(buffer, bufferChars, _TRUNCATE,
@@ -86,7 +86,7 @@ const HKEY kClassesRoot = HKEY_CLASSES_ROOT;
 
 const HKEY kMachineClasses = HKEY_LOCAL_MACHINE;
 
-// 主程序路径挂在 CLSID 底下，反注册时能跟着 CLSID 那棵树一起清干净
+// MainExePath 挂在 CLSID 之下而不是类名之下：它是本组件的私有登记项，卸载时随 CLSID 一并删除。
 std::wstring GetMainExeValueKey()
 {
     wchar_t clsid[64];
@@ -94,6 +94,7 @@ std::wstring GetMainExeValueKey()
     return std::wstring(L"CLSID\\") + clsid + L"\\Auto7z";
 }
 
+// 从组件自身的加载位置推目录，组件被拷到哪里都按同目录找主程序。
 bool GetModuleDirectory(wchar_t *buffer, size_t bufferChars)
 {
     DWORD length = GetModuleFileNameW(g_module, buffer, static_cast<DWORD>(bufferChars));
@@ -105,7 +106,7 @@ bool GetModuleDirectory(wchar_t *buffer, size_t bufferChars)
     return true;
 }
 
-// 主程序可能装在别处，先信注册时记下的路径，找不到再退回 DLL 所在目录
+// 优先读注册时登记的主程序路径，这样主程序被改名或挪动后仍能用注册表里的真值。
 bool ReadRegisteredExePath(std::wstring &path)
 {
     HKEY key = nullptr;
@@ -121,7 +122,6 @@ bool ReadRegisteredExePath(std::wstring &path)
 
     if (result != ERROR_SUCCESS || type != REG_SZ) return false;
 
-    // 调用成功了不代表内容可信，长度先卡一道再按字符下标截断
     if (size == 0 || size > sizeof(buffer)) return false;
     buffer[(size / sizeof(wchar_t)) - 1] = L'\0';
     if (buffer[0] == L'\0') return false;
@@ -130,6 +130,7 @@ bool ReadRegisteredExePath(std::wstring &path)
     return true;
 }
 
+// 语言写在 HKCU 而不是 HKLM：普通用户自己就有写权限，切换语言不必提权。
 const wchar_t kLanguageValueKey[] = L"Software\\Auto7z";
 
 std::wstring ReadLanguageFromRegistry()
@@ -152,7 +153,7 @@ std::wstring ReadLanguageFromRegistry()
 
 std::wstring ReadLanguageFromConfig(const std::wstring &path);
 
-// 三处来源依次试：注册表、用户配置目录、便携配置目录，谁先给出非空值就定谁
+// 回退顺序固定：先读 HKCU 的值，再读便携目录与本机目录的配置文件，最后才用英文。
 std::wstring ReadConfiguredLanguage()
 {
     std::wstring fromRegistry = ReadLanguageFromRegistry();
@@ -183,9 +184,7 @@ std::wstring ReadConfiguredLanguage()
     return L"";
 }
 
-// 配置是标准 JSON，这里只取顶层 "Language" 键的值。
-// 这条路只在没有注册表值时才会走到，所以宁可多容错也不报错：
-// 解析失败一律返回空串，由调用方回落下一处来源。
+// 这里只做一次极简扫描：找 "Language" 键的字符串值，不引入完整 JSON 解析器，组件体积与启动开销都更小。
 std::wstring ReadLanguageFromConfig(const std::wstring &path)
 {
     HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -193,7 +192,6 @@ std::wstring ReadLanguageFromConfig(const std::wstring &path)
     if (file == INVALID_HANDLE_VALUE) return L"";
 
     DWORD size = GetFileSize(file, nullptr);
-    // 正常配置只有几百字节，超过 1MB 多半是被别的文件顶替了，不往下读
     if (size == INVALID_FILE_SIZE || size == 0 || size > 1024 * 1024)
     {
         CloseHandle(file);
@@ -210,14 +208,12 @@ std::wstring ReadLanguageFromConfig(const std::wstring &path)
     CloseHandle(file);
     buffer[read] = 0;
 
-    // 配置固定是 UTF-8（无 BOM），直接按 UTF-8 解
     int length = MultiByteToWideChar(CP_UTF8, 0, buffer.data(), static_cast<int>(read), nullptr, 0);
     if (length <= 0) return L"";
 
     std::wstring text(static_cast<size_t>(length), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, buffer.data(), static_cast<int>(read), &text[0], length);
 
-    // 找 "Language" 键：要求左边是引号、右边紧跟冒号，避免命中值里的同名子串
     const std::wstring key = L"\"Language\"";
     size_t position = text.find(key);
     if (position == std::wstring::npos) return L"";
@@ -225,7 +221,6 @@ std::wstring ReadLanguageFromConfig(const std::wstring &path)
     size_t colon = text.find(L':', position + key.size());
     if (colon == std::wstring::npos) return L"";
 
-    // 冒号之后跳过空白，值必须用双引号包裹
     size_t valueStart = colon + 1;
     while (valueStart < text.size() && (text[valueStart] == L' ' || text[valueStart] == L'\t' ||
                                         text[valueStart] == L'\r' || text[valueStart] == L'\n'))
@@ -243,7 +238,6 @@ std::wstring ReadLanguageFromConfig(const std::wstring &path)
 
         if (ch == L'"') return value;
 
-        // 只处理语言代码会用到的转义；出现别的转义说明文件异常，整个放弃
         if (ch == L'\\')
         {
             if (i + 1 >= text.size()) return L"";
@@ -258,7 +252,6 @@ std::wstring ReadLanguageFromConfig(const std::wstring &path)
             continue;
         }
 
-        // 语言代码里不该出现换行；出现说明引号没闭合，按异常处理
         if (ch == L'\r' || ch == L'\n') return L"";
 
         value.push_back(ch);
@@ -267,7 +260,7 @@ std::wstring ReadLanguageFromConfig(const std::wstring &path)
     return L"";
 }
 
-// 注册表里的路径可能指向已卸载的位置，必须真探到文件才采信
+// 注册表里的路径要先用 GetFileAttributes 验活，登记项可能是从旧机器搬过来的死路径。
 bool GetMainExePath(wchar_t *buffer, size_t bufferChars)
 {
     std::wstring registered;
@@ -287,7 +280,6 @@ bool GetMainExePath(wchar_t *buffer, size_t bufferChars)
     return wcscpy_s(buffer, bufferChars, path) == 0;
 }
 
-// 同目录下有 GUI 版就换用它，进度和提问才有窗口承接
 bool BuildGuiExePath(const wchar_t *consoleExe, wchar_t *buffer, size_t bufferChars)
 {
     const wchar_t *slash = wcsrchr(consoleExe, L'\\');
@@ -302,10 +294,10 @@ bool BuildGuiExePath(const wchar_t *consoleExe, wchar_t *buffer, size_t bufferCh
 }
 
 
-// 菜单项位图按小图标尺寸画，系统不会代为缩放
+// 菜单图标取 16 像素：资源管理器的小图标槽位就是这个尺寸，大图会被拉伸成毛边。
 const int kMenuIconSize = 16;
 
-// 先取小图标，没有再退而取大图标，都拿不到就干脆不带图标
+// 图标只抽取一次并缓存：每次弹出右键菜单都调 ExtractIconEx 会明显拖慢菜单出现。
 HICON LoadMainIconOnce()
 {
     wchar_t exePath[MAX_PATH] = {};
@@ -322,14 +314,12 @@ HICON LoadMainIconOnce()
     return nullptr;
 }
 
-// 图标只抽一次并常驻，菜单每弹一次都会走到这里，重复抽取等于在资源管理器进程里按次泄漏 GDI 句柄
 HICON LoadMainIcon()
 {
     static const HICON cached = LoadMainIconOnce();
     return cached;
 }
 
-// 菜单项只认位图不认图标，这里把图标重画到白底位图上
 HBITMAP IconToBitmap(HICON icon, int size)
 {
     if (icon == nullptr) return nullptr;
@@ -351,7 +341,6 @@ HBITMAP IconToBitmap(HICON icon, int size)
             RECT rect = {0, 0, size, size};
             FillRect(memory, &rect, (HBRUSH)GetStockObject(WHITE_BRUSH));
 
-            // 不做 HALFTONE 的话，大图标缩到 16×16 会糊成一团色块
             SetStretchBltMode(memory, HALFTONE);
             SetBrushOrgEx(memory, 0, 0, nullptr);
             DrawIconEx(memory, 0, 0, icon, size, size, 0, nullptr, DI_NORMAL);
@@ -365,26 +354,24 @@ HBITMAP IconToBitmap(HICON icon, int size)
     return bitmap;
 }
 
-// 位图同样只做一次，每弹一次菜单重新画一张，等于按次漏 GDI 句柄
 HBITMAP LoadMainMenuBitmap()
 {
+// 位图转换结果静态缓存，DllCanUnloadNow 不把这张图算进引用，它随模块一起释放。
     static const HBITMAP cached = IconToBitmap(LoadMainIcon(), kMenuIconSize);
     return cached;
 }
 
 
-// 资源管理器给的路径里混着盘符根、回收站和虚拟命名空间，这些位置压缩解压都没有意义
+// 只对真实存在的文件与文件夹出菜单：回收站、设备节点与盘符根目录都不该出现压缩 / 解压项。
 bool IsRealFileOrFolder(const wchar_t *path)
 {
     if (path == nullptr || path[0] == 0) return false;
 
-// 回收站条目看着有完整路径，实际取不到可读内容，只能按路径里这一段挡掉
 if (StrStrIW(path, L"\\$Recycle.Bin") != nullptr) return false;
 
     DWORD attributes = GetFileAttributesW(path);
     if (attributes == INVALID_FILE_ATTRIBUTES) return false;
 
-    // 设备对象也带目录属性，不先挡掉会被当成文件夹放行
     if (attributes & FILE_ATTRIBUTE_DEVICE) return false;
 
     if (attributes & FILE_ATTRIBUTE_DIRECTORY)
@@ -409,7 +396,7 @@ if (StrStrIW(path, L"\\$Recycle.Bin") != nullptr) return false;
     return true;
 }
 
-// 先走 CF_HDROP，虚拟项拿不到文件路径时才退到 IDList，两种格式覆盖的范围并不重合
+// 先取 CF_HDROP，取不到再退回 CFSTR_SHELLIDLIST：前者覆盖绝大多数选区，后者兜住虚拟命名空间里的条目。
 bool ReadSelectedPaths(IDataObject *dataObject, std::vector<std::wstring> &paths)
 {
     if (dataObject == nullptr) return false;
@@ -446,7 +433,6 @@ bool ReadSelectedPaths(IDataObject *dataObject, std::vector<std::wstring> &paths
         const CIDA *cida = static_cast<const CIDA *>(GlobalLock(medium.hGlobal));
         if (cida != nullptr)
         {
-            // CIDA 的内容由别的进程填写，先粗查数量再按偏移取指针，坏数据不至于把本进程读崩
             if (cida->cidl > 0 && cida->cidl < 0x10000)
             {
                 const BYTE *base = reinterpret_cast<const BYTE *>(cida);
@@ -476,7 +462,7 @@ bool ReadSelectedPaths(IDataObject *dataObject, std::vector<std::wstring> &paths
 }
 
 
-// 名字里带进程号和自增序号，多个资源管理器进程同时弹菜单也不会撞名
+// 映射名与事件名必须全进程唯一，用 PID 加自增序号拼出来，同一进程连点两次也不会撞名。
 void MakeRandomName(wchar_t *buffer, size_t bufferChars, const wchar_t *prefix)
 {
     static LONG counter = 0;
@@ -486,7 +472,7 @@ void MakeRandomName(wchar_t *buffer, size_t bufferChars, const wchar_t *prefix)
                  prefix, GetCurrentProcessId(), serial);
 }
 
-// 共享内存里按「一个标记 + 每项以 L'\0' 收尾」平铺，主程序顺序读到底即可，不必再解析长度
+// 写进共享内存的是一串以 \0 分隔的 UTF-16 路径，首字符是协议标记，主程序据此判断参数来源。
 bool CreatePathMap(const std::vector<std::wstring> &paths,
                    std::wstring &mapName, std::wstring &eventName, size_t &totalBytes,
                    HANDLE &mappingHandle, HANDLE &eventHandle)
@@ -541,13 +527,13 @@ bool CreatePathMap(const std::vector<std::wstring> &paths,
     return true;
 }
 
+// 交接线程只负责在超时内等子进程把数据读走，等不到也要释放，不能让句柄跟着资源管理器一起变老。
 struct ChildHandoff
 {
     HANDLE eventHandle;
     HANDLE mappingHandle;
 };
 
-// 这段等待绝不能放在资源管理器的界面线程上，主程序启动慢时曾在这里卡满 30 秒，右键菜单跟着冻住
 unsigned __stdcall WaitForChildHandoff(void *parameter)
 {
     ChildHandoff *handoff = static_cast<ChildHandoff *>(parameter);
@@ -561,7 +547,7 @@ unsigned __stdcall WaitForChildHandoff(void *parameter)
     return 0;
 }
 
-// 命名共享内存最后一个句柄关掉就销毁，所以句柄要留到子进程映射进去并读完为止
+// 建交接线程失败时把已建好的内核对象立刻释放，否则这次失败的右键会永久泄漏一份映射。
 bool StartChildHandoff(HANDLE eventHandle, HANDLE mappingHandle)
 {
     ChildHandoff *handoff = new (std::nothrow) ChildHandoff();
@@ -584,7 +570,7 @@ bool StartChildHandoff(HANDLE eventHandle, HANDLE mappingHandle)
     return true;
 }
 
-// 命令行形如 "Auto7z.exe" #映射名:字节数:事件名 -z，主程序按这个格式反解
+// 有 Auto7zGUI.exe 就走图形入口，它不创建控制台；只有控制台版本时退回 Auto7z.exe。
 bool LaunchAuto7z(const std::vector<std::wstring> &paths, const wchar_t *modeSwitch)
 {
     if (paths.empty()) return false;
@@ -659,7 +645,7 @@ bool LaunchAuto7z(const std::vector<std::wstring> &paths, const wchar_t *modeSwi
 }
 
 
-// 一个对象同时实现两个接口，资源管理器先用 IShellExtInit 灌入选中项，再回头调 IContextMenu 出菜单
+// 一个对象同时实现 IContextMenu 与 IShellExtInit，选区在 Initialize 一次拿全，之后不再反复查资源管理器。
 class CShellContextMenu : public IContextMenu, public IShellExtInit
 {
 public:
@@ -673,13 +659,12 @@ public:
         ReleaseObjectRef();
     }
 
-    // IContextMenu 与 IShellExtInit 在对象内的偏移不同，必须按请求的接口分别返回对应子对象的地址，一律给同一个地址会让资源管理器调错函数并静默禁掉扩展
+// 多重继承下两个接口在对象里的偏移不同，QueryInterface 必须按接口分别取地址，否则资源管理器会调错函数并静默禁用扩展。
     STDMETHODIMP QueryInterface(REFIID interfaceId, void **object) override
     {
         if (object == nullptr) return E_POINTER;
         *object = nullptr;
 
-        // GUID 没有重载 operator==，直接比比的是地址，判接口一律走 IsEqualIID
         if (IsEqualIID(interfaceId, IID_IUnknown))
         {
             *object = static_cast<IContextMenu *>(this);
@@ -706,7 +691,6 @@ public:
         return static_cast<ULONG>(InterlockedIncrement(&m_refCount));
     }
 
-    // 计数归零就 delete this，对象自己决定生死，调用方只负责把引用还回来
     STDMETHODIMP_(ULONG) Release() override
     {
         LONG remaining = InterlockedDecrement(&m_refCount);
@@ -714,7 +698,7 @@ public:
         return static_cast<ULONG>(remaining);
     }
 
-    // 取不到路径也返回 S_OK，这里报失败会让资源管理器认定整个扩展有问题，连别的文件夹的菜单项一起摘掉
+// Initialize 只记录选区，不做任何耗时操作：它跑在资源管理器的界面线程上。
     STDMETHODIMP Initialize(PCIDLIST_ABSOLUTE pidlFolder, LPDATAOBJECT dataObject, HKEY hkeyProgID) override
     {
         (void)pidlFolder;
@@ -727,26 +711,22 @@ public:
         return S_OK;
     }
 
-    // 返回值是插进去的菜单项个数而不是 S_OK，返回 0 等于告诉资源管理器这儿没有菜单项
+// 返回值是「加进去的菜单项个数」而不是 S_OK，返回 0 等于告诉资源管理器这里没有菜单项。
     STDMETHODIMP QueryContextMenu(HMENU menu, UINT indexMenu, UINT idCmdFirst, UINT idCmdLast, UINT flags) override
     {
         if (menu == nullptr) return E_INVALIDARG;
 
         if (idCmdFirst > idCmdLast) return E_INVALIDARG;
 
-        // 过滤结果先另存一份，等确认要出菜单了再换进 m_paths
         std::vector<std::wstring> usable;
         for (const std::wstring &path : m_paths)
         {
             if (IsRealFileOrFolder(path.c_str())) usable.push_back(path);
         }
-        // 一个能用的都没有就当没这个扩展，回 0 而不是错误码
         if (usable.empty()) return static_cast<HRESULT>(0);
 
-        // 只判 CMF_DEFAULTONLY，它表示调用方只要默认项，此时不该往菜单里塞东西，其余标志与本扩展无关
         if ((flags & CMF_DEFAULTONLY) != 0) return static_cast<HRESULT>(0);
 
-        // 换入必须放在上面两个提前返回之后，提前换会把 m_paths 里原来的选中项冲掉，后面 InvokeCommand 拿到的是另一份列表
         m_paths.swap(usable);
 
         wchar_t compress[64] = {};
@@ -769,7 +749,6 @@ public:
         LoadStringW(g_module, compressId, compress, 64);
         LoadStringW(g_module, extractId, extract, 64);
 
-        // 记的是已插入的项数，用最大命令偏移加一表示，和 QueryContextMenu 要求的返回值口径一致
         UINT highest = 0;
 
         MENUITEMINFOW item = {};
@@ -777,7 +756,6 @@ public:
         item.fMask = MIIM_STRING | MIIM_ID;
         item.hSubMenu = nullptr;
 
-        // MIIM_BITMAP 只记指针不复制位图，插入后这份位图必须一直活着，实际由函数内的静态缓存持有
         HBITMAP bitmap = LoadMainMenuBitmap();
         if (bitmap != nullptr)
         {
@@ -787,18 +765,16 @@ public:
 
         item.wID = idCmdFirst + kCmdCompress;
         item.dwTypeData = compress;
-        // 按位置插入而不是追加，菜单项才会落在资源管理器的默认项之后
         if (InsertMenuItemW(menu, indexMenu, TRUE, &item)) highest = kCmdCompress + 1;
 
         item.wID = idCmdFirst + kCmdExtract;
         item.dwTypeData = extract;
-        // 第二项要排在第一项后面，所以下标加一，否则会插到前一项上面去
         if (InsertMenuItemW(menu, indexMenu + 1, TRUE, &item)) highest = kCmdExtract + 1;
 
         return static_cast<HRESULT>(highest);
     }
 
-    // lpVerb 可能是序号也可能是谓词名，统一交给 FindCommandSlot 归一后再分派
+// 压缩与解压只是模式开关不同，两者的启动与传参路径完全共用。
     STDMETHODIMP InvokeCommand(LPCMINVOKECOMMANDINFO info) override
     {
         if (info == nullptr) return E_INVALIDARG;
@@ -807,7 +783,6 @@ public:
         UINT slot = kCmdCompress;
         if (FindCommandSlot(info, &slot) != S_OK) return E_FAIL;
 
-        // 路径已经在共享内存里，命令行只留模式和映射名，不必操心命令行长度上限
         const wchar_t *modeSwitch = (slot == kCmdExtract) ? L"-uz" : L"-z";
         if (!LaunchAuto7z(m_paths, modeSwitch))
         {
@@ -816,12 +791,11 @@ public:
         return S_OK;
     }
 
-    // 宽窄两支必须分开走，调用方按带不带 GCS_UNICODE 决定缓冲区是 wchar_t 还是 char
+// 谓词名要能被脚本与资源管理器的「验证」查询命中，因此按 A / W 两种形态各答一次。
     STDMETHODIMP GetCommandString(UINT_PTR id, UINT type, UINT *reserved, LPSTR buffer, UINT bufferChars) override
     {
         (void)reserved;
 
-        // GCS_UNICODE 只表明缓冲区宽度，到底要谓词还是只要校验，还得看低四位
         if (type & GCS_UNICODE)
         {
             if ((type & 0xF) != GCS_VERBW && (type & 0xF) != GCS_VALIDATEW) return E_NOTIMPL;
@@ -839,7 +813,6 @@ public:
 
         {
             const wchar_t *verb = (id & 0x3) == kCmdExtract ? kVerbExtract : kVerbCompress;
-            // 窄版按系统 ANSI 代码页转换，谓词目前是纯 ASCII，换页也不会丢字符
             int written = WideCharToMultiByte(CP_ACP, 0, verb, -1, buffer,
                                               static_cast<int>(bufferChars), nullptr, nullptr);
             return (written > 0) ? S_OK : E_FAIL;
@@ -847,16 +820,14 @@ public:
     }
 
 private:
-    // 资源管理器有时传序号有时传谓词，还有不认 lpVerbW 的旧调用方，三种都得兜住
+// 调用方可能传字符串谓词，也可能传菜单项下标，两种都要认；下标越界即视为无效命令。
     HRESULT FindCommandSlot(LPCMINVOKECOMMANDINFO info, UINT *slot)
     {
         LPCMINVOKECOMMANDINFOEX infoEx = nullptr;
-        // 先比结构体大小再读扩展字段，调用方给的可能是老的 CMINVOKECOMMANDINFO
         if (info->cbSize == sizeof(CMINVOKECOMMANDINFOEX) &&
             (info->fMask & CMIC_MASK_UNICODE) != 0)
         {
             infoEx = reinterpret_cast<LPCMINVOKECOMMANDINFOEX>(info);
-            // 指针落在资源段之外才是真字符串，否则低位存的是菜单项序号
             if (!IS_INTRESOURCE(infoEx->lpVerbW))
             {
                 if (wcscmp(infoEx->lpVerbW, kVerbExtract) == 0)
@@ -891,7 +862,7 @@ private:
     LONG m_refCount;
 };
 
-// 类厂自己不干活，只负责把 CShellContextMenu 造出来交给资源管理器
+// 类工厂负责按 CLSID 造出菜单对象，聚合请求一律拒绝，本组件不支持聚合。
 class CShellClassFactory : public IClassFactory
 {
 public:
@@ -938,12 +909,10 @@ public:
 
         if (outer != nullptr) return CLASS_E_NOAGGREGATION;
 
-        // 用 nothrow 分配，内存不足时拿回空指针，由这里换成 E_OUTOFMEMORY
         CShellContextMenu *instance = new (std::nothrow) CShellContextMenu();
         if (instance == nullptr) return E_OUTOFMEMORY;
 
         HRESULT result = instance->QueryInterface(interfaceId, object);
-        // QueryInterface 成功时会再加一次引用，这里把构造时那次还掉，否则对象永远退不掉
         instance->Release();
         return result;
     }
@@ -960,6 +929,7 @@ private:
 };
 
 
+// 注册表写入集中在这一处，成功与否用返回值表达，调用方据此决定是否上报注册失败。
 bool WriteStringValue(HKEY root, const wchar_t *path, const wchar_t *name, const wchar_t *value)
 {
     HKEY key = nullptr;
@@ -974,7 +944,7 @@ bool WriteStringValue(HKEY root, const wchar_t *path, const wchar_t *name, const
     return result == ERROR_SUCCESS;
 }
 
-// RegDeleteKeyW 不删非空键，得先把子键递归清空
+// 递归删除要自下而上：先清空子键再删自己，否则 RegDeleteKey 会因为还有子键而失败。
 void DeleteKeyTree(HKEY root, const wchar_t *path)
 {
     HKEY key = nullptr;
@@ -982,7 +952,6 @@ void DeleteKeyTree(HKEY root, const wchar_t *path)
 
     wchar_t subName[256];
     DWORD subNameChars = 256;
-    // 每次都取第 0 个子键，删掉一个后面的会前移，用递增下标反而会漏删
     while (RegEnumKeyExW(key, 0, subName, &subNameChars, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
     {
         DeleteKeyTree(root, (std::wstring(path) + L"\\" + subName).c_str());
@@ -993,6 +962,7 @@ void DeleteKeyTree(HKEY root, const wchar_t *path)
     RegDeleteKeyW(root, path);
 }
 
+// 只删值不删键：值可能被别的组件共用，键本身留给后续注册继续使用。
 void DeleteRegValue(HKEY root, const wchar_t *subKeyPath, const wchar_t *valueName)
 {
     HKEY key = nullptr;
@@ -1002,10 +972,9 @@ void DeleteRegValue(HKEY root, const wchar_t *subKeyPath, const wchar_t *valueNa
     RegCloseKey(key);
 }
 
-// 四个挂载点分别覆盖文件、文件夹和文件夹空白处，带 Background 的那个才是空白处右键的来源
+// 四个挂载点是产品的注册契约，一处都不能少：文件、文件夹、Folder 与目录背景。
 bool RegisterHandlers(bool set)
 {
-    // 反斜杠在这里要写两个，漏写一个会变成 DirectoryBackground，空白处菜单从此再不出现，而且不报任何错
     static const wchar_t *kTypes[] = {L"*", L"Directory", L"Folder", L"Directory\\Background"};
 
     wchar_t clsid[64];
@@ -1033,14 +1002,13 @@ bool RegisterHandlers(bool set)
         }
     }
 
-    // 卸载时不追究有没有真删到东西，残留的键不值得让整个反注册失败
     return set ? anyWritten : true;
 }
 
 }
 
 
-// 这里只记模块句柄，线程附着通知用不上，顺手关掉省去每次建线程的加锁
+// DllMain 只存模块句柄并关掉线程通知，不做任何可能死锁的活。
 extern "C" BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
 {
     (void)reserved;
@@ -1053,7 +1021,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved
     return TRUE;
 }
 
-// 资源管理器只按注册表里的 CLSID 来要类厂，号对不上就回 CLASS_E_CLASSNOTAVAILABLE
+// 类对象按 CLSID 精确匹配，不认识的 CLSID 一律报 CLASS_E_CLASSNOTAVAILABLE。
 extern "C" HRESULT STDAPICALLTYPE DllGetClassObject(REFCLSID classId, REFIID interfaceId, void **object)
 {
     if (object == nullptr) return E_POINTER;
@@ -1070,7 +1038,7 @@ extern "C" HRESULT STDAPICALLTYPE DllGetClassObject(REFCLSID classId, REFIID int
     return result;
 }
 
-// 后台交接线程没跑完也算忙，提前卸载会把它们脚下的代码抽走
+// 对象引用、锁计数与待交接句柄都归零才允许卸载，缺一项都会让下次右键找不到已加载的组件。
 extern "C" HRESULT STDAPICALLTYPE DllCanUnloadNow()
 {
     bool idle = ReadLong(&g_refCount) == 0
@@ -1080,7 +1048,7 @@ extern "C" HRESULT STDAPICALLTYPE DllCanUnloadNow()
     return idle ? S_OK : S_FALSE;
 }
 
-// 注册要做三件事：登记 CLSID、进 Approved 白名单、挂到各类型的右键菜单下
+// 注册要写 HKCR 的 CLSID、HKLM 的 Approved 列表与四个挂载点；任何一步失败都整次按失败上报。
 extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
 {
     wchar_t dllPath[MAX_PATH];
@@ -1097,10 +1065,8 @@ extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
     std::wstring inprocPath = classPath + L"\\InprocServer32";
     if (!WriteStringValue(kClassesRoot, inprocPath.c_str(), nullptr, dllPath))
         return SELFREG_E_CLASS;
-    // 必须声明 Apartment，资源管理器在单线程套间里调用，写成 Both 反而要多绕一层封送
     WriteStringValue(kClassesRoot, inprocPath.c_str(), L"ThreadingModel", L"Apartment");
 
-    // 不进 Approved 名单的话，扩展会被直接跳过，而且不给任何提示
     if (!WriteStringValue(HKEY_LOCAL_MACHINE,
                           L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
                           clsid, kClassName))
@@ -1119,7 +1085,7 @@ extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
     return S_OK;
 }
 
-// 按注册的相反顺序拆：先摘菜单挂载点，再删 CLSID 树和白名单条目
+// 注销的顺序与注册相反：先摘挂载点再删 CLSID，避免中途失败留下指向不存在组件的菜单。
 extern "C" HRESULT STDAPICALLTYPE DllUnregisterServer()
 {
     RegisterHandlers(false);
@@ -1137,7 +1103,7 @@ extern "C" HRESULT STDAPICALLTYPE DllUnregisterServer()
     return S_OK;
 }
 
-// 主程序挪了位置由它自己调这里更新，不必把整个 DLL 重新注册一遍
+// 主程序把自身路径写进登记项，外壳扩展启动子进程时优先用它，便携拷贝也能跟着走。
 extern "C" HRESULT STDAPICALLTYPE DllSetMainExePath(LPCWSTR path)
 {
     if (path == nullptr || *path == L'\0') return E_INVALIDARG;
@@ -1147,7 +1113,7 @@ extern "C" HRESULT STDAPICALLTYPE DllSetMainExePath(LPCWSTR path)
     return S_OK;
 }
 
-// 语言存在 HKCU 下，同一台机器上不同用户可以各用各的界面语言
+// 语言值写在 HKCU，组件下次建菜单时按它挑字符串资源。
 extern "C" HRESULT STDAPICALLTYPE DllSetLanguage(LPCWSTR language)
 {
     if (language == nullptr || *language == L'\0') return E_INVALIDARG;
@@ -1158,7 +1124,7 @@ extern "C" HRESULT STDAPICALLTYPE DllSetLanguage(LPCWSTR language)
     return S_OK;
 }
 
-// 先删值再删键，空键留着会被主程序当成「已注册但路径为空」
+// 清掉登记项与它所在的键：留着空键会让后续查询读到空路径。
 extern "C" HRESULT STDAPICALLTYPE DllRemoveMainExePath()
 {
     std::wstring valuePath = GetMainExeValueKey();
