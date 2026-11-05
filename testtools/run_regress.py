@@ -8,6 +8,7 @@ r"""一键回归测试。
 包含:
     regress.py      主回归（T01–T22：格式/等级/分卷/SHA256/密码/日志/边界/便携…）
     cs_check.py     静态检查（命名类型一致性、文档标签、路径边界、死分支）
+    deadcode.py     死代码审查（零引用成员、只写不读状态、废词典键、无人调用的工具）
     find_dead2.py   废键与三语词典一致性
 
 与系统测试的分工:
@@ -214,6 +215,49 @@ def t_dead_keys(res, app):
             "键数=%s" % (", ".join("%s:%s" % c for c in counts) if counts else "未知"))
 
 
+def t_dead_code(res, app):
+    """死代码审查：零引用成员、只写不读的状态、无人引用的词典键、无人调用的工具。
+
+    为什么放在回归里：这个项目的历史包袱主要是"写了但没人用"的东西
+    （AppState 的整套运行状态机、四个没有绑定的 ViewModel 命令、
+    三语词典里的四个孤儿键、一个已被文本宽度自检取代的测量工具）——
+    它们不会让任何测试失败，只会一直烂在那里。把审查接进一键回归，
+    新写的死代码在当次提交里就会被看见。
+
+    判失败的口径只有一条：**零引用成员 / 只写不读状态 / 无人引用的词典键**。
+    测试工具"没人调用"单独计数但不判失败 —— 有些工具是给人手工跑的（ui_probe 等）。
+    """
+    print("")
+    print("=== 死代码审查 ===")
+    r = run([sys.executable, str(HERE / "deadcode.py")], encoding="utf-8")
+    out = (r.stdout or "") + (r.stderr or "")
+
+    # 各节标题下的 !! 行
+    sections = re.split(r"^-{20,}$", out, flags=re.M)
+    hard = []
+    soft = []
+    current = ""
+    for chunk in sections:
+        title = re.search(r"^[一二三四五六]、(.+)$", chunk.strip().splitlines()[0]) if chunk.strip() else None
+        if title:
+            current = title.group(1)
+        for line in chunk.splitlines():
+            if line.strip().startswith("!!"):
+                entry = "%s: %s" % (current, line.strip()[2:].strip()[:58])
+                if "测试工具调用情况" in current:
+                    soft.append(entry)
+                else:
+                    hard.append(entry)
+
+    detail = "死代码候选 %d 条" % (len(hard) + len(soft))
+    if soft:
+        detail += "（另有 %d 个工具无人调用，不判失败）" % len(soft)
+    res.add("无死代码（零引用成员/只写不读状态/废词典键）", not hard, detail)
+    for item in hard[:6]:
+        print("      - " + item)
+    return out
+
+
 def t_shellreg(res, app):
     """外壳扩展注册/注销的注册表契约（B02 的回归保护）。
 
@@ -387,6 +431,7 @@ def main():
         t_behavior(res, app)
         t_guard(res, app)
         t_dead_keys(res, app)
+        t_dead_code(res, app)
         t_shellreg(res, app)
         t_rename(res, app)
         t_guardprobe(res, app)

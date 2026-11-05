@@ -139,7 +139,7 @@ def case_password(r):
         r.bad("加密包没有生成")
         return
     code, out, elapsed = r.cmd(
-        r.exe_line('-U "%s"' % enc) + " & echo MARK %TIME%",
+        r.exe_line('-uz "%s"' % enc) + " & echo MARK %TIME%",
         stdin_text="WrongPass\nCorrect1\n")
     print("  退出码=%d 用时=%.2fs" % (code, elapsed))
     asked = "请输入密码" in out or "password" in out.lower()
@@ -182,6 +182,39 @@ def case_relative_path(r):
     r.ok("退出码 0") if proc.returncode == 0 else r.bad("相对路径退出码 %d" % proc.returncode)
     r.ok("已生成压缩包") if made else r.bad("相对路径没有产出压缩包（仍是「无法确定输出目录」）")
 
+def case_locked_file(r):
+    print("\n=== C7  文件被独占占用：必须快速返回，不得挂起（P1 的回归保护）===")
+    target = r.work / "locked.bin"
+    target.write_bytes(b"L" * 4096)
+    # 用独占写句柄持有文件，模拟「文件正被别的程序打开」这一最常见的现实场景。
+    # 7-Zip 遇到这种文件会返回退出码 1 并报 WARNING: Cannot open 1 file，
+    # 产品必须据此快速收尾；历史上这里会弹出等不到人点的提示框，从而永久挂起。
+    handle = open(target, "r+b")
+    try:
+        handle.write(b"Z" * 1024)
+        handle.flush()
+        started = time.time()
+        try:
+            proc = subprocess.run([str(r.app), "-z", str(target)], cwd=str(r.work),
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  timeout=60)
+        except subprocess.TimeoutExpired:
+            r.bad("文件被独占占用时 60 秒未返回（进程挂起）")
+            return
+        out = decode_console(proc.stdout)
+        elapsed = time.time() - started
+        print("  退出码=%d 用时=%.2fs 末行=%s"
+              % (proc.returncode, elapsed,
+                 out.strip().splitlines()[-1] if out.strip() else "(无输出)"))
+        r.ok("未挂起（60 秒内返回）") if elapsed < 60 else r.bad("用时过长")
+        # 归档缺文件不属于「完全成功」，退出码必须是 1，不能报 0。
+        r.ok("退出码为 1（部分文件被跳过）") if proc.returncode == 1 else \
+            r.bad("退出码 %d，期望 1" % proc.returncode)
+        r.ok("有说明性输出") if out.strip() else r.bad("没有任何输出")
+    finally:
+        handle.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--app", default=str(DEFAULT_APP))
@@ -210,6 +243,7 @@ def main():
         case_password(r)
         case_missing_input(r)
         case_relative_path(r)
+        case_locked_file(r)
     finally:
         if a.keep:
             print("\n保留临时目录: %s" % work)

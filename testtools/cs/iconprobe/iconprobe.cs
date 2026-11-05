@@ -24,9 +24,6 @@ class IconProbe
     static extern int GetMenuStringW(IntPtr menu, uint id, StringBuilder text, int max, uint flag);
 
     [DllImport("gdi32.dll")]
-    static extern int GetObject(IntPtr handle, int size, IntPtr buffer);
-
-    [DllImport("gdi32.dll")]
     static extern int GetBitmapBits(IntPtr bitmap, uint count, IntPtr buffer);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]

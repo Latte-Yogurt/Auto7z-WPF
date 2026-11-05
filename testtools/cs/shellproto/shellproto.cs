@@ -327,13 +327,9 @@ class ShellProto
     [DllImport("user32.dll")]
     static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string cls, string title);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     static extern int GetWindowText(IntPtr hWnd, StringBuilder s, int max);
     [DllImport("user32.dll")]
     static extern int GetWindowTextLength(IntPtr hWnd);
-    [DllImport("user32.dll")]
-    static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     static List<IntPtr> EnumWindows(int pid)
     {
@@ -435,28 +431,5 @@ class ShellProto
     static string Quote(string value)
     {
         return "\"" + value.Replace("\"", "\\\"") + "\"";
-    }
-
-    static int CountItems(string line)
-    {
-        int at = line.IndexOf("接收 ");
-        if (at < 0) return 0;
-        string rest = line.Substring(at + 3);
-        int space = rest.IndexOf(' ');
-        if (space < 0) return 0;
-        int num;
-        return int.TryParse(rest.Substring(0, space), out num) ? num : 0;
-    }
-
-    static string ReadTail(string path, long from)
-    {
-        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-        {
-            if (from >= fs.Length) return string.Empty;
-            fs.Seek(from, SeekOrigin.Begin);
-            byte[] buffer = new byte[fs.Length - from];
-            fs.Read(buffer, 0, buffer.Length);
-            return Encoding.UTF8.GetString(buffer);
-        }
     }
 }

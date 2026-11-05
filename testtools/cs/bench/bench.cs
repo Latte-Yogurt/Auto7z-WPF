@@ -15,8 +15,6 @@ class Bench
     static string asmPath;
     static Assembly asm;
 
-    static long warmupMs;
-
     static void Main(string[] args)
     {
         if (args.Length < 2)
