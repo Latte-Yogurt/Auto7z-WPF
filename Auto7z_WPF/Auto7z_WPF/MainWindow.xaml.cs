@@ -103,11 +103,6 @@ namespace Auto7z_WPF
 
             _vm.PropertyChanged += (s, e) =>
             {
-                // MainText 由样式里的绑定直接呈现，这个分支刻意留空。
-                if (e.PropertyName == nameof(_vm.MainText))
-                {
-                }
-
                 if (e.PropertyName == nameof(_vm.ResultText))
                 {
                     // 结果文案可能在任务线程上产生，用 BeginInvoke 转回界面线程再碰控件。

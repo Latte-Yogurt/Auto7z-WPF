@@ -22,6 +22,7 @@
     <sys:String x:Key="TopmostCheckBox">視窗置頂</sys:String>
     <sys:String x:Key="AutoSaveCheckBox">關閉程式時自動儲存設定</sys:String>
     <sys:String x:Key="Log_PortableSwitched">已切換到{0}，資料目錄：{1}</sys:String>
+    <sys:String x:Key="Log_PortableSwitchFailed">切換可攜模式失敗：{0}</sys:String>
     <sys:String x:Key="Err_PortableMoveFailed">切換{0}失敗：資料目錄沒能移動</sys:String>
     <sys:String x:Key="Tip_Portable">便攜模式：把設定、元件與日誌都放在程式目錄的 .config\Auto7z 下，整個程式可以隨身攜帶。取消勾選則移回 %LOCALAPPDATA%\Auto7z。</sys:String>
     <sys:String x:Key="PortableCheckBox">便攜模式</sys:String>
@@ -80,7 +81,6 @@
     <sys:String x:Key="WarningTitle">警告</sys:String>
     <sys:String x:Key="ErrorTitle">錯誤</sys:String>
 
-    <sys:String x:Key="InfoMessage">提示：</sys:String>
     <sys:String x:Key="WarningMessage">警告：</sys:String>
     <sys:String x:Key="ProgressText">7z 處理：已進行...{0}%</sys:String>
     <sys:String x:Key="SHA256ProgressText">SHA256 計算進度...{0}%</sys:String>
@@ -96,7 +96,6 @@
     <sys:String x:Key="Archive_MergedNamePattern">{0} 等 {1} 個</sys:String>
     <sys:String x:Key="Log_InstallDirNotWritable">程式所在目錄不可寫（不影響執行，元件與設定均寫入 %LOCALAPPDATA%\Auto7z）：{0}</sys:String>
     <sys:String x:Key="Log_PathsNotFound">傳入的路徑均不存在或無法存取：{0}</sys:String>
-    <sys:String x:Key="Log_ShellRegisterFailed">右鍵選單註冊處理失敗：{0}</sys:String>
     <sys:String x:Key="Log_BusyIgnore">已有工作在執行，忽略本次傳入的 {0} 個項目</sys:String>
     <sys:String x:Key="Log_ReceivedItems">接收 {0} 個項目：{1}</sys:String>
     <sys:String x:Key="Log_UnknownFormat">設定中的壓縮格式無法辨識，已按 7z 處理：{0}</sys:String>
@@ -144,16 +143,15 @@
     <sys:String x:Key="ProcessStageSHA256">計算 SHA256 校驗中…</sys:String>
     <sys:String x:Key="ProcessStageFinished">處理完成</sys:String>
     <sys:String x:Key="ProcessStageFailed">處理失敗</sys:String>
-    <sys:String x:Key="ProcessStageCancelled">已取消</sys:String>
     <sys:String x:Key="Console_CompressStart">開始壓縮：{0}</sys:String>
     <sys:String x:Key="Console_ExtractStart">開始解壓縮：{0}</sys:String>
     <sys:String x:Key="Console_MergeQuestion">檢測到多個文件，是否合併為單個壓縮檔？(Y/N)</sys:String>
     <sys:String x:Key="Console_PasswordPrompt">該壓縮檔已加密，請輸入密碼：</sys:String>
     <sys:String x:Key="Console_PasswordWrong">密碼錯誤，第 {0} 次嘗試，重新詢問密碼：</sys:String>
-    <sys:String x:Key="Console_PasswordRetries">連續多次密碼錯誤，已放棄解壓縮</sys:String>
     <sys:String x:Key="Console_TaskDone">完成：{0}</sys:String>
     <sys:String x:Key="Console_TaskFailed">失敗：{0}</sys:String>
     <sys:String x:Key="Console_TaskCancelled">已取消</sys:String>
+    <sys:String x:Key="Console_TaskPartial">未完全成功：{0}</sys:String>
     <sys:String x:Key="Console_ProgressCompress">7z 已處理...{0}%</sys:String>
     <sys:String x:Key="Console_ProgressExtract">7z 已處理...{0}%</sys:String>
     <sys:String x:Key="Console_ProgressSHA256">SHA256 已處理...{0}%</sys:String>

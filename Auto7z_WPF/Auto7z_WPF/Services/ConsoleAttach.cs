@@ -58,8 +58,6 @@ namespace Auto7z_WPF.Services
         private static bool _attached;
         private static bool _tried;
 
-        public static bool Attached => _attached;
-
         // 双击启动时系统为本进程新建的控制台可以安全隐藏并释放；
         // 控制台若还挂着别的进程（例如从 cmd 启动），关闭它会连带毁掉用户的命令行窗口，
         // 所以查询失败时宁可留下控制台，也不要误关别人的窗口。

@@ -47,11 +47,8 @@ namespace Auto7z_WPF.Services
 
         #region 运行时状态（不持久化）
 
+        // 只用于分卷判断的输入总大小：BuildCompressConfig 填入，SevenZipService.AppendVolumeSwitch 读取。
         public long TotalSize { get; set; }
-
-        public string FileName { get; set; }
-
-        public AppState.OperationStatus CurrentRunStatus { get; set; } = AppState.OperationStatus.Normal;
 
         #endregion
     }

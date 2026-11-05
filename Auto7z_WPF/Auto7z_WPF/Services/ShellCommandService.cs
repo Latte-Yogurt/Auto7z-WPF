@@ -9,14 +9,12 @@ using System.Text;
 namespace Auto7z_WPF.Services
 {
     /// <summary>
-    /// 命令行参数的解析入口，同时负责把 Shell 扩展传来的共享内存路径读出来。
+    /// 命令行解析入口，并负责把外壳扩展经共享内存传来的路径读出来。
     /// </summary>
     public class ShellCommandService
     {
         #region 开关定义
-        // Shell 扩展把路径写进共享内存后，用一个以 # 开头的参数把映射名、字节数、事件名带过来；
-        // 这样路径不必经过命令行，省掉空格、引号与超长命令行带来的转义麻烦。
-        // 也正因为这个标记只可能由扩展产生，它出现就等价于「本次是右键菜单调用」。
+        /// <summary>共享内存参数的起始标记，只可能由外壳扩展产生，出现即代表本次是右键菜单调用。</summary>
         private const char MapPrefix = '#';
 
         public const string SwitchAuto = "-a";
@@ -35,8 +33,6 @@ namespace Auto7z_WPF.Services
         #endregion
 
         #region 参数解析
-        // 路径有两种来源：命令行直接给，或 Shell 扩展预写进共享内存块。
-        // 后者识别到就一并置上 fromShell，调用方据此区分「命令行调用」与「右键菜单调用」。
         public static void Parse(string[] args, out List<string> paths, out string mode,
             out bool register, out bool unregister, out bool help, out bool fromShell)
         {
@@ -44,11 +40,11 @@ namespace Auto7z_WPF.Services
                 out _);
         }
 
-        // 带 unknownSwitch 的重载供命令行入口使用：拼错的开关要能报出来并影响退出码。
         public static void Parse(string[] args, out List<string> paths, out string mode,
             out bool register, out bool unregister, out bool help, out bool fromShell,
             out string unknownSwitch)
         {
+            // 先清零全部输出参数，调用方按 null 与 false 判断「本次没有指定」。
             paths = new List<string>();
             mode = null;
             register = false;
@@ -63,7 +59,6 @@ namespace Auto7z_WPF.Services
             {
                 if (string.IsNullOrWhiteSpace(arg)) continue;
 
-                // 长度判断把单独的 "#" 排除在外：那不是一个完整的映射标记。
                 if (arg.Length > 1 && arg[0] == MapPrefix)
                 {
                     List<string> mapped = ReadPathMap(arg);
@@ -72,8 +67,6 @@ namespace Auto7z_WPF.Services
                         paths.AddRange(mapped);
                         fromShell = true;
                     }
-                    // 读失败时这个参数既不算路径也不算来源，直接丢弃：
-                    // 它本来就不是磁盘上真实存在的文件名，混进 paths 只会让后面报找不到文件。
                     continue;
                 }
 
@@ -108,11 +101,8 @@ namespace Auto7z_WPF.Services
                     continue;
                 }
 
-                // 以 - 或 / 开头、又不是任何已知开关时，先看它是不是磁盘上真存在的路径：
-                // 「一个名叫 -a.txt 的文件」是合法输入，不能因为长得像开关就拒收。
                 if (LooksLikeSwitch(arg) && !ExistsOnDisk(arg))
                 {
-                    // 只记第一个：报错只需要一个代表，列一长串反而看不出重点。
                     if (unknownSwitch == null) unknownSwitch = arg;
                     continue;
                 }
@@ -121,13 +111,13 @@ namespace Auto7z_WPF.Services
             }
         }
 
-        // 开关形态：以 - 或 / 打头且长度大于 1。单独一个 "-" 当作路径（极少见但合法）。
+        /// <summary>判断参数长得像开关：至少两个字符且以 - 或 / 开头。</summary>
         private static bool LooksLikeSwitch(string arg)
         {
             return arg.Length > 1 && (arg[0] == '-' || arg[0] == '/');
         }
 
-        // 盘上是否真的存在：存在就说明它是个路径，不是开关。
+        /// <summary>磁盘上真有以 - 开头的文件时仍按路径处理，避免把真实文件当成拼错的开关。</summary>
         private static bool ExistsOnDisk(string path)
         {
             try
@@ -136,14 +126,16 @@ namespace Auto7z_WPF.Services
             }
             catch
             {
-                // 路径非法（含非法字符、过长）时按「不存在」处理，让调用方报未知开关。
                 return false;
             }
         }
         #endregion
 
         #region 共享内存路径映射
-        // 参数形如 #映射名:字节数:事件名，三段缺一不可，长度不对就当成普通参数丢弃。
+        /// <summary>
+        /// 解析共享内存参数（冒号是协议分隔符，不是中文标点），读出以 \0 分隔的 UTF-16 路径列表。
+        /// 三段缺一不可，格式或长度不对就返回 null，调用方据此当成普通参数丢弃。
+        /// </summary>
         private static List<string> ReadPathMap(string argument)
         {
             string body = argument.Substring(1);
@@ -170,13 +162,11 @@ namespace Auto7z_WPF.Services
                         byte[] buffer = new byte[byteCount];
                         view.ReadArray(0, buffer, 0, byteCount);
 
-                        // 头两个字节是标记字符，只用于确认这块内存确实是本程序认得的格式。
+                        // 前 2 个字节是协议标记，真正的路径从其后的偏移开始平铺。
                         int position = 2;
                         while (position + 2 <= buffer.Length)
                         {
                             int end = position;
-                            // 内容整体是 UTF-16，所以按两字节一步找零终止符；
-                            // 每段只在查完边界后解码一次，避免对同一块数据反复切片解码。
                             while (end + 1 < buffer.Length && (buffer[end] | (buffer[end + 1] << 8)) != 0)
                             {
                                 end += 2;
@@ -197,14 +187,12 @@ namespace Auto7z_WPF.Services
             }
             catch (Exception)
             {
-                // 映射可能已被扩展关掉，或名字对不上；读不到就按「没有路径」处理，
-                // 抛出去会让整个参数解析失败，连后面的模式开关都读不进来。
+                // 映射打不开或被对方提前释放，都按「不是有效的映射参数」处理，绝不把异常抛给命令行入口。
                 return null;
             }
 
             try
             {
-                // 置位后 Shell 扩展才知道映射可以撤了，否则它要一直等到超时才释放这块内存。
                 IntPtr handle = OpenEvent(EventModifyState, false, eventName);
                 if (handle != IntPtr.Zero)
                 {
@@ -214,7 +202,7 @@ namespace Auto7z_WPF.Services
             }
             catch (Exception)
             {
-                // 通知失败不影响路径已经读到
+                // 通知事件置位失败不影响已经读到的路径，扩展那边最多等到它自己的兜底超时。
             }
 
             return paths;
@@ -222,6 +210,7 @@ namespace Auto7z_WPF.Services
         #endregion
 
         #region 事件句柄互操作
+        /// <summary>OpenEvent 所需的修改状态访问权。</summary>
         private const uint EventModifyState = 0x0002;
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

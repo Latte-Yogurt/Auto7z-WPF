@@ -110,7 +110,7 @@ namespace Auto7z_WPF.Services
                 merged.Add(newDict);
 
                 // 缓存不重建的话，后台线程仍会读到上一个语言的文案。
-                EnumText.RebuildTextCache(newDict, languageCode);
+                EnumText.RebuildTextCache(newDict);
 
                 AppState.CurrentLanguage = languageCode;
             }

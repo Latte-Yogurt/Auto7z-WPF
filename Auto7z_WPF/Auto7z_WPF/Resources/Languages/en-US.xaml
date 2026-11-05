@@ -23,6 +23,7 @@
     <sys:String x:Key="TopmostCheckBox">Always on Top</sys:String>
     <sys:String x:Key="AutoSaveCheckBox">Save config on Exit</sys:String>
     <sys:String x:Key="Log_PortableSwitched">Switched to {0}, data folder: {1}</sys:String>
+    <sys:String x:Key="Log_PortableSwitchFailed">Failed to switch portable mode: {0}</sys:String>
     <sys:String x:Key="Err_PortableMoveFailed">Failed to switch to {0}: the data folder could not be moved</sys:String>
     <sys:String x:Key="Tip_Portable">Portable mode: keeps the config, components and logs in .config\Auto7z next to the program, so it can be carried around. Unchecking moves them back to %LOCALAPPDATA%\Auto7z.</sys:String>
     <sys:String x:Key="PortableCheckBox">Portable</sys:String>
@@ -81,7 +82,6 @@
     <sys:String x:Key="WarningTitle">Warning</sys:String>
     <sys:String x:Key="ErrorTitle">Error</sys:String>
 
-    <sys:String x:Key="InfoMessage">Info: </sys:String>
     <sys:String x:Key="WarningMessage">Warning: </sys:String>
     <sys:String x:Key="ProgressText">7z: {0}%</sys:String>
     <sys:String x:Key="SHA256ProgressText">SHA256: {0}%</sys:String>
@@ -97,7 +97,6 @@
     <sys:String x:Key="Archive_MergedNamePattern">{0} and {1} more</sys:String>
     <sys:String x:Key="Log_InstallDirNotWritable">The install directory is not writable (does not affect running; components and config go to %LOCALAPPDATA%\Auto7z): {0}</sys:String>
     <sys:String x:Key="Log_PathsNotFound">None of the given paths exist or are accessible: {0}</sys:String>
-    <sys:String x:Key="Log_ShellRegisterFailed">Failed to update the context menu registration: {0}</sys:String>
     <sys:String x:Key="Log_BusyIgnore">A task is already running, ignoring the {0} incoming item(s)</sys:String>
     <sys:String x:Key="Log_ReceivedItems">Received {0} item(s): {1}</sys:String>
     <sys:String x:Key="Log_UnknownFormat">Unrecognized archive format in the config, using 7z: {0}</sys:String>
@@ -145,16 +144,15 @@
     <sys:String x:Key="ProcessStageSHA256">Calculating SHA256…</sys:String>
     <sys:String x:Key="ProcessStageFinished">Done</sys:String>
     <sys:String x:Key="ProcessStageFailed">Failed</sys:String>
-    <sys:String x:Key="ProcessStageCancelled">Cancelled</sys:String>
     <sys:String x:Key="Console_CompressStart">Compressing: {0}</sys:String>
     <sys:String x:Key="Console_ExtractStart">Extracting: {0}</sys:String>
     <sys:String x:Key="Console_MergeQuestion">Multiple files detected. Pack into a single archive? (Y/N)</sys:String>
     <sys:String x:Key="Console_PasswordPrompt">This archive is encrypted. Please enter the password:</sys:String>
     <sys:String x:Key="Console_PasswordWrong">Wrong password, attempt {0}. Please enter it again:</sys:String>
-    <sys:String x:Key="Console_PasswordRetries">Too many wrong passwords, extraction abandoned</sys:String>
     <sys:String x:Key="Console_TaskDone">Done: {0}</sys:String>
     <sys:String x:Key="Console_TaskFailed">Failed: {0}</sys:String>
     <sys:String x:Key="Console_TaskCancelled">Cancelled</sys:String>
+    <sys:String x:Key="Console_TaskPartial">Not fully successful: {0}</sys:String>
     <sys:String x:Key="Console_ProgressCompress">7z processed...{0}%</sys:String>
     <sys:String x:Key="Console_ProgressExtract">7z processed...{0}%</sys:String>
     <sys:String x:Key="Console_ProgressSHA256">SHA256 processed...{0}%</sys:String>

@@ -51,6 +51,7 @@
     <sys:String x:Key="TopmostCheckBox">窗口置顶</sys:String>
     <sys:String x:Key="AutoSaveCheckBox">程序关闭时自动保存设置</sys:String>
     <sys:String x:Key="Log_PortableSwitched">已切换到{0}，数据目录：{1}</sys:String>
+    <sys:String x:Key="Log_PortableSwitchFailed">切换便携模式失败：{0}</sys:String>
     <sys:String x:Key="Err_PortableMoveFailed">切换{0}失败：数据目录没能移动</sys:String>
     <sys:String x:Key="Tip_Portable">便携模式：把配置、组件与日志都放在程序目录的 .config\Auto7z 下，整个程序可以随身携带。取消勾选则移回 %LOCALAPPDATA%\Auto7z。</sys:String>
     <sys:String x:Key="PortableCheckBox">便携模式</sys:String>
@@ -80,7 +81,6 @@
     <sys:String x:Key="InfoTitle">提示</sys:String>
     <sys:String x:Key="WarningTitle">警告</sys:String>
     <sys:String x:Key="ErrorTitle">错误</sys:String>
-    <sys:String x:Key="InfoMessage">提示：</sys:String>
     <sys:String x:Key="WarningMessage">警告：</sys:String>
     <sys:String x:Key="ErrorMessage">错误：</sys:String>
     <sys:String x:Key="ProgressText">7z 处理：已进行...{0}%</sys:String>
@@ -96,7 +96,6 @@
     <sys:String x:Key="Archive_MergedNamePattern">{0} 等 {1} 个</sys:String>
     <sys:String x:Key="Log_InstallDirNotWritable">程序所在目录不可写（不影响运行，组件与配置均写入 %LOCALAPPDATA%\Auto7z）：{0}</sys:String>
     <sys:String x:Key="Log_PathsNotFound">传入的路径均不存在或不可访问：{0}</sys:String>
-    <sys:String x:Key="Log_ShellRegisterFailed">右键菜单注册处理失败：{0}</sys:String>
     <sys:String x:Key="Log_BusyIgnore">已有任务正在执行，忽略本次传入的 {0} 个项目</sys:String>
     <sys:String x:Key="Log_ReceivedItems">接收 {0} 个项目：{1}</sys:String>
     <sys:String x:Key="Log_UnknownFormat">配置中的压缩格式无法识别，已按 7z 处理：{0}</sys:String>
@@ -144,16 +143,15 @@
     <sys:String x:Key="ProcessStageSHA256">计算 SHA256 校验中…</sys:String>
     <sys:String x:Key="ProcessStageFinished">处理完成</sys:String>
     <sys:String x:Key="ProcessStageFailed">处理失败</sys:String>
-    <sys:String x:Key="ProcessStageCancelled">已取消</sys:String>
     <sys:String x:Key="Console_CompressStart">开始压缩：{0}</sys:String>
     <sys:String x:Key="Console_ExtractStart">开始解压：{0}</sys:String>
     <sys:String x:Key="Console_MergeQuestion">检测到多个文件，是否合并为单个压缩包？(Y/N)</sys:String>
     <sys:String x:Key="Console_PasswordPrompt">该压缩包已加密，请输入密码：</sys:String>
     <sys:String x:Key="Console_PasswordWrong">密码错误，第 {0} 次尝试，重新询问密码：</sys:String>
-    <sys:String x:Key="Console_PasswordRetries">连续多次密码错误，已放弃解压</sys:String>
     <sys:String x:Key="Console_TaskDone">完成：{0}</sys:String>
     <sys:String x:Key="Console_TaskFailed">失败：{0}</sys:String>
     <sys:String x:Key="Console_TaskCancelled">已取消</sys:String>
+    <sys:String x:Key="Console_TaskPartial">未完全成功：{0}</sys:String>
     <sys:String x:Key="Console_ProgressCompress">7z 已处理...{0}%</sys:String>
     <sys:String x:Key="Console_ProgressExtract">7z 已处理...{0}%</sys:String>
     <sys:String x:Key="Console_ProgressSHA256">SHA256 已处理...{0}%</sys:String>

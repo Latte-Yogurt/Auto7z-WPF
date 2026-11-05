@@ -16,8 +16,8 @@ namespace Auto7z_WPF
 
         protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
         {
-            // 值没变就不发通知，避免绑定层白重算一遍；
-            // 需要"相同值也刷新"的场景必须显式传名字并自己调 OnPropertyChanged。
+            // 值不变就不发通知，免得绑定层白重算一遍；
+            // 需要「相同值也刷新」的场景必须显式传名字并自己调 OnPropertyChanged。
             if (Equals(field, value)) return false;
 
             field = value;
@@ -54,13 +54,13 @@ namespace Auto7z_WPF
             CanExecuteChanged?.Invoke(this, EventArgs.Empty);
 
             // 只发自己的事件不够：WPF 的按钮还挂在 CommandManager 的全局重查询上，
-            // 不主动失效的话，命令可用性变了按钮也不会跟着变灰。
+            // 不主动失效时，命令可用性变了按钮也不会跟着变灰。
             CommandManager.InvalidateRequerySuggested();
         }
 
         private static T Cast(object parameter)
         {
-            // 参数类型对不上时给 default 而不是抛异常：XAML 的 CommandParameter
+            // 参数类型对不上时给 default 而不抛异常：XAML 的 CommandParameter
             // 是字符串，泛型参数传不进来属于常态，抛异常会让整次点击崩掉。
             if (parameter is T typed) return typed;
             if (parameter == null) return default(T);

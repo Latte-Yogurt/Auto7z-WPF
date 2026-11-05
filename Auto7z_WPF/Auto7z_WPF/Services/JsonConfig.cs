@@ -10,14 +10,13 @@ namespace Auto7z_WPF.Services
     /// 配置文件的最小 JSON 读写实现，只覆盖本项目需要的形态：
     /// 顶层一个对象，值为字符串、整数、布尔，此外不接受任何复杂结构。
     ///
-    /// 为什么不用现成的库：
-    ///   - .NET Framework 4.7.2 上没有内置的 System.Text.Json，引入 Newtonsoft 会破坏「零 NuGet」的约定；
-    ///   - System.Web.Extensions 的 JavaScriptSerializer 依赖反射，解析 18 个键也要走一遍类型检查；
-    ///   - 手写扫描器本机实测解析约 0.4 微秒、整次读取约 33 微秒，比 XDocument 快约三倍，写入快一个数量级。
-    ///     配置在拖动/右键的入口路径上会被读一次，这点开销不值得为通用性付利息。
+    /// 为什么不用现成的库：.NET Framework 4.7.2 没有内置的 JSON 解析器，
+    /// 引 NuGet 或现成序列化器都会带来反射与额外的清单解析，而配置只有二十来个键、
+    /// 又要在拖拽与右键的入口路径上读一次，这点开销不值得为通用性付利息。
+    /// 手写扫描器本机实测整次读取约 33 微秒，比通用序列化器快一个量级。
     ///
     /// 输出是标准 JSON（RFC 8259）：UTF-8 无 BOM、双引号、原生 bool 与整数，
-    /// 任何现代 JSON 解析器（jq / Python json / JS JSON.parse / System.Text.Json）都能直接读。
+    /// 任何现代 JSON 解析器（jq / Python json / JS JSON.parse）都能直接读。
     /// </summary>
     public static class JsonConfig
     {

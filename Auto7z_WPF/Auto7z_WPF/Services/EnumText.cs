@@ -15,9 +15,6 @@ namespace Auto7z_WPF.Services
         // 因此把字符串拷进只读字典，供任意线程安全读取。
         private static volatile IReadOnlyDictionary<string, string> _textCache;
 
-        // 与文案缓存一同更新；声明为 volatile，读线程不加锁也能看到最新语言代号。
-        private static volatile string _cacheLanguage;
-
         private const string RuntimeModeLowKey = "RuntimeMode_Low";
         private const string RuntimeModeBalancedKey = "RuntimeMode_Balanced";
         private const string RuntimeModeHighKey = "RuntimeMode_High";
@@ -28,7 +25,7 @@ namespace Auto7z_WPF.Services
 
         // 每次切换语言整体重建而不是增量合并，避免旧语言的残留键继续生效；
         // 只收录非空字符串，样式与模板不进缓存。
-        public static void RebuildTextCache(ResourceDictionary dictionary, string languageCode)
+        public static void RebuildTextCache(ResourceDictionary dictionary)
         {
             // 资源键大小写固定，用 Ordinal 比较既快又不会因区域性规则误匹配。
             var cache = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -45,13 +42,10 @@ namespace Auto7z_WPF.Services
                 }
             }
 
-            // 先换缓存再换语言标记，读方看到新语言时文案必定已经就绪。
+            // 整体换缓存：先赋新值再返回，读方拿到的要么是旧语言整套、要么是新语言整套，
+            // 不会读到两种语言混在一起的中间态。
             _textCache = cache;
-            _cacheLanguage = languageCode ?? string.Empty;
         }
-
-        // 缓存对应的语言代号，调用方据此判断手里的本地文本是否已经过期。
-        public static string CachedLanguage => _cacheLanguage ?? string.Empty;
 
         #endregion
         #region 资源查询与格式化
@@ -70,7 +64,7 @@ namespace Auto7z_WPF.Services
                 var app = Application.Current;
                 if (app != null)
                 {
-                // TryFindResource 在键不存在时返回 null 而不抛异常，正适合这种逐级回退的查找。
+                    // TryFindResource 在键不存在时返回 null 而不抛异常，正适合这种逐级回退的查找。
                     var value = app.TryFindResource(key) as string;
                     if (!string.IsNullOrEmpty(value)) return value;
                 }

@@ -16,7 +16,7 @@ namespace Auto7z_WPF.Services
 
         #region 键表
         // 键表集中在一处：读取、写回、缺键补齐、默认值全部从这张表推导，
-        // 四处各写一份默认值是历史上一再出错的来源（漏改一处就静默漂移）。
+        // 四处各写一份默认值必然漏改一处而静默漂移。
         private static readonly ConfigKey[] _keys =
         {
             new ConfigKey("Language", false),

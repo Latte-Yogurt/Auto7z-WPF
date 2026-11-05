@@ -172,7 +172,7 @@ namespace Auto7z_WPF.Services
         // 用 FindFirstFile/FindNextFile 原生遍历。
         // DirectoryInfo.EnumerateFiles 每个条目都要构造一个 FileInfo 并单独取属性，
         // 本机实测 5000 文件目录约 4.9ms，原生遍历约 2.6ms —— 少的那一半全是托管对象的分配与元数据往返。
-        // 目录体积只用于分卷判断，容错策略与旧实现一致：读不到的子树跳过，不因此让整次统计失败。
+        // 目录体积只用于分卷判断，容错策略是读不到的子树跳过，不因此让整次统计失败。
         private static long GetDirectorySizeNative(string rootPath)
         {
             long total = 0;

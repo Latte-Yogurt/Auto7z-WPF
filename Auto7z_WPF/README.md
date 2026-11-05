@@ -425,7 +425,7 @@ Release 构建把整段编掉。目前有两处：
 
 ```powershell
 cd ..\testtools
-python run_regress.py         # 一键回归（13 项）
+python run_regress.py         # 一键回归（14 项）
 python run_system_test.py     # 一键系统测试（15 项）
 python run_bench.py           # 性能基准（不判失败）
 ```
@@ -453,5 +453,6 @@ python regress.py --app "..\Auto7z_WPF\Auto7z_WPF\bin\Debug\Auto7z.exe"
 - 右键菜单是传统 `IContextMenu` 扩展，Windows 11 上在「显示更多选项」里
 - 右键菜单注册要管理员权限，普通用户运行时会弹 UAC
 - 密码框是明文显示的（为了支持中文输入，见「几个关键设计」）
+- 文件被别的程序独占打开时压缩不会报 0：归档照常产出，但该文件被跳过，退出码给 1 并在控制台说明「未完全成功」
 - 未知开关会被拒绝：`Auto7z.exe -X file` 打印「无法识别的选项」与用法，退出码 2，不产出压缩包
   （磁盘上真实存在、名字恰好以 `-` 开头的路径仍会被当成路径处理）
