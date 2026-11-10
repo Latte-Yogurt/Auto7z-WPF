@@ -122,6 +122,8 @@ Auto7zShell\buildtool\buildtool.exe --vcvars "C:\Program Files\Microsoft Visual 
 
 Copy the resulting `Auto7zShell.dll` next to `Auto7z.exe` — the application looks for it in its own directory. `Auto7zGUI.exe` belongs in the same directory: the Explorer context menu and drag-and-drop use it, and it has to sit next to `Auto7z.exe`.
 
+After replacing the dll, re-register it (`Auto7z.exe -r`) **and restart Explorer**. The component is an in-process COM server, so a running `explorer.exe` keeps the old image mapped and ignores the new file on disk.
+
 ### Usage
 
 ```
@@ -205,7 +207,7 @@ The selected paths are passed to the application through a named shared memory b
 
 Only one instance of the application runs at a time. A second launch hands its file list to the running instance over a named pipe and exits; the running instance queues the batch and works through them one at a time.
 
-Portable mode unregisters the context menu when it is switched on and registers it again when it is switched off, so a portable copy does not leave anything behind in the registry.
+Portable mode **hard-disables** the context menu rather than merely toggling it: startup unregisters any stale entry, `-r` is refused outright, and `SetLanguage` returns without writing. A process that *started* portable never enters the toggle branch at all, so "unregister when the switch flips" would leave its registration behind.
 
 ### External dependencies
 
@@ -258,7 +260,7 @@ No NuGet packages. The only bundled dependency is the 7-Zip ZS build.
 | 可执行体 | 子系统 | 用途 |
 |---|---|---|
 | `Auto7z.exe` | Console | 只做命令行 —— `cmd` 会等它跑完，所以 `Y/N` 与密码输入不会被提示符抢走。不带任何参数时打印用法并以退出码 2 结束，不再拉起主窗口 |
-| `Auto7zGUI.exe` | GUI | 双击、开始菜单 / 桌面快捷方式、资源管理器右键菜单、把文件拖到它上面 —— 全程不创建控制台窗口，一帧闪都没有。它不处理 `-h` / `-r` / `-ur` 这类命令行开关，那些归 `Auto7z.exe` |
+| `Auto7zGUI.exe` | GUI | 双击、开始菜单 / 桌面快捷方式、资源管理器右键菜单、把文件拖到它上面 —— 全程不创建控制台窗口，一帧闪都没有。**带开关参数时**它会先附加到父控制台，再走与 `Auto7z.exe` 完全相同的命令行管道（见下） |
 
 单文件做不到两者兼得：PE 子系统这一个字段同时决定「`cmd` 等不等它跑完」
 和「启动时 Windows 给不给它分配控制台」。敲命令用 `Auto7z.exe`，
@@ -325,6 +327,8 @@ Auto7zShell\buildtool\buildtool.exe --vcvars "C:\Program Files\Microsoft Visual 
 `buildtool.bat` 现在默认指向 Visual Studio 2022 Community 的 `vcvars64.bat`，该路径不存在时会依次回退到 2022 的 Enterprise / Professional / Build Tools；工具链装在别处时，按上面的样子用 `--vcvars` 传入真实路径，或者改掉 bat 里的 `VCVARS` 常量。
 
 编出来的 `Auto7zShell.dll` 要放在 `Auto7z.exe` 旁边 —— 程序在同目录下找它。
+
+换掉这个 dll 之后，要重新注册（`Auto7z.exe -r`）**并重启资源管理器**。组件是进程内 COM，正在跑的 `explorer.exe` 仍映射着旧的那份，磁盘上的新文件对它无效。
 
 ### 用法
 
@@ -398,7 +402,10 @@ Auto7z.exe -ur
 
 程序同一时间只跑一个实例。第二次启动会把文件列表通过命名管道交给已经在跑的那个，自己退出；已有实例把这一批排进队列，一个一个处理。
 
-便携模式在勾上时注销右键菜单，取消勾选时再注册回来，便携程序不会在注册表里留痕迹。
+便携模式由磁盘事实判定（程序旁是否存在 `.config` 目录），配置里没有这个开关。
+便携模式下右键菜单被**硬性禁用**：启动时撤掉陈旧注册、`-r` 直接拒绝、`SetLanguage` 短路返回——
+不只是"切换那一刻注销一次"。原因见「两个可执行体」一节：便携启动的进程根本不进切换分支，
+只做切换期注销会留下一条指向移动盘上 dll 的注册，资源管理器随后就会去加载一个不存在的路径。
 
 ### 外部依赖
 
