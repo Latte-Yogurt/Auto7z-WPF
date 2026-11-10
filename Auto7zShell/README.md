@@ -152,6 +152,16 @@ COM 类走 `HKEY_CLASSES_ROOT`（等价于 `HKLM\Software\Classes`），菜单�
 `MainExePath` 记的是执行 `-r` 的那个程序。启动时组件会先看同目录有没有 `Auto7zGUI.exe`，有就用它（图形入口不开控制台）；
 所以 `-r` 用哪个 exe 执行都可以，注册表里那一条不必手工改。
 
+### 便携模式下不允许注册
+
+主程序在便携模式（程序旁存在 `.config` 目录）下**拒绝注册本组件**，`-r` 会打印原因并退出，
+`DllSetLanguage` 也不再被调用。原因是注册写的是绝对路径：便携程序被拷到别的机器或盘符后，
+那条注册指向一个已经不存在的 dll，资源管理器仍会尝试加载 —— 这是实打实的越界调用。
+
+只在"切换便携模式那一刻注销"是不够的：以便携方式**启动**的进程根本不进切换分支，
+陈旧注册就会一直留着。所以主程序在启动时还会调一次 `DllUnregisterServer` 做清理
+（仅在已提权时动手，不弹 UAC）。这些都在主程序侧实现，组件本身不需要改。
+
 ```
 HKLM\Software\Classes\CLSID\{6C3F8A21-...}
     (默认)                = Auto7z Shell Extension
@@ -241,6 +251,25 @@ Auto7zGUI.exe #<映射名>:<字节数>:<事件名> [-z|-uz]
 
 组件只会传这两个开关：压缩 `-z`、解压 `-uz`（见 `ShellExtension.cpp` 的 `InvokeCommand`）。
 不传开关时主程序按自动模式处理。
+
+## 命令槽位怎么认（`FindCommandSlot`）
+
+`InvokeCommand` 收到的谓词有两种写法：字符串（`Auto7z.Extract` / `Auto7z.Compress`）与
+`MAKEINTRESOURCE(下标)`（0 = 压缩，1 = 解压）。识别逻辑在 `FindCommandSlot`，有两条容易踩的坑：
+
+**`fMask` 带 `CMIC_MASK_UNICODE` 不代表 `lpVerbW` 一定有值**
+
+调用方可能置了 Unicode 位，却只填 ANSI 的 `lpVerb`，把 `lpVerbW` 留成 `NULL`。
+这时 `IS_INTRESOURCE(lpVerbW)` 为**真**（`NULL` 被当成资源 ID），`LOWORD(NULL)` 又等于 0，
+于是会被当成「压缩」—— 表现是**点「解压」却在压缩**，而且 `InvokeCommand` 仍返回 `S_OK`，
+日志与子进程一切正常，极难发现。
+
+正确做法是：`lpVerbW` 为 `NULL` 时回退按 `lpVerb` 判据；两者都拿不到有效槽位就返回 `E_FAIL`
+（**失败关闭**），宁可这次点击不生效，也不能静默执行成另一个操作。
+
+**下标越界要拒绝，不能取模**
+
+`id & 0x3` 之类的写法会把非法下标绕回合法槽位。`FindCommandSlot` 用的是 `> kCmdExtract` 直接拒绝。
 
 映射名与事件名由组件生成，形如 `Auto7zShellMap<PID><序号>` / `Auto7zShellEvent<PID><序号>`——
 唯一性靠「进程 id + 进程内自增序号」。主程序按名字打开共享内存，从里面读出以 `\0` 分隔的

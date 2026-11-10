@@ -356,7 +356,7 @@ HBITMAP IconToBitmap(HICON icon, int size)
 
 HBITMAP LoadMainMenuBitmap()
 {
-// 位图转换结果静态缓存，DllCanUnloadNow 不把这张图算进引用，它随模块一起释放。
+    // 位图转换结果静态缓存，DllCanUnloadNow 不把这张图算进引用，它随模块一起释放。
     static const HBITMAP cached = IconToBitmap(LoadMainIcon(), kMenuIconSize);
     return cached;
 }
@@ -367,7 +367,7 @@ bool IsRealFileOrFolder(const wchar_t *path)
 {
     if (path == nullptr || path[0] == 0) return false;
 
-if (StrStrIW(path, L"\\$Recycle.Bin") != nullptr) return false;
+    if (StrStrIW(path, L"\\$Recycle.Bin") != nullptr) return false;
 
     DWORD attributes = GetFileAttributesW(path);
     if (attributes == INVALID_FILE_ATTRIBUTES) return false;
@@ -659,7 +659,7 @@ public:
         ReleaseObjectRef();
     }
 
-// 多重继承下两个接口在对象里的偏移不同，QueryInterface 必须按接口分别取地址，否则资源管理器会调错函数并静默禁用扩展。
+    // 多重继承下两个接口在对象里的偏移不同，QueryInterface 必须按接口分别取地址，否则资源管理器会调错函数并静默禁用扩展。
     STDMETHODIMP QueryInterface(REFIID interfaceId, void **object) override
     {
         if (object == nullptr) return E_POINTER;
@@ -698,7 +698,7 @@ public:
         return static_cast<ULONG>(remaining);
     }
 
-// Initialize 只记录选区，不做任何耗时操作：它跑在资源管理器的界面线程上。
+    // Initialize 只记录选区，不做任何耗时操作：它跑在资源管理器的界面线程上。
     STDMETHODIMP Initialize(PCIDLIST_ABSOLUTE pidlFolder, LPDATAOBJECT dataObject, HKEY hkeyProgID) override
     {
         (void)pidlFolder;
@@ -711,7 +711,7 @@ public:
         return S_OK;
     }
 
-// 返回值是「加进去的菜单项个数」而不是 S_OK，返回 0 等于告诉资源管理器这里没有菜单项。
+    // 返回值是「加进去的菜单项个数」而不是 S_OK，返回 0 等于告诉资源管理器这里没有菜单项。
     STDMETHODIMP QueryContextMenu(HMENU menu, UINT indexMenu, UINT idCmdFirst, UINT idCmdLast, UINT flags) override
     {
         if (menu == nullptr) return E_INVALIDARG;
@@ -774,7 +774,7 @@ public:
         return static_cast<HRESULT>(highest);
     }
 
-// 压缩与解压只是模式开关不同，两者的启动与传参路径完全共用。
+    // 压缩与解压只是模式开关不同，两者的启动与传参路径完全共用。
     STDMETHODIMP InvokeCommand(LPCMINVOKECOMMANDINFO info) override
     {
         if (info == nullptr) return E_INVALIDARG;
@@ -791,7 +791,7 @@ public:
         return S_OK;
     }
 
-// 谓词名要能被脚本与资源管理器的「验证」查询命中，因此按 A / W 两种形态各答一次。
+    // 谓词名要能被脚本与资源管理器的「验证」查询命中，因此按 A / W 两种形态各答一次。
     STDMETHODIMP GetCommandString(UINT_PTR id, UINT type, UINT *reserved, LPSTR buffer, UINT bufferChars) override
     {
         (void)reserved;
@@ -820,7 +820,7 @@ public:
     }
 
 private:
-// 调用方可能传字符串谓词，也可能传菜单项下标，两种都要认；下标越界即视为无效命令。
+    // 调用方可能传字符串谓词，也可能传菜单项下标，两种都要认；下标越界即视为无效命令。
     HRESULT FindCommandSlot(LPCMINVOKECOMMANDINFO info, UINT *slot)
     {
         LPCMINVOKECOMMANDINFOEX infoEx = nullptr;
@@ -828,6 +828,12 @@ private:
             (info->fMask & CMIC_MASK_UNICODE) != 0)
         {
             infoEx = reinterpret_cast<LPCMINVOKECOMMANDINFOEX>(info);
+
+            // lpVerbW 是 NULL 时不能落到下标分支：LOWORD(NULL) 等于 0，会被当成「压缩」，
+            // 于是点「解压」也压缩。调用方置了 Unicode 位却只填了 ANSI 的 lpVerb 时就是这种形态，
+            // 这里改按 lpVerb 判，两者都拿不到有效槽位就失败关闭。
+            if (infoEx->lpVerbW == nullptr) return FindAnsiCommandSlot(info->lpVerb, slot);
+
             if (!IS_INTRESOURCE(infoEx->lpVerbW))
             {
                 if (wcscmp(infoEx->lpVerbW, kVerbExtract) == 0)
@@ -849,9 +855,15 @@ private:
             return S_OK;
         }
 
-        if (!IS_INTRESOURCE(info->lpVerb)) return E_FAIL;
+        return FindAnsiCommandSlot(info->lpVerb, slot);
+    }
 
-        UINT value = LOWORD(reinterpret_cast<ULONG_PTR>(info->lpVerb));
+    // 只认 MAKEINTRESOURCE 形态的谓词；字符串谓词不带 Unicode 位时同样算认不出来。
+    HRESULT FindAnsiCommandSlot(LPCSTR verb, UINT *slot)
+    {
+        if (!IS_INTRESOURCE(verb)) return E_FAIL;
+
+        UINT value = LOWORD(reinterpret_cast<ULONG_PTR>(verb));
         if (value > kCmdExtract) return E_FAIL;
 
         *slot = value;
