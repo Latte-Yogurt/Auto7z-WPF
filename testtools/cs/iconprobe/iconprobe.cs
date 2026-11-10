@@ -136,8 +136,15 @@ class IconProbe
         return p;
     }
 
-    static void Main(string[] args)
+    static int Main(string[] args)
     {
+        if (args.Length < 2)
+        {
+            Console.WriteLine("用法: iconprobe.exe <Auto7zShell.dll> <CLSID>");
+            Console.WriteLine("  检查菜单项图标能否取到、位图里有没有内容。");
+            return 2;
+        }
+
         string dll = args[0];
         string clsid = args[1];
 
@@ -251,5 +258,6 @@ class IconProbe
 
         Console.WriteLine("");
         Console.WriteLine("TOTAL PROBLEMS: " + problems);
+        return 0;
     }
 }

@@ -69,6 +69,13 @@ class ShellProto
 
     static int Main(string[] a)
     {
+        if (a.Length < 2)
+        {
+            Console.WriteLine("用法: shellproto.exe <Auto7z.exe 路径> <工作目录>");
+            Console.WriteLine("  验证共享内存传参、模式开关、单实例交接。");
+            return 2;
+        }
+
         string configPath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Auto7z", "Auto7z.json");

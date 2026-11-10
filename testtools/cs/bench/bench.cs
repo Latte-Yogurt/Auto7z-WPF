@@ -15,12 +15,12 @@ class Bench
     static string asmPath;
     static Assembly asm;
 
-    static void Main(string[] args)
+    static int Main(string[] args)
     {
         if (args.Length < 2)
         {
             Console.WriteLine("用法: bench.exe <Auto7z.exe 路径> <工作目录> [过滤]");
-            return;
+            return 2;
         }
 
         asmPath = Path.GetFullPath(args[0]);
@@ -35,7 +35,7 @@ class Bench
             if (Environment.GetEnvironmentVariable(RELAUNCH_FLAG) == "1")
             {
                 Console.WriteLine("!! 重启后仍然不在被测目录旁边，放弃");
-                return;
+            return 2;
             }
 
             string copy = Path.Combine(targetDir, "bench_run.exe");
@@ -62,7 +62,7 @@ class Bench
                 Console.Write("--- 子进程 stderr ---\n" + err + "\n---\n");
             }
             try { if (File.Exists(copy)) File.Delete(copy); } catch { }
-            return;
+            return proc.ExitCode;
         }
 
         try
@@ -73,6 +73,7 @@ class Bench
         {
             Console.WriteLine("!! 基准执行异常: " + ex);
         }
+        return 0;
     }
 
     static void Run(string filter)

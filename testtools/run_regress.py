@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_ops import SafeTemp
+from config_guard import ConfigGuard, claim_checkout, release_checkout
 
 HERE = Path(__file__).resolve().parent
 WORKSPACE = HERE.parent
@@ -406,6 +407,10 @@ def main():
     ap.add_argument("--app", help="被测程序路径")
     ap.add_argument("--config", default="Debug", help="Debug / Release")
     ap.add_argument("--keep", action="store_true", help="保留临时目录")
+    ap.add_argument("--clear-config", action="store_true",
+                    help="开跑前清空配置（产品会重建默认值），跑完仍还原成原样")
+    ap.add_argument("--purge-portable", action="store_true",
+                    help="删掉 exe 旁的便携数据目录（它存在时会顶掉普通配置）")
     args = ap.parse_args()
 
     app = Path(args.app) if args.app else PROJECT / "bin" / args.config / "Auto7z.exe"
@@ -414,10 +419,26 @@ def main():
         print("先构建: msbuild Auto7z_WPF\\Auto7z_WPF.sln /t:Rebuild /p:Configuration=%s" % args.config)
         return 2
 
+    mutex = claim_checkout()
+    if mutex is None:
+        print("已有另一份 Auto7z 测试正在跑；并行跑会互相抢配置与单实例，先等它结束。")
+        return 2
+
+    guard = ConfigGuard(app)
+    if not guard.prepare(purge_portable=args.purge_portable):
+        release_checkout(mutex)
+        return 2
+
+    chain_token = guard.join_chain()
+    cleared = guard.clear() if args.clear_config else []
+
     print("=" * 70)
     print("Auto7z 一键回归测试")
     print("被测程序: %s" % app)
     print("临时目录: %s" % TEMP.path)
+    print("配置: %s" % guard.local_cfg)
+    if cleared:
+        print("已清空配置 %d 份，产品将从默认值起跑" % len(cleared))
     print("=" * 70)
 
     TEMP.ensure()
@@ -446,6 +467,10 @@ def main():
             print("  --keep 指定了，保留: %s" % TEMP.path)
         else:
             print("  " + TEMP.cleanup())
+
+        # 配置必须在清理完临时产物之后还原：还原本身就是把用户的真实文件写回去。
+        guard.leave_chain(chain_token)
+        release_checkout(mutex)
 
     return 1 if res.failed else 0
 

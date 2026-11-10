@@ -8,6 +8,13 @@ class LangCheck
 {
     static int Main(string[] a)
     {
+        if (a.Length < 1)
+        {
+            Console.WriteLine("用法: langcheck.exe <Auto7z.exe 路径>");
+            Console.WriteLine("  打印支持的语言，并验证系统语言 -> 界面语言的映射。");
+            return 2;
+        }
+
         string asmPath = a[0];
         var asm = Assembly.LoadFrom(asmPath);
         var ls = asm.GetType("Auto7z_WPF.Services.LanguageService");

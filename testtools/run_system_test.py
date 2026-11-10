@@ -20,6 +20,7 @@ r"""一键系统测试。
 """
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -27,6 +28,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_ops import SafeTemp
+from config_guard import (ConfigGuard, claim_checkout, release_checkout,
+                         child_env_with_inherited_checkout)
 
 HERE = Path(__file__).resolve().parent
 WORKSPACE = HERE.parent
@@ -245,14 +248,115 @@ def t_cmdline_merge(res, app):
             "生成 %d 个压缩包" % len(packs))
 
 
+def t_split_volume(res, app):
+    """分卷压缩 / 分卷解压专项（三种模式对分卷的处理）。
+
+    单独成一个脚本（splitvol_test.py）：它自建分卷包、验卷数与内容哈希，
+    比主流程重，但仍属于「端到端主流程」这一档，所以接在这里。
+    """
+    print("")
+    print("=== 分卷压缩 / 分卷解压 ===")
+    # 嵌套调用：父进程已持有共用互斥体，子进程必须被允许继承，否则它会抢锁失败直接退出。
+    r = run([sys.executable, str(HERE / "splitvol_test.py"),
+             "--app", str(app)], cwd=str(HERE),
+            env=child_env_with_inherited_checkout())
+    out = (r.stdout or "") + (r.stderr or "")
+    m = __import__("re").search(r"TOTAL ISSUES:\s*(\d+)", out)
+    n = int(m.group(1)) if m else -1
+    res.add("分卷压缩 / 分卷解压", n == 0, "TOTAL ISSUES=%s" % n)
+    return out
+
+
+def _explorer_loaded_dll():
+    """返回 explorer 进程里已加载的 Auto7zShell.dll 路径；没加载返回 None。
+
+    用途只有一个：把「旧 dll 常驻」这个环境陷阱显式报出来。
+    explorer 用过一次右键菜单就把 dll 映射进自己的地址空间，之后磁盘上的文件
+    更新对它无效，而且会锁住文件 —— 表现为「代码改对了，点右键还是旧行为」。
+    """
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-Process explorer -ErrorAction SilentlyContinue | "
+             "Select-Object -First 1 -ExpandProperty Modules | "
+             "Where-Object { $_.ModuleName -like '*Auto7zShell*' } | "
+             "Select-Object -ExpandProperty FileName"],
+            capture_output=True, text=True, timeout=30)
+        text = (out.stdout or "").strip()
+        return text.splitlines()[0].strip() if text else None
+    except Exception:
+        return None
+
+
+def ensure_shell_dll(app):
+    """确保 Auto7zShell.dll 就位；没有就现构建并部署。
+
+    先前的写法是「找不到就跳过」，结果是这一整块（菜单项、作用范围、图标、
+    完整链路）长期没有真正被执行过 —— 外壳扩展明明就在工程里，构建它只需要
+    一条 buildtool 命令，跳过反而让回归出现了盲区。
+
+    构建链：buildtool.bat 编出 buildtool.exe，buildtool.exe 再编组件。
+    产物在 Auto7zShell\\build\\Auto7zShell.dll，要拷到主程序旁边（组件按同目录找主程序）。
+    """
+    dll = app.parent / "Auto7zShell.dll"
+    if dll.exists():
+        return dll, "已有"
+
+    workspace = HERE.parent
+    shell_dir = workspace / "Auto7zShell"
+    buildtool = shell_dir / "buildtool" / "buildtool.exe"
+    product = shell_dir / "build" / "Auto7zShell.dll"
+
+    if not buildtool.exists():
+        bat = shell_dir / "buildtool" / "buildtool.bat"
+        if not bat.exists():
+            return None, "缺少 buildtool.bat，无法构建"
+        print("  现编 buildtool.exe ...")
+        r = subprocess.run(["cmd", "/c", str(bat)], cwd=str(bat.parent),
+                           capture_output=True)
+        if not buildtool.exists():
+            return None, "buildtool.exe 编译失败（退出码 %d）" % r.returncode
+
+    if not product.exists():
+        print("  现编 Auto7zShell.dll ...")
+        # 工具链位置先探测常见的 2022 路径，找不到就让 buildtool 自己回退
+        vcvars = Path(r"C:\Program Files\Microsoft Visual Studio\2022\Community"
+                      r"\VC\Auxiliary\Build\vcvars64.bat")
+        args = [str(buildtool), "--clean"]
+        if vcvars.exists():
+            args += ["--vcvars", str(vcvars)]
+        r = subprocess.run(args, cwd=str(shell_dir), capture_output=True)
+        if not product.exists():
+            return None, "组件构建失败（退出码 %d）" % r.returncode
+
+    shutil.copy2(str(product), str(dll))
+    return dll, "已现构建并部署"
+
+
 def t_shell_extension(res, app):
     """外壳扩展：菜单项、作用范围、图标、完整链路。"""
     print("")
     print("=== 外壳扩展（右键菜单）===")
-    dll = app.parent / "Auto7zShell.dll"
-    if not dll.exists():
-        res.add("外壳扩展", False, "找不到 Auto7zShell.dll, 跳过")
+
+    dll, how = ensure_shell_dll(app)
+    if dll is None:
+        res.add("外壳扩展", False, "无法获得 Auto7zShell.dll：%s" % how)
         return
+    if how != "已有":
+        print("  Auto7zShell.dll: %s" % how)
+
+    # 先查「资源管理器是否还挂着旧版 dll」。
+    #
+    # 这不是小事：explorer 是常驻进程，一旦用过右键菜单就把 dll 映射进自己的地址空间，
+    # 之后即使磁盘上的文件被新构建覆盖，它仍跑内存里的旧代码，而且会锁住文件。
+    # 症状极具误导性 —— 代码明明改对了，实际点右键却是旧行为（例如「解压」仍走压缩分支）。
+    # 实测踩过：explorer 11:16 启动、dll 11:34 构建，于是怎么测都是旧的。
+    stale = _explorer_loaded_dll()
+    if stale:
+        res.add("资源管理器已加载旧版外壳扩展", True,
+                "已加载 %s（若行为与代码不符，重启 explorer 再试）" % Path(stale).name)
+    else:
+        res.add("资源管理器未常驻外壳扩展", True, "没有旧版驻留")
 
     tfile = TEMP.path / "t.txt"
     tfile.write_text("x\n", encoding="utf-8")
@@ -276,6 +380,48 @@ def t_shell_extension(res, app):
             # 这几个工具不报 PROBLEMS，只看关键步骤有没有走通
             ok = ("成功" in out) or ("S_OK" in out) or ("菜单项数 = 2" in out)
             res.add(name, ok and r.returncode == 0, "退出码=%d" % r.returncode)
+
+    t_menu_mode(res, dll)
+
+
+def t_menu_mode(res, dll):
+    """点「压缩」必须传 -z，点「解压」必须传 -uz —— 两种调用形态各测一次。
+
+    为什么单列这一项：dataprobe 只构造 fMask=0 的 CMINVOKECOMMANDINFOEX，
+    从不进入 FindCommandSlot 的 Unicode 分支。真实环境下资源管理器会用
+    「带 CMIC_MASK_UNICODE 但 lpVerbW 为空」的形态调用，此时若组件把 NULL
+    当成下标 0，点「解压」就会执行压缩，而 InvokeCommand 照样返回 S_OK —— 
+    日志、子进程、退出码全都正常，只有产物不对。这条缺陷曾经真的存在过。
+    """
+    exe = tool("menuprobe")
+    if not Path(exe).exists():
+        res.add("右键菜单模式分派", False, "menuprobe 没编译, 跳过")
+        return
+
+    sample = TEMP.path / "menuprobe_sample.txt"
+    sample.write_text("mode probe\n", encoding="utf-8")
+
+    cases = [
+        ("ansi", "compress", "-z"),
+        ("ansi", "extract", "-uz"),
+        ("unicode-null", "compress", "-z"),
+        ("unicode-null", "extract", "-uz"),
+    ]
+    failures = []
+    for style, which, want in cases:
+        r = run([str(exe), "--style", style, str(dll), CLSID, which, str(sample)])
+        out = (r.stdout or "") + (r.stderr or "")
+        got = ""
+        for line in out.splitlines():
+            if line.startswith("MODE="):
+                got = line[5:].strip()
+        if got != want:
+            failures.append("%s/%s 得到 %r 期望 %r" % (style, which, got, want))
+
+    if failures:
+        res.add("右键菜单模式分派", False, "；".join(failures))
+    else:
+        res.add("右键菜单模式分派", True, "4 种形态全部正确")
 
 
 def kill_running():
@@ -372,6 +518,10 @@ def main():
     ap.add_argument("--app", help="被测程序路径")
     ap.add_argument("--config", default="Debug", help="Debug / Release")
     ap.add_argument("--keep", action="store_true", help="保留临时目录")
+    ap.add_argument("--clear-config", action="store_true",
+                    help="开跑前清空配置（产品会重建默认值），跑完仍还原成原样")
+    ap.add_argument("--purge-portable", action="store_true",
+                    help="删掉 exe 旁的便携数据目录（它存在时会顶掉普通配置）")
     args = ap.parse_args()
 
     app = Path(args.app) if args.app else PROJECT / "bin" / args.config / "Auto7z.exe"
@@ -380,10 +530,26 @@ def main():
         print("先构建: msbuild Auto7z_WPF\\Auto7z_WPF.sln /t:Rebuild /p:Configuration=%s" % args.config)
         return 2
 
+    mutex = claim_checkout()
+    if mutex is None:
+        print("已有另一份 Auto7z 测试正在跑；并行跑会互相抢配置与单实例，先等它结束。")
+        return 2
+
+    guard = ConfigGuard(app)
+    if not guard.prepare(purge_portable=args.purge_portable):
+        release_checkout(mutex)
+        return 2
+
+    chain_token = guard.join_chain()
+    cleared = guard.clear() if args.clear_config else []
+
     print("=" * 70)
     print("Auto7z 一键系统测试")
     print("被测程序: %s" % app)
     print("临时目录: %s" % TEMP.path)
+    print("配置: %s" % guard.local_cfg)
+    if cleared:
+        print("已清空配置 %d 份，产品将从默认值起跑" % len(cleared))
     print("=" * 70)
 
     TEMP.ensure()
@@ -393,6 +559,7 @@ def main():
         t_cmdline_basic(res, app)
         t_cmdline_password(res, app)
         t_cmdline_merge(res, app)
+        t_split_volume(res, app)
         t_shell_extension(res, app)
         t_shellproto(res, app)
         t_ui_checks(res, app)
@@ -404,6 +571,10 @@ def main():
             print("  --keep 指定了，保留: %s" % TEMP.path)
         else:
             print("  " + TEMP.cleanup())
+
+        # 配置必须在清理完临时产物之后还原：还原本身就是把用户的真实文件写回去。
+        guard.leave_chain(chain_token)
+        release_checkout(mutex)
 
     return 1 if res.failed else 0
 

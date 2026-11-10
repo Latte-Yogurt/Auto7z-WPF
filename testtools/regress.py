@@ -48,9 +48,13 @@ def decode_console_output(data):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_ops import SafeTemp, safe_rmtree, UnsafeDeleteError
+from config_guard import ConfigGuard
 
-PROJECT = Path(r"C:\Users\Mocha\Desktop\VSProject\Auto7z_WPF\Auto7z_WPF")
 WORKSPACE = Path(__file__).resolve().parent.parent
+# 产品工程目录按本文件真实位置推导，不写死绝对路径：
+# 写死的路径换个检出位置就失效，而失效的表现是「默认 --app 指向不存在的 exe」，
+# 之后每一项都因为找不到被测程序而失败，看起来像产品坏了。
+PROJECT = WORKSPACE / "Auto7z_WPF" / "Auto7z_WPF"
 
 # 临时目录：受控在 %TEMP% 下，路径含标记串，删除前有白名单校验
 TEMP = SafeTemp("regress")
@@ -98,7 +102,6 @@ ROOT = WORKSPACE / "regress"
 
 ISSUES = []
 OUT = []
-CONFIG_SNAPSHOT = None
 
 
 def say(s):
@@ -879,9 +882,10 @@ def main():
                 else:
                     # 断言: 切过去、切回来、目录都清干净
                     #
-                    # IsPortable 在内存里由产品打印成 C# 的 bool（True/False），
-                    # 而配置文件里是标准 JSON 的原生布尔（true/false）—— 两者大小写不同，
-                    # 断言必须分开写，否则会把"格式正确"误判成"没记下标记"。
+                    # 便携状态不再写进配置：它由「程序目录旁有没有 .config\Auto7z」决定。
+                    # 所以这里只断言两件事 —— 内存状态对不对、磁盘目录搬得干不干净。
+                    # 配置里的 IsPortable 键已经不存在，旧文件残留该键也不影响使用，
+                    # 因此不再断言它（断言一个刻意不维护的键只会变成假失败）。
                     if "IsPortable = True" not in text:
                         bad("便携模式: 没有切到便携模式")
                     if "IsPortable = False" not in text:
@@ -890,10 +894,8 @@ def main():
                         bad("便携模式: 旧目录没有移除")
                     if "便携目录还在 = True" in text:
                         bad("便携模式: 切回后便携目录仍在")
-                    if "配置里的 IsPortable = true" not in text:
-                        bad("便携模式: 配置里没有记下便携标记")
-                    if "配置里的 IsPortable = false" not in text:
-                        bad("便携模式: 配置里没有记下普通模式标记")
+                    if "便携目录在磁盘上 = True" in text.split("### 切回普通模式")[-1]:
+                        bad("便携模式: 切回后便携数据目录仍在磁盘上")
             else:
                 say("  (编译辅助程序失败, 已跳过)")
         else:
@@ -968,19 +970,24 @@ def cleanup():
 
 
 def run():
-    """跑完全部测试, 无论成败都把配置还原、清理临时目录"""
-    global CONFIG_SNAPSHOT
-    if CFG.exists():
-        CONFIG_SNAPSHOT = CFG.read_text(encoding="utf-8")
+    """跑完全部测试, 无论成败都把配置还原、清理临时目录。
+
+    配置的处理交给 config_guard 的**链式会话**，不再自己快照一份。
+    早先这里是「自己 read_text 存一份、finally 再 write_text 写回去」，
+    有两个问题：
+      · 它有自己的视角 —— 若上一个工具已经改过配置，它存下的就是"被改过的"，
+        还原等于把污染固化下来；
+      · read_text/write_text 会顺手改掉换行符，配置内容看似相同实则被改写。
+
+    接入同一条链后，只有整条链最后一个离开的进程才真正还原，
+    而它还原的是**最早进入者**记下的原始字节。
+    """
+    guard = ConfigGuard(APP)
+    token = guard.join_chain()
     try:
         main()
     finally:
-        if CONFIG_SNAPSHOT is not None:
-            try:
-                CFG.write_text(CONFIG_SNAPSHOT, encoding="utf-8")
-                print("配置已还原")
-            except Exception as e:
-                print("配置还原失败: %s" % e)
+        guard.leave_chain(token)
         cleanup()
 
 

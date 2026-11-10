@@ -32,6 +32,12 @@ class ShellCheck
     delegate int QueryContextMenuDelegate(IntPtr self, IntPtr hMenu, uint index,
                                           uint idFirst, uint idLast, uint flags);
 
+    // GetCommandString 的 id 是「完整命令 ID」，不是相对偏移。
+    // 资源管理器会拿它查谓词名并缓存；两项若报同一个名字，点击就会永远走同一个分支。
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    delegate int GetCommandStringDelegate(IntPtr self, UIntPtr id, uint type,
+                                          IntPtr reserved, IntPtr buffer, uint bufferChars);
+
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     delegate int QueryInterfaceDelegate(IntPtr self, IntPtr iid, out IntPtr obj);
 
@@ -115,8 +121,15 @@ class ShellCheck
 
     static int problems = 0;
 
-    static void Main(string[] args)
+    static int Main(string[] args)
     {
+        if (args.Length < 2)
+        {
+            Console.WriteLine("用法: shellcheck.exe <Auto7zShell.dll> <CLSID> [样本文件]");
+            Console.WriteLine("  组件自检：建类工厂、建菜单、读菜单项文字与谓词名。");
+            return 2;
+        }
+
         string dll = args[0];
         string clsid = args[1];
         string sample = args.Length > 2 ? args[2] : null;
@@ -130,7 +143,7 @@ class ShellCheck
         {
             Console.WriteLine("  !! LoadLibrary 失败, 错误码 " + Marshal.GetLastWin32Error());
             Console.WriteLine("TOTAL PROBLEMS: 1");
-            return;
+            return 0;
         }
         Console.WriteLine("  LoadLibrary 成功");
 
@@ -139,7 +152,7 @@ class ShellCheck
         {
             Console.WriteLine("  !! 找不到 DllGetClassObject");
             Console.WriteLine("TOTAL PROBLEMS: 1");
-            return;
+            return 0;
         }
 
         var getClassObject = (GetClassObjectDelegate)Marshal.GetDelegateForFunctionPointer(
@@ -210,10 +223,61 @@ class ShellCheck
                     Console.WriteLine("    [{0}] id=0x{1:X}  '{2}'", i, id, label);
                     if (string.IsNullOrWhiteSpace(label)) problems++;
                 }
+
+                // 谓词名必须两项不同，否则资源管理器按谓词调用时会走同一个分支，
+                // 表现为「点解压实际在压缩」。
+                var getCommandString = (GetCommandStringDelegate)Marshal.GetDelegateForFunctionPointer(
+                    Marshal.ReadIntPtr(menuVtable, 5 * IntPtr.Size),
+                    typeof(GetCommandStringDelegate));
+
+                Console.WriteLine("  谓词名（资源管理器据此调用命令）:");
+                string compressVerb = ReadVerb(getCommandString, menuObj, 0x8000);
+                string extractVerb = ReadVerb(getCommandString, menuObj, 0x8001);
+
+                Console.WriteLine("    压缩项 id=0x8000 -> " + compressVerb);
+                Console.WriteLine("    解压项 id=0x8001 -> " + extractVerb);
+
+                if (string.IsNullOrEmpty(compressVerb) || string.IsNullOrEmpty(extractVerb))
+                {
+                    Console.WriteLine("    !! 谓词名为空，资源管理器无法按名调用");
+                    problems++;
+                }
+                else if (compressVerb == extractVerb)
+                {
+                    Console.WriteLine("    !! 两项谓词名相同 —— 点击都会被当成同一种操作");
+                    problems++;
+                }
+                else
+                {
+                    Console.WriteLine("    OK 两项谓词名不同");
+                }
             }
         }
 
         Console.WriteLine("");
         Console.WriteLine("TOTAL PROBLEMS: " + problems);
+        return 0;
+    }
+
+    // GCS_VERBW = 4，GCS_UNICODE = 0x4000
+    const uint GCS_VERBW = 4;
+    const uint GCS_UNICODE = 0x4000;
+
+    static string ReadVerb(GetCommandStringDelegate fn, IntPtr obj, uint id)
+    {
+        char[] buf = new char[128];
+        IntPtr buffer = Marshal.AllocHGlobal(buf.Length * 2);
+        try
+        {
+            for (int i = 0; i < buf.Length * 2; i++) Marshal.WriteByte(buffer, i, 0);
+            int hr = fn(obj, new UIntPtr(id), GCS_VERBW | GCS_UNICODE, IntPtr.Zero,
+                        buffer, (uint)(buf.Length * 2));
+            if (hr != 0) return "";
+            return Marshal.PtrToStringUni(buffer) ?? "";
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
     }
 }

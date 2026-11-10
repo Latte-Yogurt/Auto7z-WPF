@@ -22,6 +22,13 @@ class UiWidth
     [STAThread]
     static int Main(string[] a)
     {
+        if (a.Length < 3)
+        {
+            Console.WriteLine("用法: uiwidth.exe <报告输出目录> <Auto7z.exe 路径> <语言词典目录>");
+            Console.WriteLine("  检查三语文案在界面上的溢出与遮挡。");
+            return 2;
+        }
+
         string ws = a[0];
         string asmPath = a[1];
         string langDir = a[2];

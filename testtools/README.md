@@ -7,17 +7,115 @@
 ```powershell
 cd "<Auto7z Project>\testtools"
 
+python run_cs_probes.py        # 一键跑完 cs\ 下全部 C# 探针（推荐先跑这个）
 python run_regress.py          # 一键回归测试
 python run_system_test.py      # 一键系统测试
+python splitvol_test.py        # 分卷压缩 / 分卷解压专项
+python heuristic_probe.py      # 启发式探测（列可疑行为，不判失败）
 python run_bench.py            # 一键性能基准（不判失败，只做前后对比）
 ```
 
-前两个是测试套件，都支持 `--app <exe>` 指定被测程序、`--config Release` 换配置、
-`--keep` 保留临时目录（调试用）。退出码 0 = 全过，1 = 有失败项，2 = 环境不满足。
+### `run_cs_probes.py` —— C# 探针的统一入口
+
+`cs\` 下那 15 个 exe 各自要一串参数（dll 路径、CLSID、样本文件、输出目录……），
+逐个手敲既麻烦又容易传错。这个脚本自动定位被测程序、按各工具真正需要的参数调起来，
+最后打印一张表：
+
+```
+ 工具            结果       说明
+--------------------------------------------------------------------------
+ langcheck     [通过]     系统语言 → 界面语言的映射
+ shellcheck    [通过]     组件自检：菜单项数与谓词名
+ menuprobe     [通过]     点击槽位分派：压缩/解压 × 两种调用形态
+ ...
+--------------------------------------------------------------------------
+ 合计 15 项：通过/完成 15，失败 0，跳过 0
+```
+
+```powershell
+python run_cs_probes.py                 # 默认用 bin\Debug
+python run_cs_probes.py --config Release
+python run_cs_probes.py --app <Auto7z.exe 完整路径>
+python run_cs_probes.py --verbose       # 连每个工具的原始输出一起打印
+```
+
+退出码 0 = 全通过，1 = 有失败项，2 = 找不到被测程序（脚本会告诉你要先构建什么）。
+
+**单独跑某一个 exe 也可以。** 不带参数时它们都会打印自己的用法并以退出码 2 结束，
+不会抛 `IndexOutOfRangeException`：
+
+```powershell
+& "cs\shellcheck\shellcheck.exe"
+# 用法: shellcheck.exe <Auto7zShell.dll> <CLSID> [样本文件]
+#   组件自检：建类工厂、建菜单、读菜单项文字与谓词名。
+```
+
+前四个是测试套件，都支持 `--app <exe>` 指定被测程序、`--config Release` 换配置、
+`--keep` 保留临时目录（调试用）。退出码 0 = 全过，1 = 有失败项 / 有可疑项，2 = 环境不满足。
 `run_bench.py` 是性能基准，参数是 `--app` / `--baseline` / `--keep`，不判失败。
 
+四个套件都带 **`--clear-config`**（开跑前清空配置，让产品从默认值起跑）与
+**`--purge-portable`**（删掉 exe 旁的便携数据目录）。
+之所以需要后者：只要 exe 旁边存在 `.config` 目录，产品就判定自己是便携版、
+**完全无视** `%LOCALAPPDATA%` 那份配置 —— 测试改了半天其实改的是另一份。
+
+### 配置是「链式」的：只在整条链跑完后还原一次
+
+以前每个套件各自「开始时快照、结束时还原」。这个做法有个致命缺陷：**B 的快照取自
+A 改完之后的状态** —— 只要有一个套件异常退出没还原，污染就被后一个套件当成"原始配置"
+永久固化下来，越跑越偏。实测踩过：连跑几轮之后 `CompressionLevel` 从 `Ultra` 变成 `Store`、
+`GenerateSHA256` 从 `True` 变成 `False`，而每个套件都声称"已还原"。
+
+现在改成跨进程的链式会话（`config_guard.ConfigGuard.join_chain` / `leave_chain`）：
+
+| 时机 | 行为 |
+|---|---|
+| 第一个套件进入 | 把**真正的原始配置**字节（base64）写进 `%TEMP%\Auto7zTest_config_chain.json` |
+| 后续套件进入 | 只登记自己的 pid，**绝不覆盖**那份原始快照 |
+| 某个套件退出 | 把自己从成员表里摘掉；表里还有人就不还原 |
+| 最后一个退出 | 还原原始配置并删掉链文件 |
+
+这样两个常见场景都正确：
+
+- **嵌套**（`run_system_test.py` 内部以子进程调用 `splitvol_test.py`）：子进程退出时不还原，
+  由父进程统一收尾。这条已专门验证。
+- **并发**：多个套件同时跑时，只有真正最后离开的那个负责还原。
+
+查看链状态：链文件存在说明还有套件在跑；不存在说明已收尾。
+
+### 四个套件共用同一个互斥体
+
+四个套件驱动的是**同一个单实例产品**，所以互斥体必须共用一个名字（`Auto7zTest_shared`）。
+名字各不相同等于没有保护 —— 两个套件能同时拿到各自的锁，然后一起抢产品的单实例，
+把任务互相交接过去。实测并行跑出过 23 项假失败。
+
+第二个套件被拒绝时会明确打印「已有另一份 Auto7z 测试正在跑」并以退出码 2 结束。
+
+**但共用互斥体带来一个必须处理的副作用：嵌套调用会死锁。**
+
+`run_system_test.py` 会以子进程方式调用 `splitvol_test.py`。父进程持有互斥体时，
+子进程去抢同名互斥体必然失败、直接退出 —— 分卷那项就永远跑不成，而且看起来像"环境不满足"。
+所以父进程启动子进程时传一个环境变量声明已持有：
+
+```python
+subprocess.run([sys.executable, "splitvol_test.py", "--app", app],
+               env=child_env_with_inherited_checkout())   # 设 AUTO7Z_TEST_CHECKOUT_INHERITED=1
+```
+
+子进程看到该变量就跳过抢锁（`claim_checkout()` 返回占位句柄 `0`，`release_checkout` 对它不做事）。
+**这个标记只用于嵌套**，不要拿它绕过并行保护。
+
+三种场景均已实测：
+
+| 场景 | 期望 | 实测 |
+|---|---|---|
+| 串行（四套依次） | 全部可跑 | 全绿，配置未漂移 |
+| 嵌套（父调子） | 子进程能跑 | 分卷项通过，未被误拒 |
+| 并行（同时两个） | 第二个被拒 | 退出码 2 + 明确提示 |
+
+
 - **回归**（`run_regress.py`）：主回归 T01–T22 + 静态检查 + 命名/region/行为/防护检查 + 词典一致性 + 注册契约 + 改名残留 + 删除守卫运行时验证 + 结果颜色契约运行时验证 + **本项目计算服务运行时验证** + 幽灵注册检查 + **死代码审查**（共 14 项）
-- **系统**（`run_system_test.py`）：命令行模式、加密包密码交互、多文件 Y/N、外壳扩展、界面检查（共 15 项）
+- **系统**（`run_system_test.py`）：命令行模式、加密包密码交互、多文件 Y/N、分卷压缩/解压、外壳扩展、界面检查（共 18 项）
 
 跑完会自动清理临时目录，删除带白名单校验（见下面的「临时目录与删除边界」）。
 
@@ -27,10 +125,14 @@ python run_bench.py            # 一键性能基准（不判失败，只做前�
 testtools/
 ├── README.md              本文件
 ├── COVERAGE.md            覆盖维度台账（逐轮追加，见文末）
+├── run_cs_probes.py       一键跑完 cs\ 下全部 C# 探针（15 项，带结果表）
 ├── run_regress.py         一键回归测试（14 项）
-├── run_system_test.py     一键系统测试（15 项）
+├── run_system_test.py     一键系统测试（18 项）
 ├── run_bench.py           一键性能基准（不判失败）
 ├── safe_ops.py            临时目录与安全删除（白名单校验）
+├── config_guard.py        配置隔离：清空 / 还原真实配置、单实例闸门、便携配置检测
+├── splitvol_test.py       分卷压缩 / 分卷解压专项（三种模式对分卷的处理，48 项）
+├── heuristic_probe.py     启发式探测（找不符合文档契约的行为，30 项，不判失败只列可疑）
 ├── cs_check.py            静态检查：命名类型一致性、文档标签、路径边界、空 catch
 ├── namecheck.py           命名风格一致性：字段/属性/方法/局部变量各自风格
 ├── regioncheck.py         region 结构：配对、嵌套 ≤1、跨度 ≤150 行
@@ -60,9 +162,14 @@ testtools/
     ├── shellcheck/        外壳扩展自检：建类工厂、建菜单、读菜单项文字
     ├── scopeprobe/        外壳扩展作用范围：哪些目标该出现菜单项
     ├── dataprobe/         完整链路：Initialize → InvokeCommand → 真的产出压缩包
+    ├── menuprobe/         点击槽位分派：ansi / unicode-null 两种调用形态下的模式开关
     ├── iconprobe/         菜单图标：位图在不在、有没有内容
     └── langcheck/         系统语言 → 界面语言的映射
 ```
+
+这 15 个 exe 都遵守同一条约定：**不带参数时打印用法并返回退出码 2**，不会抛
+`IndexOutOfRangeException`。想一次性跑完并看到汇总表，用 `python run_cs_probes.py`；
+想单独跑某一个，直接执行它的 exe 就会看到该填哪些参数。
 
 ## 编译 C# 检查工具
 
@@ -146,6 +253,21 @@ python namecheck.py "<源码目录>"              # 查任意一份（变异测�
 
 `Auto7zViewModel.SkipShellMenuSync` 就是给这件事留的开关（默认 false = 正常行为）。
 **它包在 `#if DEBUG` 里，只在 Debug 构建中存在** —— 见下一节。
+
+### 便携状态怎么判定（探针容易在这里做错）
+
+便携与否**不是配置里的键**，而是磁盘事实：`程序目录\.config\` 存在即为便携。
+旧版本写在 `Auto7z.json` 里的 `IsPortable` 已不再被读取；文件里残留该键不影响使用，也不需要清理。
+
+`cs\portable\portable.cs` 因此有两条硬性要求，违反任何一条结论都不可信：
+
+| 要求 | 为什么 |
+|---|---|
+| 便携根要按**入口程序集**（`portable.exe` 自己）算，不能按被测的 `Auto7z.exe` 位置算 | 产品用的是 `Assembly.GetEntryAssembly().Location`。两者位置不同（探针在 `testtools\cs\portable`，被测程序在 `bin\Debug`），按 `asmPath` 算会去检查另一个目录 —— 曾因此误报「切回后便携目录还在」 |
+| 断言只看 `IsPortable`、`DataDirectory` 与目录是否存在 | 配置里已经没有这个键，断言它必然变成假失败 |
+
+另外提醒：探针会**清空并重建 `%LOCALAPPDATA%\Auto7z`** 来准备夹具，所以别在它之后立刻跑别的测试 ——
+7-Zip 组件会跟着没掉，表现为「找不到 7z 组件」。跑一次产品压缩即可让它自动重新释放。
 
 ---
 
@@ -377,6 +499,16 @@ python cs_check.py "<Auto7z_WPF源码目录>"      # 退出码 1 = 有未说明�
 
 右键菜单能不能出来，取决于几件事，工具分别查。
 
+**`Auto7zShell.dll` 不在产物目录时，`run_system_test.py` 会自己构建并部署**（见 `ensure_shell_dll`）：
+先调 `buildtool.bat` 编出 `buildtool.exe`，再用它编组件（自动探测 VS 2022 的 `vcvars64.bat`），
+最后把 `Auto7zShell\build\Auto7zShell.dll` 拷到主程序旁边。
+
+这条能力是补上的，不是本来就有的。原先的写法是「找不到 DLL 就跳过」，
+结果菜单项、作用范围、图标、完整链路这四项**长期没有真正执行过** ——
+外壳扩展就在工程里，构建它只要一条命令，跳过反而给回归留了盲区。
+实测：补齐之后，回归里那项「系统里无右键菜单残留注册」也随之从失败转为通过，
+因为注销动作终于有了真实的 DLL 可调。
+
 工具已经编译成二进制放在各自目录里（`cs\shellcheck\shellcheck.exe`），
 不用现编。要重新编译就跑 `python cs\build_all.py`。
 
@@ -398,7 +530,19 @@ python check_reg.py
 
 # 5) 菜单图标
 & "cs\iconprobe\iconprobe.exe" "$bin\Auto7zShell.dll" $clsid "$env:TEMP\t.txt"
+
+# 6) 点击槽位分派: 点压缩必须 -z, 点解压必须 -uz
+& "cs\menuprobe\menuprobe.exe" --style ansi         "$bin\Auto7zShell.dll" $clsid extract "$env:TEMP\t.txt"
+& "cs\menuprobe\menuprobe.exe" --style unicode-null "$bin\Auto7zShell.dll" $clsid extract "$env:TEMP\t.txt"
 ```
+
+`menuprobe` 末行固定输出 `MODE=<开关>`，便于脚本断言。
+
+**为什么需要两种 `--style`**：资源管理器不保证 `lpVerbW` 有值。它可能置了
+`CMIC_MASK_UNICODE`，却只填 ANSI 的 `lpVerb`。组件若不特判 `lpVerbW == NULL`，
+`LOWORD(NULL)` 会等于 0，被当成「压缩」槽 —— 于是**点解压却执行压缩**，
+而 `InvokeCommand` 照样返回 `S_OK`，日志与子进程全都正常。这种形态 `dataprobe` 测不到，
+因为它只构造 `fMask = 0`。
 
 这些工具都要 `Auto7zShell.dll` 跟 `Auto7z.exe` 在同一个目录（`$bin`），菜单图标要从主程序取。
 
@@ -497,6 +641,11 @@ python check_reg.py
 - **入口分成两个 exe**：`Auto7z.exe` 只做命令行（不带参数时打印用法并以退出码 2 结束），
   `Auto7zGUI.exe` 只做图形（双击 / 开始菜单 / 右键 / 拖拽）。
   `run_regress.py` 与 `shellproto` 已按入口选 exe：需要「启动一次让它重建配置」的用例走图形入口。
+
+  **但带开关参数时两个入口走同一条命令行管道**：图形入口会先 `AttachConsole` 借到父控制台，
+  再执行与命令行入口完全相同的 `RunConsolePipeline`。所以测开关行为时两个 exe 可以直接互换——
+  这正是「命令行语义只有一处实现」的验证方式（见 `heuristic_probe.py` 里对 `-X` 的双入口对照）。
+  借不到控制台时（双击启动）字面输出会落空，但退出码依然正确。
 - **命令行模式不弹界面**：多文件压缩的「是否合并」改成在控制台里问，
   读不到输入时按「合并」处理，不会卡住。回归脚本用 `stdin=DEVNULL` 断开输入。
   同理，命令行模式**失败时也只往控制台写一行文字，不弹窗**。
@@ -518,6 +667,10 @@ python check_reg.py
 - 测试前先清掉 `%LOCALAPPDATA%\Auto7z\7-Zip` 里的假组件：
   假组件会让 7z.exe 报「不支持的 16 位应用程序」。
   应用已能自愈（组件大小与资源不符会自动重新释放），但测试拿到的是失败结论。
+- **7-Zip 组件会被别的测试清空**：回归里的便携模式测试会清掉数据目录，
+  组件跟着一起没掉。`splitvol_test.py` 现在会先跑一次无足轻重的压缩让它自行重新释放
+  （缺失时你会在输出里看到「组件缺失，先跑一次任务」），不再直接报错退出。
+  其它脚本如果也依赖组件，请照这个模式加一次预热，别让人误判成产品缺陷。
 - `regress.py` 的 `close_gracefully` 会先等程序自己结束；
   还在跑说明是界面模式，才发 WM_CLOSE 让它保存配置再退。
 
@@ -529,7 +682,7 @@ python check_reg.py
 1. **资源管理器右键菜单** —— 右键文件看是否出现「用 Auto7z 压缩 / 用 Auto7z 解压」
 2. **多选** —— 选中 3 个文件点「用 Auto7z 压缩」，应只开一个进程，合成一个包
 3. **UAC 提权** —— 跑 `Auto7z.exe -r` 是否弹出 UAC，确认后注册是否成功
-4. **便携模式** —— 勾选便携模式，数据目录应搬到程序旁的 `.config\Auto7z`，右键菜单应消失；取消后应搬回并恢复注册
+4. **便携模式** —— 勾选便携模式，数据目录应搬到程序旁的 `.config\Auto7z`，右键菜单应消失；取消后应搬回并恢复注册，且 `.config` 被删除（否则下次启动会被判回便携）
 5. **交互问答** —— 命令行模式读不到输入时默认合并，确认这符合预期
 6. **单实例** —— Auto7z 开着时再右键，文件应交给已有窗口排队处理
 7. **右键菜单模式不弹主窗口** —— 右键压缩时只应出现小进度窗口，不应冒出主窗口

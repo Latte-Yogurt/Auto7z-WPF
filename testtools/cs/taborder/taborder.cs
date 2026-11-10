@@ -22,6 +22,13 @@ class TabOrder
     [STAThread]
     static int Main(string[] a)
     {
+        if (a.Length < 3)
+        {
+            Console.WriteLine("用法: taborder.exe <报告输出目录> <Auto7z.exe 路径> <XAML 目录>");
+            Console.WriteLine("  检查 Tab 顺序：静态 TabIndex 与运行时可达性。");
+            return 2;
+        }
+
         string ws = a[0];
         string asmPath = a[1];
         string xamlDir = a[2];

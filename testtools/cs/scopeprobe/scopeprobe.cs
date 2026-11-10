@@ -179,14 +179,21 @@ class ScopeProbe
         }
     }
 
-    static void Main(string[] args)
+    static int Main(string[] args)
     {
+        if (args.Length < 2)
+        {
+            Console.WriteLine("用法: scopeprobe.exe <Auto7zShell.dll> <CLSID> [临时目录]");
+            Console.WriteLine("  检查作用范围：哪些目标该出现菜单项、哪些不该。");
+            return 2;
+        }
+
         string dll = args[0];
         string clsid = args[1];
         string temp = args.Length > 2 ? args[2] : System.IO.Path.GetTempPath();
 
         IntPtr module = LoadLibrary(dll);
-        if (module == IntPtr.Zero) { Console.WriteLine("LoadLibrary 失败"); return; }
+        if (module == IntPtr.Zero) { Console.WriteLine("LoadLibrary 失败: " + dll); return 3; }
 
         string realFile = System.IO.Path.Combine(temp, "scope_probe.txt");
         System.IO.File.WriteAllText(realFile, "测试");
@@ -205,5 +212,6 @@ class ScopeProbe
 
         Console.WriteLine("");
         Console.WriteLine("TOTAL PROBLEMS: " + problems);
+        return 0;
     }
 }

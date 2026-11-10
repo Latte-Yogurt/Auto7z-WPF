@@ -16,6 +16,13 @@ class Verify
     [STAThread]
     static int Main(string[] a)
     {
+        if (a.Length < 2)
+        {
+            Console.WriteLine("用法: verify.exe <报告输出目录> <Auto7z.exe 路径>");
+            Console.WriteLine("  检查对话框按钮文字、居中、提示切换。");
+            return 2;
+        }
+
         lp = Path.Combine(a[0], "verify.txt");
         w = new StreamWriter(lp, false, Encoding.UTF8);
         w.AutoFlush = true;

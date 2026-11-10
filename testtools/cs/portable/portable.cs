@@ -13,6 +13,14 @@ class Portable
 
     static int Main(string[] a)
     {
+        if (a.Length < 2)
+        {
+            Console.WriteLine("用法: portable.exe <报告输出目录> <Auto7z.exe 路径>");
+            Console.WriteLine("  验证切到便携模式、切回普通模式，以及取消后 .config 是否被删。");
+            Console.WriteLine("  需要 Debug 构建（依赖 SkipShellMenuSync 跳过注册，避免弹 UAC）。");
+            return 2;
+        }
+
         string ws = a[0];
         string asmPath = a[1];
 
@@ -43,11 +51,19 @@ class Portable
 
         var isPortable = pathsType.GetProperty("IsPortable", BindingFlags.Public | BindingFlags.Static);
         var dataDir = pathsType.GetProperty("DataDirectory", BindingFlags.Public | BindingFlags.Static);
-        var configPath = pathsType.GetProperty("ConfigFilePath", BindingFlags.Public | BindingFlags.Static);
+        var detectPortable = pathsType.GetMethod("DetectPortableFromDisk",
+            BindingFlags.Public | BindingFlags.Static);
+        int problems = 0;
 
         string localDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Auto7z");
-        string programDir = Path.GetDirectoryName(asmPath);
+
+        // 便携根必须按「入口程序集」算，而不是按被测的 Auto7z.exe 位置算。
+        // 产品里 AppPaths.GetProgramDirectory() 用的就是 Assembly.GetEntryAssembly().Location，
+        // 而本探针的入口是 portable.exe 自己 —— 两者位置不同（探针在 testtools\cs\portable，
+        // 被测程序在 bin\Debug）。按 asmPath 算会去检查另一个目录，结论完全不可信。
+        string programDir = Path.GetDirectoryName(
+            System.Reflection.Assembly.GetEntryAssembly().Location);
         string portableRoot = Path.Combine(programDir, ".config");
         string portableDir = Path.Combine(portableRoot, "Auto7z");
 
@@ -77,7 +93,7 @@ class Portable
         setPortable.Invoke(vm, new object[] { true });
         L("  IsPortable = " + isPortable.GetValue(null, null));
         L("  DataDirectory = " + dataDir.GetValue(null, null));
-        L("  配置里的 IsPortable = " + ReadPortable((string)configPath.GetValue(null, null)));
+        L("  便携目录在磁盘上 = " + Directory.Exists(portableDir));
         L("  普通目录还在 = " + Directory.Exists(localDir));
         L("  便携根目录存在 = " + Directory.Exists(portableRoot));
         L("  便携目录内容:");
@@ -88,19 +104,52 @@ class Portable
         setPortable.Invoke(vm, new object[] { false });
         L("  IsPortable = " + isPortable.GetValue(null, null));
         L("  DataDirectory = " + dataDir.GetValue(null, null));
-        L("  配置里的 IsPortable = " + ReadPortable((string)configPath.GetValue(null, null)));
-        L("  便携目录还在 = " + Directory.Exists(portableDir));
+        L("  便携目录在磁盘上 = " + Directory.Exists(portableDir));
         L("  便携根目录还在 = " + Directory.Exists(portableRoot));
         L("  普通目录内容:");
         DumpTree(localDir);
         L("");
 
+        // 关键断言一：便携判定看的是 .config 目录本身，不是它下面的 Auto7z。
+        // 所以「取消便携」必须真的把 .config 删掉，否则下次启动又被判成便携、
+        // 数据被搬回程序目录 —— 用户会发现便携模式取消不掉。
+        bool cancelledClean = !Directory.Exists(portableRoot);
+        L("### 取消便携后 .config 已删除 = " + cancelledClean);
+        if (cancelledClean)
+        {
+            L("  OK：下次启动会判定为非便携");
+        }
+        else
+        {
+            L("  !! .config 仍存在，下次启动会被判回便携模式");
+            problems++;
+        }
+
+        // 关键断言二：只留一个空 .config、没有 Auto7z 子目录，必须仍判为便携。
+        // 这是「把程序拷到移动盘、旁边留个空 .config」的自然用法；
+        // 程序没运行时不会有人替它建 Auto7z 子目录。
+        L("### 只有空 .config 时的判定");
+        Directory.CreateDirectory(portableRoot);
+        bool emptyPortable = (bool)detectPortable.Invoke(null, null);
+        L("  DetectPortableFromDisk = " + emptyPortable);
+        if (emptyPortable)
+        {
+            L("  OK：空 .config 即视为便携");
+        }
+        else
+        {
+            L("  !! 空 .config 未被判为便携，用户拷走后数据仍写进 %LOCALAPPDATA%");
+            problems++;
+        }
+        try { Directory.Delete(portableRoot, true); } catch { }
+        L("");
+
         L("### 收尾：检查右键菜单注册");
         L("  系统里没有右键菜单注册（注册同步已被跳过），无需注销（不会弹 UAC）");
         L("");
-
+        L("TOTAL PROBLEMS: " + problems);
         L("DONE");
-        return 0;
+        return problems == 0 ? 0 : 1;
     }
 
     static void PrepareLocal(string localDir)
@@ -132,45 +181,5 @@ class Portable
             L("    " + f.Substring(root.Length).TrimStart('\\'));
         foreach (string d in Directory.GetDirectories(root, "*", SearchOption.AllDirectories))
             L("    [DIR] " + d.Substring(root.Length).TrimStart('\\'));
-    }
-
-    static string ReadPortable(string configPath)
-    {
-        if (!File.Exists(configPath)) return "(config not found)";
-        try
-        {
-            // 配置是标准 JSON。这里做最小解析而不是引 System.Text.Json：
-            // 探针是独立 exe，不该为了读一个键带进额外的依赖。
-            string text = File.ReadAllText(configPath, Encoding.UTF8);
-            int key = text.IndexOf("\"IsPortable\"", StringComparison.Ordinal);
-            if (key < 0) return "(key missing)";
-
-            int colon = text.IndexOf(':', key);
-            if (colon < 0) return "(key missing)";
-
-            int start = colon + 1;
-            while (start < text.Length && (text[start] == ' ' || text[start] == '\t' ||
-                                           text[start] == '\r' || text[start] == '\n'))
-            {
-                start++;
-            }
-
-            // 值可能是原生 true/false，也可能被手工写成带引号的 "True"
-            if (start < text.Length && text[start] == '"')
-            {
-                int end = text.IndexOf('"', start + 1);
-                return end < 0 ? "(unterminated)" : text.Substring(start + 1, end - start - 1);
-            }
-
-            int stop = start;
-            while (stop < text.Length && text[stop] != ',' && text[stop] != '}' &&
-                   text[stop] != '\r' && text[stop] != '\n')
-            {
-                stop++;
-            }
-
-            return text.Substring(start, stop - start).Trim();
-        }
-        catch (Exception e) { return "read failed: " + e.Message; }
     }
 }
