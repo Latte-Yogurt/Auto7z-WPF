@@ -23,6 +23,16 @@ namespace Auto7z_WPF.Services
         #endregion
 
         #region 便携模式开关
+        // 便携与否只由「程序目录旁的数据目录存不存在」决定，配置里不再存这个键。
+        //
+        // 为什么不再用 IsPortable 键：配置键只是某一次的记录，而目录是磁盘上的事实。
+        // 两者一旦不一致就会互相矛盾 —— 例如配置写着 IsPortable=false、而 .config 里
+        // 确有一份配置，程序该听谁的？听配置就会把数据目录指向一个空位置、把真正
+        // 在用的那份配置晾在一边（实测踩过：两处都有配置时产品行为完全不可预测）。
+        // 改成「文件在哪就是哪」之后，同一时刻只可能有一个数据目录，矛盾无从产生。
+        // 这是 Keypirinha / Handy / VS Code 一类便携程序的通行做法：
+        // 启动时看程序目录旁有没有数据目录（或 portable 标记），有才跑便携。
+        //
         // 切换模式要连带重置日志文件句柄：日志路径跟着数据目录走，
         // 不重置的话后续日志还会继续写进旧模式那棵树。
         public static bool IsPortable
@@ -40,6 +50,30 @@ namespace Auto7z_WPF.Services
                 }
 
                 if (changed) LogService.ResetLogFiles();
+            }
+        }
+
+        /// <summary>
+        /// 按磁盘事实探测是否处于便携模式：程序目录旁存在 .config 目录即为便携。
+        ///
+        /// 判据是 .config 目录本身，而不是它下面的 Auto7z 数据目录：程序没运行时
+        /// 不会有人替它建 Auto7z 子目录，「把程序拷到移动盘、旁边留个空的 .config」
+        /// 是最自然的便携打包方式。只认 Auto7z 子目录的话，这份空 .config 会被无视，
+        /// 程序照常读 %LOCALAPPDATA%，用户以为拷走的东西其实没跟着走。
+        ///
+        /// 代价是「取消便携」必须真的把 .config 删掉，否则下次启动又会被判成便携 ——
+        /// 这一步由 ViewModel 的 RemoveEmptyDirectory 负责，两者是一对契约。
+        /// </summary>
+        public static bool DetectPortableFromDisk()
+        {
+            try
+            {
+                return Directory.Exists(GetPortableRootDirectory());
+            }
+            catch
+            {
+                // 探测本身失败时按「不是便携」处理：普通模式才是不会有副作用的那一侧。
+                return false;
             }
         }
         #endregion

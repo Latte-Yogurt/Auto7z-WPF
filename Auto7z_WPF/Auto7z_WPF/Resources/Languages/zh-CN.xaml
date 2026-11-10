@@ -52,6 +52,7 @@
     <sys:String x:Key="AutoSaveCheckBox">程序关闭时自动保存设置</sys:String>
     <sys:String x:Key="Log_PortableSwitched">已切换到{0}，数据目录：{1}</sys:String>
     <sys:String x:Key="Log_PortableSwitchFailed">切换便携模式失败：{0}</sys:String>
+    <sys:String x:Key="Log_PortableRootNotEmpty">已切到普通模式，但 {0} 里还有其它文件，未删除；下次启动仍会被判为便携模式</sys:String>
     <sys:String x:Key="Err_PortableMoveFailed">切换{0}失败：数据目录没能移动</sys:String>
     <sys:String x:Key="Tip_Portable">便携模式：把配置、组件与日志都放在程序目录的 .config\Auto7z 下，整个程序可以随身携带。取消勾选则移回 %LOCALAPPDATA%\Auto7z。</sys:String>
     <sys:String x:Key="PortableCheckBox">便携模式</sys:String>
@@ -96,6 +97,8 @@
     <sys:String x:Key="Archive_MergedNamePattern">{0} 等 {1} 个</sys:String>
     <sys:String x:Key="Log_InstallDirNotWritable">程序所在目录不可写（不影响运行，组件与配置均写入 %LOCALAPPDATA%\Auto7z）：{0}</sys:String>
     <sys:String x:Key="Log_PathsNotFound">传入的路径均不存在或不可访问：{0}</sys:String>
+    <sys:String x:Key="Log_SplitSetIncomplete">分卷不完整，首卷缺失，已跳过：{0}</sys:String>
+    <sys:String x:Key="Warn_SplitSetIncomplete">分卷缺少首卷，已跳过：{0}</sys:String>
     <sys:String x:Key="Log_BusyIgnore">已有任务正在执行，忽略本次传入的 {0} 个项目</sys:String>
     <sys:String x:Key="Log_ReceivedItems">接收 {0} 个项目：{1}</sys:String>
     <sys:String x:Key="Log_UnknownFormat">配置中的压缩格式无法识别，已按 7z 处理：{0}</sys:String>
@@ -162,5 +165,6 @@
     <sys:String x:Key="Console_UnregisterOk">右键菜单已注销</sys:String>
     <sys:String x:Key="Console_UnregisterFailed">右键菜单注销失败</sys:String>
     <sys:String x:Key="Console_ShellDllMissing">找不到 Auto7zShell.dll，无法注册</sys:String>
+    <sys:String x:Key="Console_PortableNoShellMenu">便携模式下不注册右键菜单：拷走即可使用，程序不在系统里留痕</sys:String>
     <sys:String x:Key="Err_UnknownSwitch">无法识别的选项：{0}</sys:String>
 </ResourceDictionary>

@@ -27,6 +27,9 @@ using System.Windows;
 )]
 
 
-[assembly: AssemblyVersion("2.1.1.0")]
-[assembly: AssemblyFileVersion("2.1.1.0")]
+// 2.1.1 → 2.2.0：功能性变化（四个 P0 缺陷修复 + 三个 P0 热修 + 便携判定重构 +
+// 外壳扩展测试补全）。2.2.0 尚未发布，处在开发者内测阶段，热修直接并入本版，
+// 不另立修订号 —— 未发布的版本没有向后兼容包袱，把缺陷记在同一个版本里更清楚。
+[assembly: AssemblyVersion("2.2.0.0")]
+[assembly: AssemblyFileVersion("2.2.0.0")]
 [assembly: Guid("F5D3B688-37B2-4259-B9CE-C8B4B0E2E8CD")]

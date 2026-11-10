@@ -24,7 +24,8 @@ namespace Auto7z_WPF.Services
 
         public bool IsTopMost { get; set; } = false;
 
-        public bool IsPortable { get; set; } = false;
+        // 便携模式不在这里：它由「程序目录旁有没有 .config\Auto7z」这个磁盘事实决定，
+        // 不再是一条可以写进配置、并可能与实际目录自相矛盾的记录（见 AppPaths）。
 
         public RuntimeModePreset RuntimeMode { get; set; } = RuntimeModePreset.Balanced;
 

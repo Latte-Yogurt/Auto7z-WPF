@@ -23,6 +23,7 @@
     <sys:String x:Key="AutoSaveCheckBox">關閉程式時自動儲存設定</sys:String>
     <sys:String x:Key="Log_PortableSwitched">已切換到{0}，資料目錄：{1}</sys:String>
     <sys:String x:Key="Log_PortableSwitchFailed">切換可攜模式失敗：{0}</sys:String>
+    <sys:String x:Key="Log_PortableRootNotEmpty">已切到普通模式，但 {0} 裡還有其他檔案，未刪除；下次啟動仍會被判定為可攜模式</sys:String>
     <sys:String x:Key="Err_PortableMoveFailed">切換{0}失敗：資料目錄沒能移動</sys:String>
     <sys:String x:Key="Tip_Portable">便攜模式：把設定、元件與日誌都放在程式目錄的 .config\Auto7z 下，整個程式可以隨身攜帶。取消勾選則移回 %LOCALAPPDATA%\Auto7z。</sys:String>
     <sys:String x:Key="PortableCheckBox">便攜模式</sys:String>
@@ -96,6 +97,8 @@
     <sys:String x:Key="Archive_MergedNamePattern">{0} 等 {1} 個</sys:String>
     <sys:String x:Key="Log_InstallDirNotWritable">程式所在目錄不可寫（不影響執行，元件與設定均寫入 %LOCALAPPDATA%\Auto7z）：{0}</sys:String>
     <sys:String x:Key="Log_PathsNotFound">傳入的路徑均不存在或無法存取：{0}</sys:String>
+    <sys:String x:Key="Log_SplitSetIncomplete">分卷不完整，缺少首卷，已略過：{0}</sys:String>
+    <sys:String x:Key="Warn_SplitSetIncomplete">分卷缺少首卷，已略過：{0}</sys:String>
     <sys:String x:Key="Log_BusyIgnore">已有工作在執行，忽略本次傳入的 {0} 個項目</sys:String>
     <sys:String x:Key="Log_ReceivedItems">接收 {0} 個項目：{1}</sys:String>
     <sys:String x:Key="Log_UnknownFormat">設定中的壓縮格式無法辨識，已按 7z 處理：{0}</sys:String>
@@ -162,5 +165,6 @@
     <sys:String x:Key="Console_UnregisterOk">右鍵選單已取消註冊</sys:String>
     <sys:String x:Key="Console_UnregisterFailed">右鍵選單取消註冊失敗</sys:String>
     <sys:String x:Key="Console_ShellDllMissing">找不到 Auto7zShell.dll，無法註冊</sys:String>
+    <sys:String x:Key="Console_PortableNoShellMenu">可攜模式下不註冊右鍵選單：拷走即可使用，程式不在系統裡留痕</sys:String>
     <sys:String x:Key="Err_UnknownSwitch">無法辨識的選項：{0}</sys:String>
 </ResourceDictionary>

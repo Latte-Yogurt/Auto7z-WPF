@@ -45,17 +45,58 @@ namespace Auto7z_WPF
 
             ShellCommandService.Parse(e.Args, out List<string> paths, out string mode,
                 out bool register, out bool unregister, out bool help, out bool fromShell,
-                out string unknownSwitch);
+                out List<string> unknownSwitches);
 
-            // 两个可执行体的分工是编译期定死的：Auto7zGUI.exe 没有控制台，
-            // 也就没有「借父控制台」这回事；Auto7z.exe 才需要按启动方式决定接不接控制台。
+            // 两个可执行体由同一份源码编译，所以「命令行管道」这段逻辑在两边都存在。
+            // 差别只有一个：Auto7z.exe 是 Console 子系统，天然带控制台；
+            // Auto7zGUI.exe 没有控制台，需要先借到父进程（cmd / PowerShell）的那一块。
+            //
+            // 因此不必起子进程去"移交"，只要在进程内先把控制台准备好，再走同一条管道。
+            // 进程内路由的好处：没有第二个进程、没有参数转义、没有输出编码二次转录，
+            // 退出码也天然就是本进程的。
+            //
+            // 「带开关」未必是命令行语义 —— 外壳扩展传进来的参数长这样：
+            //     #映射名:字节数:事件名 -uz
+            // 也就是「共享内存路径 + 模式开关」。它当然带开关，但它要的是
+            // 无主窗口的小进度窗（ShellMenuTaskRunner），不是命令行管道。
+            //
+            // 所以正确判据是：来自外壳扩展（fromShell）或拖拽（dragAndDrop）一律走无主窗口流程，
+            // 只有「用户真的在敲命令」才算命令行语义。曾经漏掉这一条，导致右键菜单
+            // 既不出进度窗、又把模式开关当成普通开关塞进命令行管道，两个菜单项都变成压缩。
+
 #if GUI_ENTRY
+            // 图形入口的拖拽判据：有路径就算（父进程是 explorer 即拖拽；
+            // 从快捷方式带路径启动同样期望无主窗口流程）。
             bool dragAndDrop = paths.Count > 0;
-            ConsoleAttach.HideOwnConsoleWindow();
 #else
+            // 命令行入口：父进程是 explorer 才算拖拽 —— 用户自己敲命令时不该走无主窗口流程。
+            bool dragAndDrop = LaunchContext.IsDragAndDrop(paths.Count > 0);
+#endif
+
+            bool shellMenuSemantics = fromShell || dragAndDrop;
+
+            bool hasSwitch = unknownSwitches.Count > 0 || help || register || unregister
+                             || mode != null;
+
+            // 未知开关是例外：无论从哪来都要拒绝，不能让它悄悄变成一种模式。
+            bool mustRejectUnknown = unknownSwitches.Count > 0;
+
+#if GUI_ENTRY
+            // 图形入口：
+            //   - 外壳扩展 / 拖拽 → 无主窗口流程（不借控制台，也不开主窗口）
+            //   - 其余带开关      → 命令行管道（先借父控制台）
+            //   - 无参数          → 主窗口
+            bool consoleSemantics = mustRejectUnknown
+                                    || (!shellMenuSemantics && (hasSwitch || help || register || unregister));
+
+            if (consoleSemantics) ConsoleAttach.TryAttachToParent();
+            else ConsoleAttach.HideOwnConsoleWindow();
+#else
+            // 命令行入口：除了外壳扩展，其余一律命令行语义。
+            bool consoleSemantics = !shellMenuSemantics || mustRejectUnknown;
+
             // 拖拽进来的父进程是 explorer，它的控制台用户看不见；双击时本来也没有控制台。
             // 只有「用户自己敲命令」这一种才值得把父控制台接过来。
-            bool dragAndDrop = LaunchContext.IsDragAndDrop(paths.Count > 0);
             bool consoleMode = paths.Count > 0 && !fromShell && !dragAndDrop;
 
             if (consoleMode || help || register || unregister)
@@ -69,34 +110,21 @@ namespace Auto7z_WPF
             }
 #endif
 
-            #if !GUI_ENTRY
-            if (register || unregister || help)
-            {
-                RunCommandLineOnly(register, unregister, help);
-                return;
-            }
+            // 便携状态必须在任何会碰外壳扩展的分支之前定下来：
+            // -r / -ur 在下面几行就要用到，命令行任务也可能会去写语言键。
+            // 判据只看磁盘（程序目录旁有没有 .config\Auto7z），不读配置，避免自相矛盾。
+            AppPaths.IsPortable = AppPaths.DetectPortableFromDisk();
+            ShellRegistrationService.UnregisterQuietlyIfPortable();
 
-            // 拼错/未知的开关必须报出来并以退出码 2 结束：
-            // 静默忽略会让脚本把「参数写错了」误判成「任务成功」，那是比失败更坏的信号。
-            // 图形入口不认这些开关（`-h`/`-r`/`-ur` 都归 Auto7z.exe），所以只在这条编译分支里报。
-            if (unknownSwitch != null)
+            // 命令行语义一律在这条分支上处理 —— 两个入口共用，不再各写一份。
+            // 未知开关必须报错并以退出码 2 结束：静默忽略会让调用方把「参数写错」
+            // 误判成「任务成功」，那比失败更坏。
+            if (consoleSemantics)
             {
-                Console.WriteLine(EnumText.GetErrorText(
-                    "Err_UnknownSwitch", "无法识别的选项：{0}", unknownSwitch));
-                ShellRegistrationService.WriteUsage();
-                Shutdown(2);
+                RunConsolePipeline(paths.ToArray(), mode, register, unregister, help, fromShell,
+                    unknownSwitches, dragAndDrop);
                 return;
             }
-
-            // 命令行入口不再拉起主窗口：图形入口是 Auto7zGUI.exe，
-            // 这里只打印用法并以退出码 2 结束，脚本才分得清「没跑」和「跑失败」。
-            if (paths.Count == 0 && !fromShell)
-            {
-                ShellRegistrationService.WriteUsage();
-                Shutdown(2);
-                return;
-            }
-#endif
 
             LogService.CleanupOldLogs();
 
@@ -105,7 +133,8 @@ namespace Auto7z_WPF
             {
                 if (paths.Count > 0)
                 {
-                    bool handed = SingleInstanceService.SendToRunningInstance(paths.ToArray());
+                    // 带上模式：右键解压的 -uz 不能在交接这一步丢掉。
+                    bool handed = SingleInstanceService.SendToRunningInstance(paths.ToArray(), mode);
                     if (!handed)
                     {
                         // 已有实例还没把监听管道挂上，交接必然失败。
@@ -146,8 +175,39 @@ namespace Auto7z_WPF
             StartNormalMode();
         }
 
-        private void RunCommandLineOnly(bool register, bool unregister, bool help)
+        /// <summary>
+        /// 命令行管道的唯一实现，两个可执行体共用。
+        ///
+        /// 处理顺序与退出码契约严格对应：
+        ///   2 = 根本没跑（未知开关 / 参数缺失）
+        ///   0 = 用法打印成功，或任务全部成功
+        ///   1 = 任务跑了但失败或被取消
+        ///
+        /// 图形入口进入这里之前已经借到了父控制台，所以 Console.WriteLine 能落到用户的窗口里；
+        /// 借不到（双击启动、父进程是 explorer）时输出会落空，但退出码依旧正确 ——
+        /// 这正是脚本需要的那个信号。
+        /// </summary>
+        /// <param name="paths">解析出的待处理路径。</param>
+        /// <param name="mode">模式开关（-a / -z / -uz），未指定为 null。</param>
+        /// <param name="register">是否要求注册右键菜单。</param>
+        /// <param name="unregister">是否要求注销右键菜单。</param>
+        /// <param name="help">是否要求打印用法。</param>
+        /// <param name="fromShell">参数是否来自共享内存（右键菜单）。</param>
+        /// <param name="unknownSwitches">无法识别的开关，非空即拒绝。</param>
+        /// <param name="dragAndDrop">是否由 explorer 拖拽启动。</param>
+        private void RunConsolePipeline(string[] paths, string mode, bool register, bool unregister,
+            bool help, bool fromShell, List<string> unknownSwitches, bool dragAndDrop)
         {
+            // 一次把全部未知开关都报出来：只报第一个的话，用户改掉它还会再撞上下一个。
+            if (unknownSwitches.Count > 0)
+            {
+                Console.WriteLine(EnumText.GetErrorText(
+                    "Err_UnknownSwitch", "无法识别的选项：{0}", string.Join(" ", unknownSwitches)));
+                ShellRegistrationService.WriteUsage();
+                Shutdown(2);
+                return;
+            }
+
             if (help)
             {
                 ShellRegistrationService.WriteUsage();
@@ -170,6 +230,39 @@ namespace Auto7z_WPF
                 Shutdown();
                 return;
             }
+
+            // 只剩模式开关、没有路径：没有可处理的东西，按「根本没跑」处理。
+            if (paths.Length == 0 && !fromShell)
+            {
+                ShellRegistrationService.WriteUsage();
+                Shutdown(2);
+                return;
+            }
+
+            // 真正要干活之前的收尾：与主流程一致，先清旧日志、再拿单实例。
+            // 顺序不能反：RunFromCommandLine 结束时会对 _singleInstance 做 Dispose，
+            // 这里不先把它创建出来的话，命令行任务一跑完就会撞上空引用。
+            LogService.CleanupOldLogs();
+
+            _singleInstance = new SingleInstanceService();
+            if (!_singleInstance.TryAcquire())
+            {
+                // 交接必须带上模式开关：否则已在运行的实例会按自己的模式处理这批路径，
+                // 「右键解压」就会变成压缩。
+                bool handed = SingleInstanceService.SendToRunningInstance(paths, mode);
+                if (!handed)
+                {
+                    // 已有实例还没把监听管道挂上，交接必然失败。
+                    // 宁可自己接着做，也不能把用户选中的文件丢掉。
+                    RunFromCommandLine(paths, mode);
+                    return;
+                }
+
+                Shutdown();
+                return;
+            }
+
+            RunFromCommandLine(paths, mode);
         }
 
         private void RunFromCommandLine(string[] paths, string mode)
@@ -225,7 +318,11 @@ namespace Auto7z_WPF
 
             // 监听必须等主窗口建好再挂：第二个实例随时可能把文件列表送过来，
             // 而此时队列的接收方还不存在。
-            _singleInstance.StartListener(files => mainWindow.EnqueueFiles(files));
+            //
+            // 交接里带着模式：右键「解压」送进来的 -uz 必须在接收方也生效，
+            // 否则界面停在压缩模式时，这批路径会被压成包。
+            _singleInstance.StartListener(
+                (files, handedMode) => mainWindow.EnqueueFiles(files, handedMode));
         }
 
         private static OperationMode ParseMode(string mode)

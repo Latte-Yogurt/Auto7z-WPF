@@ -27,6 +27,37 @@ namespace Auto7z_WPF.Services
 
         public const string SwitchHelp = "-h";
 
+        /// <summary>
+        /// 合法的开关白名单。判断方式是「命中白名单才生效」，而不是「像开关且不在已知列表里就算未知」。
+        ///
+        /// 这两种写法的差别在边界上：
+        ///   - 白名单：/A、--help、-abc 之类一律是未知开关，会被告知并拒绝；
+        ///   - 反选法：解析器必须"猜"什么不算开关，一旦猜错就静默按路径处理。
+        /// 命令行的契约是「参数写错必须让调用方知道」，所以按白名单来。
+        /// </summary>
+        private static readonly string[] _knownSwitches =
+        {
+            SwitchAuto, SwitchZip, SwitchUnZip, SwitchRegister, SwitchUnRegister, SwitchHelp
+        };
+
+        /// <summary>
+        /// 参数是否命中白名单。大小写不敏感（README 承诺 <c>-A</c> 与 <c>-a</c> 等价）。
+        ///
+        /// 白名单只有 _knownSwitches 这一处定义，解析循环与外部校验都从这里查：
+        /// 新增或删除开关只需要改那张表，不必再分别修改「长得像开关」的各种判断。
+        /// </summary>
+        public static bool IsKnownSwitch(string arg)
+        {
+            if (string.IsNullOrWhiteSpace(arg)) return false;
+
+            foreach (string known in _knownSwitches)
+            {
+                if (string.Equals(arg, known, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+
+            return false;
+        }
+
         private ShellCommandService()
         {
         }
@@ -42,7 +73,7 @@ namespace Auto7z_WPF.Services
 
         public static void Parse(string[] args, out List<string> paths, out string mode,
             out bool register, out bool unregister, out bool help, out bool fromShell,
-            out string unknownSwitch)
+            out List<string> unknownSwitches)
         {
             // 先清零全部输出参数，调用方按 null 与 false 判断「本次没有指定」。
             paths = new List<string>();
@@ -51,7 +82,7 @@ namespace Auto7z_WPF.Services
             unregister = false;
             help = false;
             fromShell = false;
-            unknownSwitch = null;
+            unknownSwitches = new List<string>();
 
             if (args == null) return;
 
@@ -70,6 +101,8 @@ namespace Auto7z_WPF.Services
                     continue;
                 }
 
+                // 白名单命中才生效。这里逐一比对，未命中的一律不进 paths ——
+                // 是否算「未知开关」由下面的 LooksLikeSwitch 决定，避免把普通相对路径当开关。
                 if (string.Equals(arg, SwitchAuto, StringComparison.OrdinalIgnoreCase))
                 {
                     mode = SwitchAuto;
@@ -101,9 +134,22 @@ namespace Auto7z_WPF.Services
                     continue;
                 }
 
+                // 走到这里说明上面的分发没有命中。
+                // 先用白名单判一次：命中说明「是已知开关但没有对应的分发分支」，
+                // 那是代码缺陷（新增开关时漏改解析），不该静默当路径、更不该报成未知开关
+                // —— 那两种处理都会把维护错误伪装成用户输入错误，排查极其困难。
+                if (IsKnownSwitch(arg))
+                {
+                    unknownSwitches.Add(arg);
+                    continue;
+                }
+
+                // 未命中白名单：形如开关的一律按未知处理，并全部收集起来一次报出。
+                // 只报第一个的话，用户改掉一个还会再撞上下一个，反复试错。
+                // 磁盘上真有同名文件（名字恰好以 - 开头）时仍按路径处理，这是 README 的承诺。
                 if (LooksLikeSwitch(arg) && !ExistsOnDisk(arg))
                 {
-                    if (unknownSwitch == null) unknownSwitch = arg;
+                    unknownSwitches.Add(arg);
                     continue;
                 }
 
@@ -111,7 +157,12 @@ namespace Auto7z_WPF.Services
             }
         }
 
-        /// <summary>判断参数长得像开关：至少两个字符且以 - 或 / 开头。</summary>
+        /// <summary>
+        /// 判断参数长得像开关：至少两个字符且以 - 或 / 开头。
+        ///
+        /// 注意这里**不**做精确匹配 —— 精确匹配的结果交给白名单决定。
+        /// 本方法的职责只有一件事：区分「用户想写的开关」与「一个普通路径」。
+        /// </summary>
         private static bool LooksLikeSwitch(string arg)
         {
             return arg.Length > 1 && (arg[0] == '-' || arg[0] == '/');

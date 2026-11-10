@@ -61,6 +61,9 @@ namespace Auto7z_WPF
         private PendingFileBatch _pendingBatch = new PendingFileBatch(null);
         private CancellationTokenSource _cancellation;
 
+        // 批量解压时外层进度条已到达的百分比：只前进不回退，免得每套归档都从 0% 重来。
+        private int _batchReportedPercent;
+
         private ICommand _toggleModePanelCommand;
 
         private string _progressTextTemplate;
@@ -80,7 +83,9 @@ namespace Auto7z_WPF
 
         public Auto7zViewModel()
         {
-            AppPaths.IsPortable = DetectPortableMode();
+            // 便携与否由 AppPaths 按磁盘事实决定，不读配置里的键：配置可能自相矛盾，
+            // 而「数据目录在哪」只有一个答案。旧版本留下的 IsPortable 键在读取时会被剔除。
+            AppPaths.IsPortable = AppPaths.DetectPortableFromDisk();
 
             AppPaths.EnsureDataDirectory();
 
@@ -152,7 +157,8 @@ namespace Auto7z_WPF
             GenerateSHA256 = config.GenerateSHA256;
             MaxLevelCompress = config.MaxLevelCompress;
             IsTopMost = config.IsTopMost;
-            _isPortable = config.IsPortable || AppPaths.IsPortable;
+            // 便携状态以目录事实为准（构造函数已按磁盘探测过），不再从配置里读。
+            _isPortable = AppPaths.IsPortable;
             RuntimeMode = config.RuntimeMode;
             OutputPath = config.OutputPath;
             IsSolidMode = config.IsSolidMode;
@@ -168,46 +174,16 @@ namespace Auto7z_WPF
         }
 
 
-        private static bool DetectPortableMode()
-        {
-            try
-            {
-                string portableConfig = Path.Combine(
-                    AppPaths.GetPortableRootDirectory(), AppPaths.DataFolderName, AppPaths.ConfigFileName);
-                if (File.Exists(portableConfig)) return true;
-
-                string localConfig = Path.Combine(
-                    AppPaths.GetLocalRootDirectory(), AppPaths.DataFolderName, AppPaths.ConfigFileName);
-                if (!File.Exists(localConfig)) return false;
-
-                var values = JsonConfig.Parse(File.ReadAllText(localConfig));
-                if (values == null) return false;
-
-                if (values.TryGetValue("IsPortable", out string text) && bool.TryParse(text, out bool portable))
-                {
-                    return portable;
-                }
-
-                return false;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
         public bool SetPortableMode(bool portable)
         {
             if (portable == _isPortable) return true;
 
-            SavePortableSetting(portable);
-
+            // 先搬数据目录，再改状态：搬失败时磁盘与内存都还停在原模式，不会出现
+            // 「两边都有配置、程序却认为自己只在其中一边」的中间态。
             bool moved = portable ? MoveToPortable() : MoveToLocal();
 
             if (!moved)
             {
-                SavePortableSetting(_isPortable);
-                AppPaths.IsPortable = _isPortable;
                 ReportError(
                     EnumText.GetErrorText("Err_PortableMoveFailed", "切换{0}失败：数据目录没能移动", portable ? "便携模式" : "普通模式"));
                 return false;
@@ -219,6 +195,18 @@ namespace Auto7z_WPF
                 EnumText.GetErrorText("Log_PortableSwitched", "已切换到{0}，数据目录：{1}",
                     portable ? "便携模式" : "普通模式", AppPaths.DataDirectory),
                 LogService.ErrorLevel.Info);
+
+            // 取消便携之后要确认 .config 真的没了：便携判定看的就是这个目录，
+            // 它还留着的话下次启动会被判回便携、把数据又搬回来，等于取消不掉。
+            // 目录里还有别的文件时不能强删（不是本程序的东西），只能如实告警。
+            if (!portable && Directory.Exists(AppPaths.GetPortableRootDirectory()))
+            {
+                _logService.WriteLog(
+                    EnumText.GetErrorText("Log_PortableRootNotEmpty",
+                        "已切到普通模式，但 {0} 里还有其它文件，未删除；下次启动仍会被判为便携模式",
+                        AppPaths.GetPortableRootDirectory()),
+                    LogService.ErrorLevel.Warning);
+            }
 
 #if DEBUG
             if (SkipShellMenuSync) return true;
@@ -255,6 +243,14 @@ namespace Auto7z_WPF
         }
 
 
+        /// <summary>
+        /// 删掉一个空目录。
+        ///
+        /// 便携判定看的是 .config 目录本身（见 AppPaths.DetectPortableFromDisk），
+        /// 所以「取消便携」必须真的把这个目录删掉，否则下次启动又会被判成便携、把数据搬回来。
+        /// 目录里还有别的东西时不动它 —— 那些不是本程序的，删掉就是越权。
+        /// 这种情况下取消便携不彻底，日志里会留一条警告，见 Log_PortableRootNotEmpty。
+        /// </summary>
         private static void RemoveEmptyDirectory(string path)
         {
             try
@@ -370,18 +366,6 @@ namespace Auto7z_WPF
 
         #endregion
         #region 配置保存与关闭收尾
-        private void SavePortableSetting(bool portable)
-        {
-            try
-            {
-                _configService.Update("IsPortable", portable.ToString());
-            }
-            catch
-            {
-                // 写配置失败不影响本次切换，下次启动会按目录事实重新探测。
-            }
-        }
-
         public void SaveConfig()
         {
             var config = new AppConfig
@@ -395,7 +379,6 @@ namespace Auto7z_WPF
                 AutoSave = AutoSave,
                 MaxLevelCompress = MaxLevelCompress,
                 IsTopMost = IsTopMost,
-                IsPortable = _isPortable,
                 RuntimeMode = RuntimeMode,
                 OutputPath = OutputPath,
                 IsSolidMode = IsSolidMode,
@@ -836,11 +819,42 @@ namespace Auto7z_WPF
                 {
                     if (File.Exists(full))
                     {
-                        items.Add(PendingFile.CreateLazy(full, false));
+                        // 分卷归一化**只对「要解压」的场景成立**。
+                        //
+                        // 解压时 7-Zip 只认首卷，传 .021 进来必须换回 .001，
+                        // 否则一定会失败、或者同一套被重复解压。
+                        //
+                        // 但压缩时不能这么做：用户选中 .021 点「压缩」，要压缩的是
+                        // .021 这个文件本身。若在入口就把它改写成 .001，压出来的
+                        // 就成了首卷的内容 —— 表现就是「不管选哪一卷，最后都压了 .001」。
+                        // 压缩流程自己会按分卷归类（见 KeepWholeSplitSets），入口不该替它决定。
+                        bool adjustForExtract = ShouldNormalizeSplitVolume();
+
+                        string entry = (adjustForExtract && SevenZipService.IsSplitArchive(full))
+                            ? SevenZipService.ResolveFirstVolumePath(full)
+                            : full;
+
+                        items.Add(PendingFile.CreateLazy(entry, false));
                     }
                     else if (Directory.Exists(full))
                     {
                         items.Add(PendingFile.CreateLazy(full, true));
+                    }
+                    else if (SevenZipService.IsSplitArchive(full))
+                    {
+                        // 逻辑名（x.7z）在磁盘上并不存在，只有 x.7z.001 落地。
+                        // 这条只在解压语义下才有意义：压缩一个不存在的路径没有意义。
+                        // 只认 File.Exists 会把「界面上选中逻辑名」的输入整个挡掉，
+                        // 而 SevenZipService 里明明写了配套的 .001 回退。
+                        if (ShouldNormalizeSplitVolume())
+                        {
+                            items.Add(PendingFile.CreateLazy(
+                                SevenZipService.ResolveFirstVolumePath(full), false));
+                        }
+                        else
+                        {
+                            rejected++;
+                        }
                     }
                     else
                     {
@@ -863,6 +877,21 @@ namespace Auto7z_WPF
             _pendingBatch = new PendingFileBatch(items);
         }
 
+        /// <summary>
+        /// 当前操作是否应当把「续卷」归一化回首卷。
+        ///
+        /// 只有解压语义成立：7-Zip 解压只认 .001。
+        ///   - UnZip：明确解压，必须归一化。
+        ///   - Auto ：分卷会被判为归档走解压分支，入口先归一化可以让「多选整套分卷」
+        ///            只解一次；压缩分支不依赖这个归一化（它有自己的分卷归类）。
+        ///   - Zip  ：**绝不归一化**。用户选 .021 点压缩，压的就该是 .021。
+        /// 判断依据是侧栏的单选模式，与任务真正执行时的分派保持一致。
+        /// </summary>
+        private bool ShouldNormalizeSplitVolume()
+        {
+            return CurrentOperationMode != OperationMode.Zip;
+        }
+
 
         #endregion
         #region 等待式任务入口
@@ -881,6 +910,8 @@ namespace Auto7z_WPF
 
             IsBusy = true;
             LastTaskFailed = false;
+            // 新任务从零开始，批量进度条不能继承上一任的百分比。
+            _batchReportedPercent = 0;
             _cancellation = new CancellationTokenSource();
 
             Action<ProgressInfo> report = info =>
@@ -925,7 +956,7 @@ namespace Auto7z_WPF
 
         public void RunExtractAndWait(Action<ProgressInfo> externalReport)
         {
-            RunTaskAndWait(StartExtract, externalReport);
+            RunTaskAndWait(StartExtractAll, externalReport);
         }
 
         public void RunAutoDispatchAndWait()
@@ -954,9 +985,34 @@ namespace Auto7z_WPF
 
             var archives = new List<PendingFile>();
             var others = new List<PendingFile>();
+
+            // 一套分卷只在解压分支出现一次：全选 7 卷时，每一卷都满足 IsSplitArchive，
+            // 不去重就会把同一套包解 7 遍。键是逻辑名（x.7z），大小写不敏感。
+            var seenSplitSets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             foreach (var f in batch.Files)
             {
-                if (!f.IsDirectory && _sevenZipService.IsArchiveFile(f.Path)) archives.Add(f);
+                if (f.IsDirectory)
+                {
+                    others.Add(f);
+                    continue;
+                }
+
+                // 分卷要按「套」判断，不能按单卷看：续卷的魔数是压缩数据流，
+                // DetectByMagic 认不出 7z 头。只看单卷的话，同一套里的 .002…
+                // 会掉进压缩分支被重新压一遍 —— 既解不开原包，又多出一堆垃圾产物。
+                if (SevenZipService.IsSplitArchive(f.Path))
+                {
+                    string logical = SevenZipService.GetLogicalArchiveName(f.Path);
+                    if (!seenSplitSets.Add(logical)) continue;
+
+                    // 统一补成首卷：7-Zip 只认 .001，给它任意一卷都会失败。
+                    archives.Add(new PendingFile(
+                        SevenZipService.ResolveFirstVolumePath(f.Path), 0, false));
+                    continue;
+                }
+
+                if (_sevenZipService.IsArchiveFile(f.Path)) archives.Add(f);
                 else others.Add(f);
             }
 
@@ -984,19 +1040,98 @@ namespace Auto7z_WPF
                 LogService.ErrorLevel.Info);
 
             ExtractEach(archives, report);
-            CompressFiles(others, report);
+
+            // 压缩这一步会把剩下的重新打包：只剩一卷（缺卷）的分卷套留着也没用，
+            // 压进去只是一堆解不开的碎片，先剔掉再交给压缩分支。
+            var compressible = KeepWholeSplitSets(others);
+            if (compressible.Count == 0)
+            {
+                CompleteWithoutWork(report);
+                return;
+            }
+
+            CompressFiles(compressible, report);
         }
 
+        #endregion
+        #region 分卷套归并与残缺判定
+        /// <summary>
+        /// 从「不属于压缩包」那一组里剔掉不完整的分卷套，返回真正可以压缩的项。
+        ///
+        /// 走到这里的分卷说明首卷不在（否则它已经被归到解压分支了）。
+        /// 判据不能再用 IsSplitArchive：它要求首卷存在，残卷根本进不了那个分支。
+        /// 所以只看「是不是带卷号的文件」—— 是卷号却没有可用的首卷，就是残缺的一套。
+        /// 这种碎片既解不开，压起来也只是垃圾，单独报出来比静默压碎更清楚。
+        /// </summary>
+        private List<PendingFile> KeepWholeSplitSets(List<PendingFile> files)
+        {
+            var kept = new List<PendingFile>();
+            var warnedSets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var f in files)
+            {
+                if (f.IsDirectory)
+                {
+                    kept.Add(f);
+                    continue;
+                }
+
+                string logical = SevenZipService.GetLogicalArchiveName(f.Path);
+                bool looksLikeVolume = !string.Equals(logical, f.Path, StringComparison.OrdinalIgnoreCase);
+
+                if (!looksLikeVolume || SevenZipService.IsSplitArchive(f.Path))
+                {
+                    kept.Add(f);
+                    continue;
+                }
+
+                // 是卷号形式，但首卷不在：残缺的一套，整遍只报一次。
+                if (warnedSets.Add(logical))
+                {
+                    _logService.WriteLog(
+                        EnumText.GetErrorText("Log_SplitSetIncomplete", "分卷不完整，首卷缺失，已跳过：{0}", logical),
+                        LogService.ErrorLevel.Warning);
+                    ReportWarningText(EnumText.GetErrorText(
+                        "Warn_SplitSetIncomplete", "分卷缺少首卷，已跳过：{0}", logical));
+                }
+            }
+
+            return kept;
+        }
+
+        #endregion
+        #region 按项分派与警告输出
         private void ExtractEach(List<PendingFile> files, Action<ProgressInfo> report)
         {
             foreach (var f in files)
             {
                 if (CurrentToken.IsCancellationRequested) return;
 
-                StartExtract(report, f.Path);
+                // 按项直接解压：这里已经由 StartAutoDispatch 归过类，
+                // 不能再走 StartExtract 的「只取第一项」入口。
+                ExtractOne(report, f.Path);
             }
         }
 
+        private void ReportWarningText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+
+            // 与「按件跳过」的警告共用同一条规则：命令行只能写控制台，
+            // ShowWarning 会推 DispatcherFrame 等用户点确定，命令行没有消息循环，弹了就挂死。
+            if (CurrentRunMode == RunMode.Console)
+            {
+                WriteConsoleText(text, true);
+                _logService.WriteLog(text, LogService.ErrorLevel.Warning);
+                return;
+            }
+
+            _messageService.ShowWarning(text, out string log);
+            _logService.WriteLog(log, LogService.ErrorLevel.Warning);
+        }
+
+        #endregion
+        #region 后台调度与排队
         private void CompressEach(List<PendingFile> files, Action<ProgressInfo> report)
         {
             var original = _pendingBatch;
@@ -1111,6 +1246,27 @@ namespace Auto7z_WPF
         }
 
         private CancellationToken CurrentToken => _cancellation?.Token ?? CancellationToken.None;
+
+        /// <summary>
+        /// 把进度送到外层通道。
+        ///
+        /// 批量解压时多套归档共用一个通道，而每次解压都是从 0% 重新开始 ——
+        /// 界面与右键模式的进度条会一遍遍被打回零。这里只要进度不是往下走就放行，
+        /// 让进度条在整个批次里单调向前。界面文字（阶段与百分比）仍由调用方刷新。
+        /// </summary>
+        private void OutputProgress(Action<ProgressInfo> report, ProgressInfo info)
+        {
+            if (report == null || info == null) return;
+
+            // 外层通道自己会把进度交给 UpdateProgress 与控制台，
+            // 这里只做「不回退」这一件事，避免同一条进度被输出两次。
+            if (info.Percent > _batchReportedPercent)
+            {
+                _batchReportedPercent = info.Percent;
+            }
+
+            report(new ProgressInfo(_batchReportedPercent, info.Stage));
+        }
 
 
         private void ReportTaskStart(string templateKey, string fallback, string argument)
@@ -1341,21 +1497,24 @@ namespace Auto7z_WPF
         private void WriteChecksumFiles(string archivePath, string outputDirectory, Action<ProgressInfo> report)
         {
             var produced = _sevenZipService.CollectProducedFiles(archivePath);
+            if (produced.Count == 0) return;
+
+            // 校验文件是「一次任务一份」，把这套产物全部列在里面。
+            // 分卷尤其明显：7 个卷各写一份只含一行的 .sha256 是没法用的，
+            // 校验工具需要的是「一份清单覆盖整套包」。清单路径取逻辑名（归档名 + .sha256），
+            // 而不是挂到某个分卷上，否则用户面对 7 个后缀各异的文件无从下手。
+            string checksumPath = GetChecksumFilePath(archivePath);
 
             try
             {
-                for (int partIndex = 0; partIndex < produced.Count; partIndex++)
-                {
-                    int slice = partIndex;
-                    _sevenZipService.GenerateSHA256(produced[partIndex],
-                        p => report(new ProgressInfo(
-                            MapSHA256Progress(slice, produced.Count, p), ProgressStage.CalculatingSHA256)),
-                        CurrentToken);
-                }
+                _sevenZipService.GenerateSHA256ForSet(produced, checksumPath,
+                    p => OutputProgress(report, new ProgressInfo(p, ProgressStage.CalculatingSHA256)),
+                    CurrentToken);
             }
             catch (OperationCanceledException)
             {
                 CleanupProducedFiles(produced);
+                DeleteQuietly(checksumPath);
                 _sevenZipService.CleanupUnfinished(outputDirectory);
                 FailFromCommand(null, report, cancelled: true);
             }
@@ -1367,6 +1526,32 @@ namespace Auto7z_WPF
             }
         }
 
+        /// <summary>
+        /// 校验文件落在归档旁边，文件名取逻辑名：分卷 x.7z.001… 对应 x.7z.sha256。
+        ///
+        /// 不分卷时逻辑名就是归档本身，得到 x.7z.sha256 —— 与旧行为一致，
+        /// 已有脚本按这个路径取文件不会受影响。
+        /// </summary>
+        private static string GetChecksumFilePath(string archivePath)
+        {
+            if (string.IsNullOrWhiteSpace(archivePath)) return archivePath;
+
+            string logical = SevenZipService.GetLogicalArchiveName(archivePath);
+            return logical + ".sha256";
+        }
+
+        private static void DeleteQuietly(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path)) File.Delete(path);
+            }
+            catch
+            {
+                // 删不掉不影响原本要报的错误。
+            }
+        }
+
 
         private static string BuildArchiveBaseName(PendingFileBatch batch)
         {
@@ -1375,7 +1560,7 @@ namespace Auto7z_WPF
             var first = batch.Files[0];
             string baseName = first.IsDirectory
                 ? first.Name
-                : Path.GetFileNameWithoutExtension(first.Path);
+                : GetCompressSourceBaseName(first.Path);
 
             if (string.IsNullOrWhiteSpace(baseName)) baseName = "Archive";
 
@@ -1390,9 +1575,72 @@ namespace Auto7z_WPF
             return baseName;
         }
 
+        /// <summary>
+        /// 压缩单个文件时的产物基名。
+        ///
+        /// 普通文件沿用 `xx.txt` → `xx.7z` 的老规矩（剥掉扩展名）。
+        /// 但分卷例外：`ASCIIPlayer.7z.021` 若按 GetFileNameWithoutExtension 剥一层，
+        /// 得到 `ASCIIPlayer.7z`，再接上 `.7z` 就成了 `ASCIIPlayer.7z.7z` ——
+        /// 这个名字看起来像「压缩了 .7z 分卷」，用户根本分不清自己压的是哪一卷，
+        /// 而且和真实的分卷产物 `.7z.001` 形式撞在一起，极易被误读成压缩了首卷。
+        ///
+        /// 所以分卷保留完整的卷名：`ASCIIPlayer.7z.021` → `ASCIIPlayer.7z.021.7z`，
+        /// 一眼就能看出压的是第 021 卷。
+        /// </summary>
+        private static string GetCompressSourceBaseName(string path)
+        {
+            string fileName = Path.GetFileName(path);
+            if (string.IsNullOrWhiteSpace(fileName)) return fileName;
+
+            // 只对「卷名」形态（点 + 至少三位纯数字）保留全名。
+            string logical = SevenZipService.GetLogicalArchiveName(path);
+            if (!string.Equals(logical, path, StringComparison.OrdinalIgnoreCase))
+            {
+                return fileName;
+            }
+
+            return Path.GetFileNameWithoutExtension(path);
+        }
+
 
         #endregion
         #region 解压启动
+        /// <summary>
+        /// 解压「解压模式」这一批输入：分卷整套归并成首卷，逐个归档各解各的。
+        /// </summary>
+        private void StartExtractAll(Action<ProgressInfo> report)
+        {
+            var batch = _pendingBatch;
+            if (batch.IsEmpty)
+            {
+                CompleteWithoutWork(report);
+                return;
+            }
+
+            // 原来的实现只取 batch.Files[0]：多选时第 2 个及以后的归档全被静默丢弃，
+            // 而多选整套分卷时「哪个排在第一个」完全取决于资源管理器的枚举顺序 ——
+            // 首卷不在第一位就一定失败。这里按项逐个解，并先把分卷归并成一套。
+            var distinct = SevenZipService.CollapseSplitVolumes(batch.Files.Select(f => f.Path));
+
+            var targets = new List<string>();
+            foreach (string path in distinct)
+            {
+                bool isSplit = SevenZipService.IsSplitArchive(path);
+                if (File.Exists(path) || isSplit) targets.Add(path);
+                else FailWithError(new FileNotFoundException(
+                    EnumText.GetErrorText("Err_ArchiveNotFound", "压缩文件不存在"), path), report);
+            }
+
+            if (targets.Count == 0) return;
+
+            foreach (string archive in targets)
+            {
+                if (CurrentToken.IsCancellationRequested) return;
+
+                ExtractOne(report, archive);
+            }
+        }
+
         private void StartExtract(Action<ProgressInfo> report)
         {
             StartExtract(report, null);
@@ -1407,9 +1655,19 @@ namespace Auto7z_WPF
                 return;
             }
 
-            if (!EnsureComponents(report)) return;
+            string archive = !string.IsNullOrWhiteSpace(archiveOverride)
+                ? archiveOverride
+                : batch.Files[0].Path;
 
-            string archive = !string.IsNullOrWhiteSpace(archiveOverride) ? archiveOverride : batch.Files[0].Path;
+            ExtractOne(report, archive);
+        }
+
+        /// <summary>
+        /// 解压单个归档。批量解压与单发解压共用这一段，避免两条路径悄悄分叉。
+        /// </summary>
+        private void ExtractOne(Action<ProgressInfo> report, string archive)
+        {
+            if (!EnsureComponents(report)) return;
 
             ReportTaskStart("Console_ExtractStart", "开始解压：{0}", archive);
 
@@ -1432,6 +1690,7 @@ namespace Auto7z_WPF
                 Password = UnzipPassword
             };
 
+            // 分卷统一指回首卷：用户送进来的可能是 .002，7-Zip 只认 .001。
             string sourceArchive = isSplit ? SevenZipService.ResolveFirstVolumePath(archive) : archive;
 
             RunExtractWithPasswordRetry(sourceArchive, destinationDirectory, runtimeConfig, report);
@@ -1922,15 +2181,6 @@ namespace Auto7z_WPF
             {
                 return path;
             }
-        }
-
-        private static int MapSHA256Progress(int index, int count, int percent)
-        {
-            if (count <= 1) return percent;
-            if (percent < 0) percent = 0;
-            if (percent > 100) percent = 100;
-            int mapped = (int)Math.Round((index * 100.0 + percent) / count);
-            return mapped > 100 ? 100 : mapped;
         }
 
         private void CleanupProducedFiles(IEnumerable<string> paths)

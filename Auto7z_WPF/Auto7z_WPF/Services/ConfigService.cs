@@ -28,7 +28,8 @@ namespace Auto7z_WPF.Services
             new ConfigKey("AutoSave", true),
             new ConfigKey("MaxLevelCompress", true),
             new ConfigKey("IsTopMost", true),
-            new ConfigKey("IsPortable", true),
+            // IsPortable 不再是一个配置项：便携与否由 AppPaths 按「程序目录旁有没有数据目录」
+            // 判定，写进配置只会制造「配置说在便携、目录却指向普通」这种自相矛盾的状态。
             new ConfigKey("RuntimeMode", false),
             new ConfigKey("OutputPath", false),
             new ConfigKey("IsSolidMode", true),
@@ -112,7 +113,6 @@ namespace Auto7z_WPF.Services
                 Set(values, "AutoSave", config.AutoSave.ToString());
                 Set(values, "MaxLevelCompress", config.MaxLevelCompress.ToString());
                 Set(values, "IsTopMost", config.IsTopMost.ToString());
-                Set(values, "IsPortable", config.IsPortable.ToString());
                 Set(values, "RuntimeMode", config.RuntimeMode.ToString());
                 Set(values, "OutputPath", config.OutputPath ?? string.Empty);
                 Set(values, "IsSolidMode", config.IsSolidMode.ToString());
@@ -255,7 +255,8 @@ namespace Auto7z_WPF.Services
             config.AutoSave = ParseBool(values, "AutoSave", true);
             config.MaxLevelCompress = ParseBool(values, "MaxLevelCompress", false);
             config.IsTopMost = ParseBool(values, "IsTopMost", false);
-            config.IsPortable = ParseBool(values, "IsPortable", false);
+            // 便携模式不在配置里读：旧文件即使残留 IsPortable 键也不会被采信，
+            // 该键在 RemoveDeprecated 里被剔除，真正的事实来自 AppPaths.DetectPortableFromDisk。
             config.RuntimeMode = ParseRuntimeMode(GetValue(values, "RuntimeMode", "Balanced", null));
             config.OutputPath = GetValue(values, "OutputPath", string.Empty, null);
             config.IsSolidMode = ParseBool(values, "IsSolidMode", false);
@@ -453,7 +454,6 @@ namespace Auto7z_WPF.Services
                 case "AutoSave": return bool.TrueString;
                 case "MaxLevelCompress": return bool.FalseString;
                 case "IsTopMost": return bool.FalseString;
-                case "IsPortable": return bool.FalseString;
                 case "RuntimeMode": return RuntimeModePreset.Balanced.ToString();
                 case "OutputPath": return string.Empty;
                 case "IsSolidMode": return bool.FalseString;

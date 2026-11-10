@@ -37,10 +37,27 @@ namespace Auto7z_WPF.Services
         #endregion
 
         #region 注册与注销入口
+        /// <summary>
+        /// 便携模式下禁止注册右键菜单。
+        ///
+        /// 外壳扩展是进程内的 COM 组件，注册写在 HKLM、指向一个绝对路径的 dll。
+        /// 便携程序的全部意义是「拷走就能用、不在系统里留痕」，一旦注册：
+        /// 注册表就钉住了某台机器上的某个盘符路径，U 盘拔掉之后资源管理器
+        /// 仍会去加载那个不存在的 dll —— 这是实打实的越界调用。
+        /// 所以便携模式下一律不注册，也不改语言键。
+        /// </summary>
+        public static bool IsBlockedByPortableMode => AppPaths.IsPortable;
+
         /// <summary>登记右键菜单，未提权时自行拉起提权进程。</summary>
         /// <returns>注册是否成功。</returns>
         public static bool RegisterWithElevation()
         {
+            if (IsBlockedByPortableMode)
+            {
+                WritePortableBlocked();
+                return false;
+            }
+
             string dllPath = GetShellDllPath();
             if (dllPath == null)
             {
@@ -81,6 +98,37 @@ namespace Auto7z_WPF.Services
             return unregistered;
         }
 
+        /// <summary>
+        /// 便携模式启动时调用：把此前可能注册过的右键菜单撤掉。
+        ///
+        /// 与切换模式时的注销分开，是因为「本来就是便携启动」的进程不会走切换分支 ——
+        /// .config 已经在旁边了，启动即便携，之前那次注册就一直留在注册表里，
+        /// 指向一个随时会被拷走的 dll。这里不弹 UAC、失败也不打扰用户：
+        /// 清理是尽力而为的收尾，不该阻断便携模式本身的使用。
+        /// </summary>
+        public static void UnregisterQuietlyIfPortable()
+        {
+            if (!AppPaths.IsPortable) return;
+
+            string dllPath = GetShellDllPath();
+            if (dllPath == null) return;
+
+            // 进程内注销只在已提权时才有意义（写 HKLM 需要管理员）；没提权就跳过，
+            // 便携程序不该为了清一次陈旧注册而弹 UAC。
+            if (!IsAdministrator()) return;
+
+            try
+            {
+                UnregisterNow(dllPath);
+                NotifyShellChanged();
+            }
+            catch (Exception)
+            {
+                // 清理失败不影响便携模式本身：程序照常可用，只是注册表可能留有一条旧记录。
+            }
+        }
+
+
         private static bool RunElevated(string dllPath, bool register)
         {
             try
@@ -116,12 +164,18 @@ namespace Auto7z_WPF.Services
         {
             if (string.IsNullOrWhiteSpace(language)) return;
 
+            // 便携模式下连这一步也要挡掉：写 HKCU 虽不需要提权，但那是「在系统里留痕」，
+            // 与便携模式的承诺相违背；而且此时右键菜单并未注册，写了也没人读。
+            if (IsBlockedByPortableMode) return;
+
             string dllPath = GetShellDllPath();
             if (dllPath == null) return;
 
             Invoke(dllPath, SetLanguageName, language);
         }
 
+        #endregion
+        #region 注册动作分解
         private static bool RegisterNow(string dllPath)
         {
             // 先注销一遍：旧版本可能残留着指向别处路径的 CLSID 与 Approved 项，
@@ -227,6 +281,8 @@ namespace Auto7z_WPF.Services
             });
         }
 
+        #endregion
+        #region 结果与提示输出
         /// <summary>打印注册或注销的结果，资源缺失时退回内置中文。</summary>
         /// <param name="success">操作是否成功。</param>
         /// <param name="registering">true 表示本次是注册，false 表示注销。</param>
@@ -253,6 +309,13 @@ namespace Auto7z_WPF.Services
         {
             Console.WriteLine(GetConsoleText("Console_ShellDllMissing",
                 "找不到 " + ShellDllName + "，无法注册"));
+        }
+
+        /// <summary>便携模式下拒绝注册右键菜单的提示。</summary>
+        public static void WritePortableBlocked()
+        {
+            Console.WriteLine(GetConsoleText("Console_PortableNoShellMenu",
+                "便携模式下不注册右键菜单：拷走即可使用，程序不在系统里留痕"));
         }
 
         private static string GetConsoleText(string key, string fallback)

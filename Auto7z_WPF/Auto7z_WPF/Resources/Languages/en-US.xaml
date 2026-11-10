@@ -24,6 +24,7 @@
     <sys:String x:Key="AutoSaveCheckBox">Save config on Exit</sys:String>
     <sys:String x:Key="Log_PortableSwitched">Switched to {0}, data folder: {1}</sys:String>
     <sys:String x:Key="Log_PortableSwitchFailed">Failed to switch portable mode: {0}</sys:String>
+    <sys:String x:Key="Log_PortableRootNotEmpty">Switched to normal mode, but {0} still contains other files, so it was not removed; the next start will still be treated as portable</sys:String>
     <sys:String x:Key="Err_PortableMoveFailed">Failed to switch to {0}: the data folder could not be moved</sys:String>
     <sys:String x:Key="Tip_Portable">Portable mode: keeps the config, components and logs in .config\Auto7z next to the program, so it can be carried around. Unchecking moves them back to %LOCALAPPDATA%\Auto7z.</sys:String>
     <sys:String x:Key="PortableCheckBox">Portable</sys:String>
@@ -97,6 +98,8 @@
     <sys:String x:Key="Archive_MergedNamePattern">{0} and {1} more</sys:String>
     <sys:String x:Key="Log_InstallDirNotWritable">The install directory is not writable (does not affect running; components and config go to %LOCALAPPDATA%\Auto7z): {0}</sys:String>
     <sys:String x:Key="Log_PathsNotFound">None of the given paths exist or are accessible: {0}</sys:String>
+    <sys:String x:Key="Log_SplitSetIncomplete">Incomplete volume set, first volume missing, skipped: {0}</sys:String>
+    <sys:String x:Key="Warn_SplitSetIncomplete">The volume set has no first volume, skipped: {0}</sys:String>
     <sys:String x:Key="Log_BusyIgnore">A task is already running, ignoring the {0} incoming item(s)</sys:String>
     <sys:String x:Key="Log_ReceivedItems">Received {0} item(s): {1}</sys:String>
     <sys:String x:Key="Log_UnknownFormat">Unrecognized archive format in the config, using 7z: {0}</sys:String>
@@ -163,5 +166,6 @@
     <sys:String x:Key="Console_UnregisterOk">Context menu unregistered</sys:String>
     <sys:String x:Key="Console_UnregisterFailed">Failed to unregister the context menu</sys:String>
     <sys:String x:Key="Console_ShellDllMissing">Auto7zShell.dll not found, cannot register</sys:String>
+    <sys:String x:Key="Console_PortableNoShellMenu">Portable mode does not register the context menu: copy the folder and it just works, nothing is left behind on the system</sys:String>
     <sys:String x:Key="Err_UnknownSwitch">Unknown option: {0}</sys:String>
 </ResourceDictionary>

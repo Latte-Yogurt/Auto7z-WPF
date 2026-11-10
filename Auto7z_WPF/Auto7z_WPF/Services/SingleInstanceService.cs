@@ -27,8 +27,32 @@ namespace Auto7z_WPF.Services
         #endregion
 
         #region 路径交接
+        // 交接里必须带上模式开关，否则「右键解压」会变成「压缩」。
+        //
+        // 这是真实缺陷：外壳扩展以 -uz 启动第二个进程，第二个进程发现已有实例在跑，
+        // 就把路径交给它然后自己退出。若交接只传路径，-uz 就在这一步丢了 ——
+        // 接收方按自己的界面模式处理，默认或压缩模式下就成了压缩。
+        // 症状极具误导性：菜单发的是 -uz、日志显示进程正常、产物却是压缩包。
+        private const string ModeMarker = "AUTO7Z_MODE=";
+
+        // 一次性把「模式 + 换行分隔的路径」写出去。头部放模式标记，其后是路径；
+        // 新接收方认得标记，老接收方（没有标记）按「未指定模式」处理。
+        private static string BuildPayload(string[] paths, string mode)
+        {
+            var sb = new StringBuilder();
+            if (!string.IsNullOrEmpty(mode))
+            {
+                sb.Append(ModeMarker).Append(mode).Append(PathSeparator);
+            }
+
+            sb.Append(string.Join(PathSeparator.ToString(), paths));
+            return sb.ToString();
+        }
+
         /// <summary>把路径发给已在运行的实例，对方接收成功返回 true。</summary>
-        public static bool SendToRunningInstance(string[] paths)
+        /// <param name="paths">要处理的路径。</param>
+        /// <param name="mode">模式开关（-a / -z / -uz），null 表示沿用对方当前模式。</param>
+        public static bool SendToRunningInstance(string[] paths, string mode = null)
         {
             if (paths == null || paths.Length == 0) return false;
 
@@ -40,7 +64,7 @@ namespace Auto7z_WPF.Services
                     pipe.Connect(5000);
 
                     // 路径里可能带空格、引号与中文，用换行分隔整体写出，既不拼命令行也不受参数个数限制。
-                    byte[] data = Encoding.UTF8.GetBytes(string.Join(PathSeparator.ToString(), paths));
+                    byte[] data = Encoding.UTF8.GetBytes(BuildPayload(paths, mode));
                     pipe.Write(data, 0, data.Length);
                     pipe.Flush();
                 }
@@ -69,8 +93,17 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>启动后台监听线程，收到一批路径就回调。</summary>
-        /// <param name="onFiles">收到路径时触发。</param>
+        /// <param name="onFiles">收到路径时触发（参数为路径数组）。</param>
         public void StartListener(Action<string[]> onFiles)
+        {
+            if (onFiles == null) return;
+            // 老签名忽略模式：把收到的模式丢掉，行为与之前一致。
+            StartListener((paths, mode) => onFiles(paths));
+        }
+
+        /// <summary>启动后台监听线程，收到一批路径与模式就回调。</summary>
+        /// <param name="onFiles">收到时触发，第二参数为模式开关，可能为 null。</param>
+        public void StartListener(Action<string[], string> onFiles)
         {
             if (onFiles == null) return;
 
@@ -85,7 +118,7 @@ namespace Auto7z_WPF.Services
             _listener.Start();
         }
 
-        private void ListenLoop(Action<string[]> onFiles)
+        private void ListenLoop(Action<string[], string> onFiles)
         {
             while (_running)
             {
@@ -105,13 +138,24 @@ namespace Auto7z_WPF.Services
                             if (string.IsNullOrWhiteSpace(text)) continue;
 
                             var paths = new List<string>();
+                            string mode = null;
+
                             foreach (string line in text.Split(PathSeparator))
                             {
                                 string trimmed = line.Trim();
+
+                                // 头部可能带模式标记：认出来就取走，不当路径。
+                                if (trimmed.StartsWith(ModeMarker, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    string value = trimmed.Substring(ModeMarker.Length).Trim();
+                                    if (value.Length > 0) mode = value;
+                                    continue;
+                                }
+
                                 if (trimmed.Length > 0) paths.Add(trimmed);
                             }
 
-                            if (paths.Count > 0) onFiles(paths.ToArray());
+                            if (paths.Count > 0) onFiles(paths.ToArray(), mode);
                         }
                     }
                 }

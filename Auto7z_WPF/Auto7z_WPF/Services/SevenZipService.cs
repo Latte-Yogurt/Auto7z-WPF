@@ -539,32 +539,73 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>
-        /// 判断是否为分卷，既认 .001 后缀，也认逻辑名在而只有 .001 落地的情况。
+        /// 把任意一卷换回它的逻辑名（x.7z.001 / x.7z.002 → x.7z）。
+        ///
+        /// 分卷有两种叫法：逻辑名（x.7z）与卷名（x.7z.001）。7-Zip 只接受卷名，
+        /// 而用户在界面上看到的、拖进来的往往是逻辑名，两边必须能互相换算。
+        /// 不是卷名形式的路径原样返回。
+        /// </summary>
+        public static string GetLogicalArchiveName(string archivePath)
+        {
+            if (string.IsNullOrWhiteSpace(archivePath)) return archivePath;
+
+            // 只认纯数字后缀，且至少三位：x.bin.001 是分卷，x.v1.7 不是。
+            int dot = archivePath.LastIndexOf('.');
+            if (dot <= 0 || dot == archivePath.Length - 1) return archivePath;
+
+            string suffix = archivePath.Substring(dot + 1);
+            if (suffix.Length < 3) return archivePath;
+
+            foreach (char ch in suffix)
+            {
+                if (ch < '0' || ch > '9') return archivePath;
+            }
+
+            return archivePath.Substring(0, dot);
+        }
+
+        /// <summary>
+        /// 判断是否为分卷，既认 .001，也认任意卷号（.002 起）与逻辑名落地的情形。
+        ///
+        /// 中间卷与末卷同样是分卷的一部分：用户从资源管理器里多选时，
+        /// 送进来的可能压根不是首卷，只认 .001 会把它们当成普通文件。
         /// </summary>
         public static bool IsSplitArchive(string archivePath)
         {
             if (string.IsNullOrWhiteSpace(archivePath)) return false;
 
-            if (archivePath.EndsWith(".001", StringComparison.OrdinalIgnoreCase)) return true;
+            string logical = GetLogicalArchiveName(archivePath);
+            if (!string.Equals(logical, archivePath, StringComparison.OrdinalIgnoreCase))
+            {
+                // 已经是一卷的卷名：只要首卷还在，这套分卷就成立。
+                return File.Exists(logical + ".001");
+            }
 
             // 界面上选中的可能是逻辑名 x.7z，而磁盘上只有 x.7z.001，必须回退探测。
             return !File.Exists(archivePath) && File.Exists(archivePath + ".001");
         }
 
+        /// <summary>
+        /// 取这套分卷的首卷：7-Zip 只认 .001，给它中间卷会直接失败。
+        ///
+        /// 无论进来的是逻辑名还是任意一卷，都统一指回首卷；
+        /// 首卷不在时原样返回，让下游按「文件不存在」报错，而不是解出一个空目录。
+        /// </summary>
         public static string ResolveFirstVolumePath(string archivePath)
         {
             if (string.IsNullOrWhiteSpace(archivePath)) return archivePath;
 
-            if (archivePath.EndsWith(".001", StringComparison.OrdinalIgnoreCase)) return archivePath;
+            string logical = GetLogicalArchiveName(archivePath);
+            string firstVolume = logical + ".001";
 
-            if (!File.Exists(archivePath) && File.Exists(archivePath + ".001"))
-            {
-                return archivePath + ".001";
-            }
+            if (File.Exists(firstVolume)) return firstVolume;
 
+            // 首卷不在时不猜：原样返回，由调用方报「压缩文件不存在」。
             return archivePath;
         }
 
+        #endregion
+        #region 压缩 tar 判定
         /// <summary>
         /// 判断是否为压缩过的 tar，这类文件是两层容器，不能靠单一 -t 硬指定格式。
         /// </summary>
@@ -582,6 +623,55 @@ namespace Auto7z_WPF.Services
                 || name.EndsWith(".tgz", StringComparison.Ordinal)
                 || name.EndsWith(".tbz2", StringComparison.Ordinal)
                 || name.EndsWith(".txz", StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// 把「一套分卷」归并成一条输入：同一逻辑名下的多卷只留首卷。
+        ///
+        /// 自动模式一次拿到的常常是整套分卷（资源管理器多选）。逐条判断的话，
+        /// 只有首卷认得出是压缩包，其余卷会掉进压缩分支被重新压一遍 ——
+        /// 既解不开原包，又多出一堆垃圾产物。所以分卷必须按「套」聚合。
+        ///
+        /// 顺序无关：无论送进来的第一项是 .001 还是 .007，结果都是首卷。
+        /// 同一套出现多次时只保留第一次出现的位置，其余丢弃。
+        /// </summary>
+        public static List<string> CollapseSplitVolumes(IEnumerable<string> paths)
+        {
+            var result = new List<string>();
+            if (paths == null) return result;
+
+            // 已归并的逻辑名。分大小写不敏感比较：Windows 上 x.7z 与 X.7Z 是同一个文件。
+            var seenSets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (string path in paths)
+            {
+                if (string.IsNullOrWhiteSpace(path)) continue;
+
+                string logical = GetLogicalArchiveName(path);
+                if (!string.Equals(logical, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    // 是某一卷：整套只收首卷一次。
+                    if (seenSets.Add(logical))
+                    {
+                        result.Add(ResolveFirstVolumePath(path));
+                    }
+                    continue;
+                }
+
+                // 逻辑名 + 磁盘上只有 .001 落地：同样按分卷处理，补成首卷。
+                if (!File.Exists(path) && File.Exists(path + ".001"))
+                {
+                    if (seenSets.Add(path))
+                    {
+                        result.Add(ResolveFirstVolumePath(path));
+                    }
+                    continue;
+                }
+
+                result.Add(path);
+            }
+
+            return result;
         }
 
         #endregion
@@ -986,13 +1076,10 @@ namespace Auto7z_WPF.Services
                 return false;
             }
 
-            string folderName = Path.GetFileNameWithoutExtension(archivePath);
+            // 先用逻辑名去掉卷号：只剥 .001 的话，.002 及以后会把卷号带进目录名，
+            // 三位以上的卷号（.010）还会剥不干净。逻辑名这一层对所有卷号一视同仁。
+            string folderName = Path.GetFileName(GetLogicalArchiveName(archivePath));
             if (string.IsNullOrWhiteSpace(folderName)) folderName = "Auto7z_Extract";
-
-            if (folderName.EndsWith(".001", StringComparison.OrdinalIgnoreCase))
-            {
-                folderName = folderName.Substring(0, folderName.Length - 4);
-            }
 
             if (folderName.EndsWith(".tar", StringComparison.OrdinalIgnoreCase))
             {
@@ -1119,15 +1206,32 @@ namespace Auto7z_WPF.Services
 
 
         /// <summary>
-        /// 计算文件或目录的 SHA256 并写入校验文件，服务实例在方法内创建并释放。
+        /// 把「一次任务产出的整组文件」算成**一份**校验文件。
+        ///
+        /// 这是校验文件的正确形态：一个归档（尤其分卷）是多文件组成的产物，
+        /// 校验清单必须把这些文件**全部列在一份 .sha256 里**，每行一条。
+        /// 早先的实现对每个分卷各调一次，产出 7 个 x.7z.001.sha256 … x.7z.007.sha256 ——
+        /// 那样谁也没法用它校验一整套包：校验工具拿到的是 7 份只含一行的清单，
+        /// 用户还得手工拼起来，而这正是校验文件存在的意义所在。
         /// </summary>
-        public void GenerateSHA256(string filePathOrFolder, Action<int> progress, CancellationToken cancellationToken)
+        /// <param name="producedFiles">本次产出的全部文件，按顺序列入清单。</param>
+        /// <param name="checksumFilePath">要写出的 .sha256 路径。</param>
+        public void GenerateSHA256ForSet(IReadOnlyList<string> producedFiles, string checksumFilePath,
+            Action<int> progress, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(filePathOrFolder)) return;
+            if (producedFiles == null || producedFiles.Count == 0) return;
+            if (string.IsNullOrWhiteSpace(checksumFilePath)) return;
 
             using (var sha256Service = new SHA256Service())
             {
-                sha256Service.CalculateSHA256ToFile(filePathOrFolder, progress, cancellationToken);
+                var lines = sha256Service.CalculateSHA256(
+                    producedFiles.ToArray(), progress, cancellationToken);
+
+                // 只写一份，且把全部行一次写进去；单文件时与旧行为完全一致。
+                if (lines != null && lines.Length > 0)
+                {
+                    sha256Service.WriteSHA256File(checksumFilePath, lines);
+                }
             }
         }
         #endregion

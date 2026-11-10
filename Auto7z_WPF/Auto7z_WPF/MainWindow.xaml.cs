@@ -33,7 +33,24 @@ namespace Auto7z_WPF
         private bool _isSyncingControls;
 
         // 单实例转发与拖放可能来自不同线程，入队要线程安全；消费只在界面线程做。
-        private readonly ConcurrentQueue<string> _pendingQueue = new ConcurrentQueue<string>();
+        //
+        // 队列元素带模式开关：第二个实例可能是「右键解压」的 -uz 交过来的，
+        // 若只排队路径，接收方会按自己的界面模式处理，解压就成了压缩。
+        private readonly ConcurrentQueue<QueuedFile> _pendingQueue = new ConcurrentQueue<QueuedFile>();
+
+        // 队列里的一项：路径 + 交接时携带的模式开关（null 表示沿用界面当前模式）。
+        private sealed class QueuedFile
+        {
+            public QueuedFile(string path, string mode)
+            {
+                Path = path;
+                Mode = mode;
+            }
+
+            public string Path { get; }
+
+            public string Mode { get; }
+        }
 
         private readonly Auto7zViewModel _vm;
 
@@ -698,10 +715,20 @@ namespace Auto7z_WPF
         // 单实例转发进来的列表可能为空，空批直接忽略。
         public void EnqueueFiles(string[] files)
         {
+            EnqueueFiles(files, null);
+        }
+
+        /// <summary>
+        /// 入队一批路径，可携带交接来的模式开关。
+        /// </summary>
+        /// <param name="files">待处理路径。</param>
+        /// <param name="handedMode">第二个实例带来的模式（-a / -z / -uz），null 表示沿用界面模式。</param>
+        public void EnqueueFiles(string[] files, string handedMode)
+        {
             if (files == null || files.Length == 0) return;
 
             // 入队本身线程安全，界面线程与命名管道回调都可能走到这里。
-            foreach (string file in files) _pendingQueue.Enqueue(file);
+            foreach (string file in files) _pendingQueue.Enqueue(new QueuedFile(file, handedMode));
 
             // 有任务在跑就只入队，等 TaskCompleted 再来取，保证一次只跑一个任务。
             if (_vm.IsBusy) return;
@@ -725,15 +752,24 @@ namespace Auto7z_WPF
             try
             {
                 var batch = new List<string>();
+                string batchMode = null;
+                bool modeKnown = false;
+
                 // 一次把队列取空并成一批，免得每个文件都单独起一次 7z。
-                while (_pendingQueue.TryDequeue(out string file))
+                // 同一批只认第一个带模式的项：交接是按批进行的，一批里模式不该变。
+                while (_pendingQueue.TryDequeue(out QueuedFile item))
                 {
-                    batch.Add(file);
+                    batch.Add(item.Path);
+                    if (!modeKnown && item.Mode != null)
+                    {
+                        batchMode = item.Mode;
+                        modeKnown = true;
+                    }
                 }
 
                 if (batch.Count == 0) return;
 
-                StartTaskForFiles(batch.ToArray());
+                StartTaskForFiles(batch.ToArray(), batchMode);
             }
             finally
             {
@@ -747,6 +783,12 @@ namespace Auto7z_WPF
 
         // 先筛掉不存在或不可访问的路径，剩下的才值得起任务。
         private void StartTaskForFiles(string[] files)
+        {
+            StartTaskForFiles(files, null);
+        }
+
+        // 先筛掉不存在或不可访问的路径，剩下的才值得起任务。
+        private void StartTaskForFiles(string[] files, string handedMode)
         {
             if (files == null || files.Length == 0) return;
 
@@ -791,8 +833,25 @@ namespace Auto7z_WPF
             // 这里只传路径，目录大小由 ViewModel 交给任务线程再统计，界面线程不做递归遍历。
             _vm.SetPendingFiles(existing);
 
-            // 用哪种方式处理由侧栏的单选决定；Auto 交给 ViewModel 按文件类型分派。
-            switch (_vm.CurrentOperationMode)
+            StartModeSpecificTask(handedMode);
+        }
+
+        #endregion
+        #region 交接模式与任务起法
+        /// <summary>
+        /// 按「交接模式优先、其次界面模式」决定起哪种任务。
+        ///
+        /// 「交接模式优先」是必须的：第二个实例是「右键解压」时带着 -uz 来的，
+        /// 接收方界面可能停在压缩模式，若听界面的就会把分卷压成包 ——
+        /// 用户点了解压却得到压缩，而这正是曾经的真实缺陷。
+        /// </summary>
+        private void StartModeSpecificTask(string handedMode)
+        {
+            OperationMode mode = handedMode != null
+                ? ParseHandedMode(handedMode)
+                : _vm.CurrentOperationMode;
+
+            switch (mode)
             {
                 case OperationMode.UnZip:
                     _vm.BeginExtractTask();
@@ -806,6 +865,16 @@ namespace Auto7z_WPF
                     _vm.BeginCompressTask();
                     break;
             }
+        }
+
+        /// <summary>把交接来的模式开关换成枚举，无法识别时按自动处理。</summary>
+        private static OperationMode ParseHandedMode(string mode)
+        {
+            if (string.Equals(mode, ShellCommandService.SwitchZip, StringComparison.OrdinalIgnoreCase))
+                return OperationMode.Zip;
+            if (string.Equals(mode, ShellCommandService.SwitchUnZip, StringComparison.OrdinalIgnoreCase))
+                return OperationMode.UnZip;
+            return OperationMode.Auto;
         }
 
         // 关闭时先取消任务再杀 7z 进程：只发取消信号不杀进程，7z 会带着半截文件继续跑。
