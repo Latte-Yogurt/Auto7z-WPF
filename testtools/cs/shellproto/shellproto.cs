@@ -81,17 +81,33 @@ class ShellProto
             "Auto7z", "Auto7z.json");
         // 配置是标准 JSON。这里用简单的字符串定位改一个键：
         // 探针是独立 exe，不该为了改一个值把整个 JSON 解析器搬进来。
+        //
+        // 配置文件不存在时必须先落一份最小配置：没有这一份，下面的 patch 无处可写，
+        // ErrorLevel 会停在出厂的 Warning，Info 级的「共 N 个文件」永远不进日志，
+        // 后三项断言就会误报「没有收到文件」。这不是产品缺陷 —— 产品读到坏配置或
+        // 缺配置时会自己重建，探针只要先给它一个起点即可。
+        // 这个坑的真实来源：portable 探针会清空整个 %LOCALAPPDATA%\Auto7z，
+        // 紧随其后跑 shellproto 就必然撞上。
         string originalConfig = null;
         if (File.Exists(configPath))
         {
             try
             {
                 originalConfig = File.ReadAllText(configPath, new UTF8Encoding(false));
-                string patched = ReplaceJsonString(originalConfig, "ErrorLevel", "Info");
-                if (patched != null) File.WriteAllText(configPath, patched, new UTF8Encoding(false));
             }
             catch { }
         }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(configPath));
+            string seed = originalConfig ?? "{}";
+            string patched = ReplaceJsonString(seed, "ErrorLevel", "Info")
+                            ?? seed.Insert(seed.LastIndexOf('}') >= 0 ? seed.LastIndexOf('}') : seed.Length,
+                                 (seed.Trim() == "{}" ? "" : ",") + "\"ErrorLevel\": \"Info\"");
+            File.WriteAllText(configPath, patched, new UTF8Encoding(false));
+        }
+        catch { }
 
         string exe = a[0];
 

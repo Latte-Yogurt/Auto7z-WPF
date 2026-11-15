@@ -125,7 +125,8 @@ def set_cfg(**kw):
 def base_cfg(**extra):
     kw = dict(Format="7z", Volume=VOLUME_MB, GenerateSHA256=False,
               OutputPath="", CompressionLevel="Store", IsSolidMode=False,
-              Password="", UnzipPassword="", Zstd=False, ErrorLevel="Info")
+              Password="", UnzipPassword="", Zstd=False, ErrorLevel="Info",
+              Language="zh-CN")
     kw.update(extra)
     set_cfg(**kw)
 

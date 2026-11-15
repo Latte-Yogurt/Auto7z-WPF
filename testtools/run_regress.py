@@ -31,7 +31,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_ops import SafeTemp
-from config_guard import ConfigGuard, claim_checkout, release_checkout
+from config_guard import (ConfigGuard, claim_checkout, release_checkout,
+                          child_env_with_inherited_checkout)
 
 HERE = Path(__file__).resolve().parent
 WORKSPACE = HERE.parent
@@ -402,6 +403,35 @@ def t_no_ghost(res, app):
             "注册状态=%s" % ("已注册" if registered else "未注册"))
 
 
+def t_crashrecover(res, app):
+    """崩溃残留清理（分卷残片）的回归保护。
+
+    验证「强制结束进程留下分卷残片」这个已知缺陷的修复：
+    任务开始前写 TaskState.json + job.lock，崩溃后下次启动精确清理残片。
+    覆盖崩溃点 A（锁建 JSON 未写）/ B（active 强杀）/ C'（done 锁未删）/
+    D（JSON 损坏）/ F（PID 存活跳过）五个场景。
+
+    子进程里跑 crashrecover_test.py：它要强杀被测进程再重启，独立成子进程
+    避免与主回归的进程编排互相干扰；互斥体由父进程持有，通过继承标记放行。
+    """
+    print("")
+    print("=== 崩溃残留清理（分卷残片）===")
+    script = HERE / "crashrecover_test.py"
+    if not script.exists():
+        res.add("崩溃残留清理回归保护", False, "找不到 crashrecover_test.py")
+        return
+    r = run([sys.executable, str(script), "--app", str(app)],
+            encoding="utf-8",
+            env=child_env_with_inherited_checkout())
+    out = (r.stdout or "") + (r.stderr or "")
+    m = re.search(r"崩溃恢复测试汇总:\s*(\d+)\s*项,\s*失败\s*(\d+)\s*项", out)
+    total = int(m.group(1)) if m else -1
+    bad = int(m.group(2)) if m else -1
+    ok = r.returncode == 0 and total > 0 and bad == 0
+    detail = ("%d 项, 失败 %d 项" % (total, bad)) if total >= 0 else "输出未能正确解析"
+    res.add("崩溃残留清理回归保护", ok, detail)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--app", help="被测程序路径")
@@ -459,6 +489,7 @@ def main():
         t_resultprobe(res, app)
         t_sha256probe(res, app)
         t_no_ghost(res, app)
+        t_crashrecover(res, app)
     finally:
         res.summary()
         print("")
