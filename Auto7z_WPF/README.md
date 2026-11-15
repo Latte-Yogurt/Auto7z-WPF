@@ -1,6 +1,6 @@
 # Auto7z
 
-v2.2.0（开发者内测）
+v2.3.0（开发者内测）
 
 Windows 图形化压缩工具，基于 7-Zip ZS 内核（7-Zip 22.01 ZS v1.5.5 R3，x64）。
 
@@ -267,7 +267,6 @@ end;
 | `Zstd` | 布尔 | tar 归档是否用 zstd 压缩 | `true` |
 | `GenerateSHA256` | 布尔 | 是否生成 SHA256 校验文件 | `true` |
 | `AutoSave` | 布尔 | 是否自动保存设置 | `true` |
-| `MaxLevelCompress` | 布尔 | 是否用最高压缩等级 | `false` |
 | `IsSolidMode` | 布尔 | 是否固实压缩 | `false` |
 | `IsEncFileName` | 布尔 | 是否加密文件名（仅 7z，且需要密码） | `false` |
 | `CompressionLevel` | 字符串 | 压缩等级：`Store` / `Normal` / `Ultra` | `Normal` |
@@ -287,7 +286,7 @@ end;
 `RuntimeMode` 与 `CompressionLevel` 是两个独立的旋钮：前者决定 `-mmt` 线程数（低占用 1、均衡取一半核心、高性能取满全部核心），后者决定 `-md` 字典大小（标准 4/16/32 MB、极限 16/32/64 MB，按低/均衡/高排列）。存储等级不下发 `-md`——那一档 7-Zip 用 Copy 方法，本来就没有字典。
 
 配置文件坏了会自动重建，缺键也会补齐；单个键的值非法只回落该键的默认值，不整份作废。
-早期版本用过的 `ZipLevel`、`Portable`、`MainText` 等旧键在读写时会被剔除。
+早期版本用过的 `ZipLevel`、`Portable`、`MainText` 等旧键对程序没有影响，既不读也不写，原样保留在文件里。
 
 ## 多语言
 

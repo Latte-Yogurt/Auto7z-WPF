@@ -70,11 +70,28 @@ namespace Auto7z_WPF.Services
                 }
                 finally
                 {
-                    var app = Application.Current;
-                    if (app != null)
+                    // 让 PushFrame 退出是**无条件**的：这一句放在 if (app != null) 里，
+                    // 一旦 Application.Current 在任务收尾时已经变成 null（进程退出中），
+                    // 就再也没有人唤醒 UI 线程，而 worker 又是非后台线程，整个进程挂死。
+                    // 唤醒动作对 Dispatcher 而言是幂等的，重复置 false 没有副作用。
+                    try
                     {
-                        // 后台线程结束时必须让 PushFrame 退出，否则 UI 线程会一直停在这条语句上。
-                        app.Dispatcher.BeginInvoke(new Action(() => frame.Continue = false));
+                        var app = Application.Current;
+                        if (app != null)
+                        {
+                            app.Dispatcher.BeginInvoke(new Action(() => frame.Continue = false));
+                        }
+                        else
+                        {
+                            // 拿不到 Application 时直接在本地置位：PushFrame 的循环条件读的就是这个字段。
+                            frame.Continue = false;
+                        }
+                    }
+                    catch
+                    {
+                        // 有意忽略：Dispatcher 已关闭时没法再投递，但此刻进程正在退出，
+                        // 阻塞等待已经没有意义，置位后让外层尽快走到收尾。
+                        frame.Continue = false;
                     }
                 }
             });
@@ -104,8 +121,23 @@ namespace Auto7z_WPF.Services
                 progress.RequestCancel();
             };
 
+            // 再挂一层超时兜底：即便唤醒信号因为 Dispatcher 已关闭而投递失败，
+            // 也不允许 UI 线程无限期停在 PushFrame 上。给足余量（10 分钟）即可，
+            // 正常情况下 worker 收尾时上面的 BeginInvoke 会先把循环结束掉。
+            var safety = new DispatcherTimer(DispatcherPriority.Send)
+            {
+                Interval = TimeSpan.FromMinutes(10)
+            };
+            safety.Tick += (s, e) =>
+            {
+                safety.Stop();
+                frame.Continue = false;
+            };
+            safety.Start();
+
             Dispatcher.PushFrame(frame);
 
+            safety.Stop();
             cancelTimer.Stop();
 
             progress.AllowClose = true;

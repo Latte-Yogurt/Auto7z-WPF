@@ -44,6 +44,9 @@ namespace Auto7z_WPF.Services
         #endregion
         #region 启动来源判断
         // 父进程在本次运行期间不会变，查一次就缓存，避免每次拖拽都做一遍进程快照。
+        // 用锁一次性发布：两个字段分别赋值时，后进入的线程可能看到 _parentChecked 已为 true
+        // 而 _parentName 还是 null，于是 ParentIsExplorer 误判成「不是资源管理器」。
+        private static readonly object _parentLock = new object();
         private static string _parentName;
         private static bool _parentChecked;
 
@@ -51,12 +54,16 @@ namespace Auto7z_WPF.Services
         {
             get
             {
-                if (!_parentChecked)
+                lock (_parentLock)
                 {
-                    _parentChecked = true;
-                    _parentName = QueryParentProcessName();
+                    if (!_parentChecked)
+                    {
+                        // 先算出结果再置标志：顺序反过来就又有了上面那个窗口。
+                        _parentName = QueryParentProcessName();
+                        _parentChecked = true;
+                    }
+                    return _parentName;
                 }
-                return _parentName;
             }
         }
 
@@ -89,10 +96,14 @@ namespace Auto7z_WPF.Services
                 try
                 {
                     // 父进程可能已经退出，取不到进程时只能放弃判断。
-                    string name = Process.GetProcessById((int)parentPid).ProcessName;
-                    if (string.IsNullOrEmpty(name)) return string.Empty;
-                    // 系统返回的进程名大小写不固定，统一转小写后再与 explorer 比较才不会漏判。
-                    return name.ToLowerInvariant();
+                    // 必须包 using：Process 持有进程句柄，不释放会随每次查询累积。
+                    using (Process parent = Process.GetProcessById((int)parentPid))
+                    {
+                        string name = parent.ProcessName;
+                        if (string.IsNullOrEmpty(name)) return string.Empty;
+                        // 系统返回的进程名大小写不固定，统一转小写后再与 explorer 比较才不会漏判。
+                        return name.ToLowerInvariant();
+                    }
                 }
                 catch
                 {

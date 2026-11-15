@@ -116,6 +116,10 @@ namespace Auto7z_WPF
             AppPaths.IsPortable = AppPaths.DetectPortableFromDisk();
             ShellRegistrationService.UnregisterQuietlyIfPortable();
 
+            // 崩溃恢复：上次进程若被强杀，会留下 IsRunning=true 的残留状态与半截产物目录，
+            // 在这里按状态文件清理残片（分卷残片/半截归档），再继续正常启动。
+            TaskStateService.CleanupStaleTask();
+
             // 命令行语义一律在这条分支上处理 —— 两个入口共用，不再各写一份。
             // 未知开关必须报错并以退出码 2 结束：静默忽略会让调用方把「参数写错」
             // 误判成「任务成功」，那比失败更坏。

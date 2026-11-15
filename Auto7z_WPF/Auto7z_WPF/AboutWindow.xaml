@@ -38,7 +38,7 @@
                 <StackPanel HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0">
                     <TextBlock x:Name="Auto7zTitle" Text="{Binding FullTitle}"
                                FontFamily="Microsoft YaHei Bold, DengXian Light" FontSize="13"
-                               Style="{DynamicResource Black2BlueTextBlockStyle}">
+                               Style="{DynamicResource Black2BlueTextBlockStyle}" Cursor="Hand">
                         <TextBlock.InputBindings>
                             <MouseBinding MouseAction="LeftClick" Command="{Binding EggClickCommand}" CommandParameter="{Binding RelativeSource={RelativeSource AncestorType=Window}}"/>
                             <MouseBinding MouseAction="LeftDoubleClick" Command="{Binding EggClickCommand}" CommandParameter="{Binding RelativeSource={RelativeSource AncestorType=Window}}"/>

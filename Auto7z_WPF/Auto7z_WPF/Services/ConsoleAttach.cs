@@ -71,7 +71,9 @@ namespace Auto7z_WPF.Services
                 uint[] ids = new uint[8];
                 uint count = GetConsoleProcessList(ids, (uint)ids.Length);
                 // 进程数大于 1 说明这块控制台是共享的，动它之前必须先确认独占。
-                if (count > 1) return;
+                // count == 0 是查询失败（缓冲区不够或 API 出错），不是「独占」：
+                // 把它当成独占就会 FreeConsole 掉一个可能属于别人 cmd 的窗口。
+                if (count == 0 || count > 1) return;
 
                 ShowWindow(console, SW_HIDE);
                 FreeConsole();

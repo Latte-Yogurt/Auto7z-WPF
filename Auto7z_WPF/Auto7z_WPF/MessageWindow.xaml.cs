@@ -9,9 +9,17 @@ namespace Auto7z_WPF
     public partial class MessageWindow : Window
     {
         #region 构造与布局
+        private readonly Auto7zViewModel _vm;
+
         public MessageWindow()
         {
             InitializeComponent();
+
+            // 标题栏按钮走 {Binding}，与主窗口/关于窗口一致：用 Auto7zViewModel 当 DataContext。
+            _vm = new Auto7zViewModel();
+            DataContext = _vm;
+            _vm.RequestClose += (s, e) => Close();
+            _vm.RequestMinimize += (s, e) => WindowState = WindowState.Minimized;
 
             // 标题走资源键现取，XAML 里那个只是设计期占位。
             Title = EnumText.GetResourceText("InfoTitle", "Info");

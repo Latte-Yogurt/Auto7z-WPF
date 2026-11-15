@@ -38,7 +38,6 @@ namespace Auto7z_WPF
         private bool _zstd = true;
         private bool _autoSave = true;
         private bool _generateSHA256 = true;
-        private bool _maxLevelCompress;
 
         private bool _isTopMost;
         private RuntimeModePreset _runtimeMode = RuntimeModePreset.Balanced;
@@ -84,7 +83,7 @@ namespace Auto7z_WPF
         public Auto7zViewModel()
         {
             // 便携与否由 AppPaths 按磁盘事实决定，不读配置里的键：配置可能自相矛盾，
-            // 而「数据目录在哪」只有一个答案。旧版本留下的 IsPortable 键在读取时会被剔除。
+            // 而「数据目录在哪」只有一个答案。旧版本留下的 IsPortable 键既不读也不写，忽略即可。
             AppPaths.IsPortable = AppPaths.DetectPortableFromDisk();
 
             AppPaths.EnsureDataDirectory();
@@ -155,7 +154,6 @@ namespace Auto7z_WPF
             Zstd = config.Zstd;
             AutoSave = config.AutoSave;
             GenerateSHA256 = config.GenerateSHA256;
-            MaxLevelCompress = config.MaxLevelCompress;
             IsTopMost = config.IsTopMost;
             // 便携状态以目录事实为准（构造函数已按磁盘探测过），不再从配置里读。
             _isPortable = AppPaths.IsPortable;
@@ -377,7 +375,6 @@ namespace Auto7z_WPF
                 Zstd = Zstd,
                 GenerateSHA256 = GenerateSHA256,
                 AutoSave = AutoSave,
-                MaxLevelCompress = MaxLevelCompress,
                 IsTopMost = IsTopMost,
                 RuntimeMode = RuntimeMode,
                 OutputPath = OutputPath,
@@ -514,12 +511,6 @@ namespace Auto7z_WPF
         {
             get => _generateSHA256;
             set => SetProperty(ref _generateSHA256, value);
-        }
-
-        public bool MaxLevelCompress
-        {
-            get => _maxLevelCompress;
-            set => SetProperty(ref _maxLevelCompress, value);
         }
 
         public string ZipPasswordInputText
@@ -927,7 +918,8 @@ namespace Auto7z_WPF
             catch (Exception ex)
             {
                 _logService.WriteLog(EnumText.GetErrorText("Log_TaskException", "任务执行异常：{0}", ex.Message), LogService.ErrorLevel.Error);
-                WriteConsoleLine("错误: " + ex.Message);
+                // 错误前缀必须走资源键：Console 模式下用户直接看这行，硬编码中文会在英文环境里露馅。
+                WriteConsoleLine(EnumText.GetResourceText("ErrorMessage", "Error: ") + ex.Message);
                 ReportTaskResult(false, ex.Message);
                 SetResult(EnumText.GetResourceText("Result_Failed", "Failed"), failed: true);
             }
@@ -936,6 +928,9 @@ namespace Auto7z_WPF
                 _cancellation?.Dispose();
                 _cancellation = null;
                 IsBusy = false;
+                // 任务无论成功、失败还是取消，这里都要清掉进行中状态：
+                // 只有进程被强杀才会让 IsRunning=true 残留到下次启动。
+                TaskStateService.MarkTaskFinished();
             }
         }
 
@@ -1182,6 +1177,9 @@ namespace Auto7z_WPF
                 _cancellation?.Dispose();
                 _cancellation = null;
                 IsBusy = false;
+                // 任务无论成功、失败还是取消，这里都要清掉进行中状态：
+                // 只有进程被强杀才会让 IsRunning=true 残留到下次启动。
+                TaskStateService.MarkTaskFinished();
             }
         }
 
@@ -1371,6 +1369,9 @@ namespace Auto7z_WPF
                 return;
             }
 
+            // 产物目录已就位，从这里开始真正写文件：记下目录供崩溃后清理残片。
+            TaskStateService.MarkTaskStarted(outputDirectory);
+
             string baseName = BuildArchiveBaseName(batch);
 
             if (SevenZipService.CanSplitVolume(Format, Volume))
@@ -1414,7 +1415,6 @@ namespace Auto7z_WPF
                 Volume = Volume,
                 Password = Password,
                 Zstd = Zstd,
-                MaxLevelCompress = MaxLevelCompress,
                 IsSolidMode = IsSolidMode,
                 IsEncFileName = IsEncFileName,
                 CompressionLevel = CompressionLevel,
@@ -1683,6 +1683,9 @@ namespace Auto7z_WPF
                 FailWithError(pathError, report);
                 return;
             }
+
+            // 目标目录已就位，从这里开始真正写文件：记下目录供崩溃后清理残片。
+            TaskStateService.MarkTaskStarted(destinationDirectory);
 
             var runtimeConfig = new AppConfig
             {

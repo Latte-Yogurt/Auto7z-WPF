@@ -9,10 +9,17 @@ namespace Auto7z_WPF
     public partial class ProcessWindow : Window
     {
         private bool _cancelled;
+        private readonly Auto7zViewModel _vm;
 
         public ProcessWindow()
         {
             InitializeComponent();
+
+            // 标题栏按钮走 {Binding}，与主窗口/关于窗口一致：用 Auto7zViewModel 当 DataContext。
+            _vm = new Auto7zViewModel();
+            DataContext = _vm;
+            _vm.RequestClose += (s, e) => Close();
+            _vm.RequestMinimize += (s, e) => WindowState = WindowState.Minimized;
 
             Title = EnumText.GetResourceText("ProcessWindowTitle", "Processing...");
         }

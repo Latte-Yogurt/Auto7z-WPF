@@ -6,7 +6,10 @@ namespace Auto7z_WPF.Services
     {
         #region 可持久化设置
 
-        public string Language { get; set; } = "zh-CN";
+        // 默认值必须与 ConfigService 的兜底同源：配置读不出来时走的是这里，
+        // 而正常读取时走的是 ConfigService 的 LanguageService.FallbackLanguage。
+        // 两处各自写死一个字符串，迟早会漂移成「读失败就变中文」这类问题。
+        public string Language { get; set; } = LanguageService.FallbackLanguage;
 
         public string Volume { get; set; } = "2000";
 
@@ -19,8 +22,6 @@ namespace Auto7z_WPF.Services
         public bool GenerateSHA256 { get; set; } = true;
 
         public bool AutoSave { get; set; } = true;
-
-        public bool MaxLevelCompress { get; set; } = false;
 
         public bool IsTopMost { get; set; } = false;
 
