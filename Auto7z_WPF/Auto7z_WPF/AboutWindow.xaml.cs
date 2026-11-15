@@ -113,16 +113,31 @@ namespace Auto7z_WPF
                 // 先最小化自己：浏览器拿到前台时，关于窗口不会正好挡在它前面。
                 WindowState = WindowState.Minimized;
 
-                Process.Start(new ProcessStartInfo
+                // 包 using：Process 持有进程句柄，不释放的话每点一次链接就漏一个句柄。
+                using (Process.Start(new ProcessStartInfo
                 {
                     FileName = url,
                     // 必须用 ShellExecute 交给系统默认浏览器，否则 Process.Start 会把网址当成文件名去执行。
                     UseShellExecute = true
-                });
+                }))
+                {
+                }
             }
             // 系统没装默认浏览器或协议关联被改坏时 Process.Start 会抛异常，这里兜住并提示用户。
             catch (Exception ex)
             {
+                // 最小化必须回滚：先最小化再打开浏览器，打开失败时窗口会永久留在最小化状态，
+                // 用户点了链接却只看到一个错误框，然后关于窗口就找不回来了。
+                try
+                {
+                    WindowState = WindowState.Normal;
+                    Activate();
+                }
+                catch
+                {
+                    // 有意忽略：窗口可能正在关闭，此时恢复状态已经没有必要。
+                }
+
                 // 失败原因既进弹窗也进日志：用户看到提示，事后还能查到细节。
                 _msgService.ShowError(ex.Message, out string log);
                 _logService.WriteLog(log, LogService.ErrorLevel.Error);

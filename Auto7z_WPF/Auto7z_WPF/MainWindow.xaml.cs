@@ -576,7 +576,18 @@ namespace Auto7z_WPF
             {
                 _logService.WriteLog(EnumText.GetErrorText("Log_PortableSwitchFailed", "切换便携模式失败：{0}", ex.Message), LogService.ErrorLevel.Error);
                 // 失败就把勾选翻回去，不让界面显示一个并未生效的开关。
-                CheckBox_Portable.IsChecked = !portable;
+                // 必须挡掉这一轮回调：直接赋值会同步重入 CheckBox_Portable_CheckedChanged，
+                // 那里又会执行一次 _vm.IsPortable = !portable —— 迁移方向与用户选择相反，
+                // 而这次「回滚」本身并不需要再迁移一次。
+                _isSyncingControls = true;
+                try
+                {
+                    CheckBox_Portable.IsChecked = !portable;
+                }
+                finally
+                {
+                    _isSyncingControls = false;
+                }
             }
         }
 
@@ -817,11 +828,16 @@ namespace Auto7z_WPF
             }
 
             // 队列已保证串行，这里再挡一次，防止直接调用与排队批次撞在一起。
+            // 撞上时不能丢弃：拖拽入口（Window_Drop）是绕过队列直接进来的，
+            // 用户此时看到的是「拖进去了却什么都没发生」，日志默认级别下连提示都看不到。
+            // 回队后由 TaskCompleted 复位闸门时统一拉起，行为与连续右键一致。
             if (_vm.IsBusy)
             {
                 _logService.WriteLog(
                     EnumText.GetErrorText("Log_BusyIgnore", "已有任务正在执行，忽略本次传入的 {0} 个项目", existing.Count),
                     LogService.ErrorLevel.Warning);
+
+                foreach (string path in existing) _pendingQueue.Enqueue(new QueuedFile(path, handedMode));
                 return;
             }
 
@@ -829,6 +845,19 @@ namespace Auto7z_WPF
                 EnumText.GetErrorText("Log_ReceivedItems", "接收 {0} 个项目：{1}",
                     existing.Count, string.Join("; ", existing)),
                 LogService.ErrorLevel.Info);
+
+            // 交接来的模式必须先落到 ViewModel，再建待处理列表。
+            //
+            // SetPendingFiles 会按「当前操作模式」决定要不要把续卷归一化回首卷
+            // （见 ShouldNormalizeSplitVolume）：界面停在压缩模式时它不归一化。
+            // 若等到 StartModeSpecificTask 才用交接模式，顺序就反了 ——
+            // 界面在压缩、第二个实例带着 -uz 送来 x.7z.002 时，路径保留 .002，
+            // 随后却按解压执行，解压不出来。两条直接入口（App.RunFromCommandLine /
+            // RunFromShellMenu）都是先设模式再 SetPendingFiles，这里必须一致。
+            if (handedMode != null)
+            {
+                _vm.CurrentOperationMode = ParseHandedMode(handedMode);
+            }
 
             // 这里只传路径，目录大小由 ViewModel 交给任务线程再统计，界面线程不做递归遍历。
             _vm.SetPendingFiles(existing);

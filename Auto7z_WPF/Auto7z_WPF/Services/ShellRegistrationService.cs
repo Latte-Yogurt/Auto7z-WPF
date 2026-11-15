@@ -147,7 +147,15 @@ namespace Auto7z_WPF.Services
                 using (Process process = Process.Start(startInfo))
                 {
                     if (process == null) return false;
-                    process.WaitForExit(60000);
+                    // 超时不等于失败：用户可能正在 UAC 提示上停留，regsvr32 还没拿到结果。
+                    // 但必须先把进程收掉再返回，否则下面读 ExitCode 会抛异常，
+                    // 而那个异常会被外层 catch 吞成「注册失败」，真实原因反而看不到。
+                    if (!process.WaitForExit(60000))
+                    {
+                        try { process.Kill(); } catch { /* 有意忽略：进程可能恰好在超时这一刻自己退出 */ }
+                        return false;
+                    }
+
                     return process.ExitCode == 0;
                 }
             }
@@ -197,7 +205,9 @@ namespace Auto7z_WPF.Services
 
         private static bool UnregisterNow(string dllPath)
         {
-            Invoke(dllPath, UnregisterServerName);
+            // 注销必须检查 DllUnregisterServer 的返回值：它逐项删除注册表，任何一项删不掉
+            // 都会返回失败（SELFREG_E_CLASS），漏检就会把「没注销干净」当成注销成功。
+            if (Invoke(dllPath, UnregisterServerName) != 0) return false;
             Invoke(dllPath, RemoveMainExePathName);
             return true;
         }

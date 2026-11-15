@@ -28,7 +28,7 @@
     <UpdateRequired>false</UpdateRequired>
     <MapFileExtensions>true</MapFileExtensions>
     <ApplicationRevision>0</ApplicationRevision>
-    <ApplicationVersion>2.1.0.%2a</ApplicationVersion>
+    <ApplicationVersion>2.3.0.%2a</ApplicationVersion>
     <UseApplicationTrust>false</UseApplicationTrust>
     <PublishWizardCompleted>true</PublishWizardCompleted>
     <BootstrapperEnabled>true</BootstrapperEnabled>
@@ -110,6 +110,7 @@
     <Compile Include="Services\ShellMenuTaskRunner.cs" />
     <Compile Include="Services\ShellRegistrationService.cs" />
     <Compile Include="Services\SingleInstanceService.cs" />
+    <Compile Include="Services\TaskStateService.cs" />
     <Compile Include="Services\TestHooks.cs" />
     <Compile Include="ViewModel\Auto7zViewModel.cs" />
     <Compile Include="ViewModel\ObservableObject.cs" />

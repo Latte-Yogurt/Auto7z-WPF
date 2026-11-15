@@ -199,7 +199,12 @@ namespace Auto7z_WPF.Services
                 return null;
             string eventName = parts[2];
 
-            if (mapName.Length == 0 || totalBytes <= 0) return null;
+            // 上界必须在这里挡住：totalBytes 来自不可信的参数文本，(int) 强转 unchecked，
+            // 超过 int.MaxValue 会翻成负数，紧接着 new byte[负数] 抛异常被外层 catch 吞成
+            // 「不是有效映射」，真实原因完全看不到；更糟的是合法的大值会直接申请数 GB 内存。
+            // 外壳扩展写进来的路径串最大也就几十 MB，64MB 足够覆盖 200 个长路径。
+            const long MaxMapBytes = 64L * 1024 * 1024;
+            if (mapName.Length == 0 || totalBytes <= 0 || totalBytes > MaxMapBytes) return null;
 
             List<string> paths = new List<string>();
 
@@ -215,6 +220,7 @@ namespace Auto7z_WPF.Services
 
                         // 前 2 个字节是协议标记，真正的路径从其后的偏移开始平铺。
                         int position = 2;
+                        bool truncated = false;
                         while (position + 2 <= buffer.Length)
                         {
                             int end = position;
@@ -223,7 +229,15 @@ namespace Auto7z_WPF.Services
                                 end += 2;
                             }
 
-                            if (end + 1 >= buffer.Length) break;
+                            // 走到缓冲区末尾还没遇到 NUL：发送方写的字节数比实际内容短，
+                            // 剩下的这半条路径不可信。已经解出来的路径照常返回，但一条都没解出来时
+                            // 必须按「不是有效映射参数」处理 —— 否则空列表会让调用方以为
+                            // 这是一次合法的空选区，进而弹出主窗口而不是报错。
+                            if (end + 1 >= buffer.Length)
+                            {
+                                truncated = true;
+                                break;
+                            }
 
                             int charCount = (end - position) / 2;
                             if (charCount > 0)
@@ -233,6 +247,8 @@ namespace Auto7z_WPF.Services
 
                             position = end + 2;
                         }
+
+                        if (truncated && paths.Count == 0) return null;
                     }
                 }
             }

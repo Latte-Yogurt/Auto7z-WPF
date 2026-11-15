@@ -422,8 +422,6 @@ namespace Auto7z_WPF.Services
 
         private static int GetCompressionLevelValue(AppConfig config)
         {
-            if (config.MaxLevelCompress) return 9;
-
             switch (config.CompressionLevel)
             {
                 case CompressionLevelPreset.Store: return 0;

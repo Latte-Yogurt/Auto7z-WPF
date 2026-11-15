@@ -29,26 +29,31 @@
         <Grid x:Name="MainGrid" Grid.Column="0" Margin="8">
             <StackPanel HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0">
                 <TextBlock x:Name="MessageTitle" Text="{DynamicResource InfoTitle}"
-                               FontFamily="Microsoft YaHei Bold, DengXian Light" FontSize="13"
-                               Style="{DynamicResource Black2BlueTextBlockStyle}" Cursor="Hand"/>
+                               FontFamily="Microsoft YaHei Bold, DengXian Light" FontSize="13"/>
             </StackPanel>
 
             <StackPanel HorizontalAlignment="Right" VerticalAlignment="Top" Orientation="Horizontal" Margin="0">
                 <Grid x:Name="MinimizeButton"
-                              Background="Transparent"
-                              Width="15" Height="15"
-                              Cursor="Hand"
-                              PreviewMouseLeftButtonDown="MinimizeButton_Click">
+                          Background="Transparent"
+                          Width="15" Height="15"
+                          Cursor="Hand" >
+
+                    <Grid.InputBindings>
+                        <MouseBinding MouseAction="LeftClick" Command="{Binding MinimizeCommand}" CommandParameter="{Binding RelativeSource={RelativeSource AncestorType=Window}}"/>
+                    </Grid.InputBindings>
 
                     <Path Data="M0,8 L9,8" StrokeThickness="2" Style="{DynamicResource YellowGreenPathStyle}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Grid>
 
                 <Grid Width="10"/>
                 <Grid x:Name="CloseButton"
-                              Background="Transparent"
-                              Width="15" Height="15"
-                              Cursor="Hand"
-                              PreviewMouseLeftButtonDown="CloseButton_Click">
+                          Background="Transparent"
+                          Width="15" Height="15"
+                          Cursor="Hand">
+
+                    <Grid.InputBindings>
+                        <MouseBinding MouseAction="LeftClick" Command="{Binding CloseCommand}" CommandParameter="{Binding RelativeSource={RelativeSource AncestorType=Window}}"/>
+                    </Grid.InputBindings>
 
                     <Path Data="M0,0 L9,9 M0,9 L9,0" StrokeThickness="2" Style="{DynamicResource RedPathStyle}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Grid>

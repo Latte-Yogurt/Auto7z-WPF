@@ -26,7 +26,6 @@ namespace Auto7z_WPF.Services
             new ConfigKey("Zstd", true),
             new ConfigKey("GenerateSHA256", true),
             new ConfigKey("AutoSave", true),
-            new ConfigKey("MaxLevelCompress", true),
             new ConfigKey("IsTopMost", true),
             // IsPortable 不再是一个配置项：便携与否由 AppPaths 按「程序目录旁有没有数据目录」
             // 判定，写进配置只会制造「配置说在便携、目录却指向普通」这种自相矛盾的状态。
@@ -36,7 +35,6 @@ namespace Auto7z_WPF.Services
             new ConfigKey("IsEncFileName", true),
             new ConfigKey("CompressionLevel", false),
             new ConfigKey("UnzipPassword", false),
-            new ConfigKey("SevenZUsageCount", false),
             new ConfigKey("ErrorLevel", false)
         };
 
@@ -70,13 +68,11 @@ namespace Auto7z_WPF.Services
                 var values = LoadValues();
                 if (values == null) return config;
 
-                // 旧版本留下的、当前版本已不用的键在这里剔除，
-                // 让文件只描述当前版本，避免用户以为某个旧键还在生效。
-                var cleaned = RemoveDeprecated(values);
-
                 // 缺键补齐：读回来的键数少于键表就说明文件是旧版或手改少了，
                 // 补一份完整的写回，保证磁盘与代码一致。
-                if (cleaned.Count != values.Count || HasMissingKeys(values))
+                // 不再做废弃键清理：历史键（ScreenWidth/IsPortable 等）对程序没有任何影响，
+                // 保留它们既不读也不写，还能让用户看到旧文件的原貌。
+                if (HasMissingKeys(values))
                 {
                     SaveDocument(BuildDocument(values));
                     values = LoadValues();
@@ -102,8 +98,6 @@ namespace Auto7z_WPF.Services
                 // 以现有文件为基底再覆盖已知键：用户手工加的扩展键得以保留。
                 var values = LoadValues() ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-                RemoveDeprecated(values);
-
                 Set(values, "Language", config.Language);
                 Set(values, "Volume", config.Volume);
                 Set(values, "Format", ArchiveFormatMap.ToSwitchValue(config.Format));
@@ -111,7 +105,6 @@ namespace Auto7z_WPF.Services
                 Set(values, "Zstd", config.Zstd.ToString());
                 Set(values, "GenerateSHA256", config.GenerateSHA256.ToString());
                 Set(values, "AutoSave", config.AutoSave.ToString());
-                Set(values, "MaxLevelCompress", config.MaxLevelCompress.ToString());
                 Set(values, "IsTopMost", config.IsTopMost.ToString());
                 Set(values, "RuntimeMode", config.RuntimeMode.ToString());
                 Set(values, "OutputPath", config.OutputPath ?? string.Empty);
@@ -119,7 +112,6 @@ namespace Auto7z_WPF.Services
                 Set(values, "IsEncFileName", config.IsEncFileName.ToString());
                 Set(values, "CompressionLevel", config.CompressionLevel.ToString());
                 Set(values, "UnzipPassword", config.UnzipPassword);
-                Set(values, "SevenZUsageCount", config.SevenZUsageCount.ToString(CultureInfo.InvariantCulture));
                 Set(values, "ErrorLevel", config.ErrorLevel.ToString());
 
                 return SaveDocument(BuildDocument(values));
@@ -140,7 +132,6 @@ namespace Auto7z_WPF.Services
                 var values = LoadValues();
                 if (values == null) return false;
 
-                RemoveDeprecated(values);
                 Set(values, key, value);
                 return SaveDocument(BuildDocument(values));
             }
@@ -253,17 +244,15 @@ namespace Auto7z_WPF.Services
             config.Zstd = ParseBool(values, "Zstd", true);
             config.GenerateSHA256 = ParseBool(values, "GenerateSHA256", true);
             config.AutoSave = ParseBool(values, "AutoSave", true);
-            config.MaxLevelCompress = ParseBool(values, "MaxLevelCompress", false);
             config.IsTopMost = ParseBool(values, "IsTopMost", false);
             // 便携模式不在配置里读：旧文件即使残留 IsPortable 键也不会被采信，
-            // 该键在 RemoveDeprecated 里被剔除，真正的事实来自 AppPaths.DetectPortableFromDisk。
+            // 该键既不读也不写（历史键对程序无影响，直接忽略），真正的事实来自 AppPaths.DetectPortableFromDisk。
             config.RuntimeMode = ParseRuntimeMode(GetValue(values, "RuntimeMode", "Balanced", null));
             config.OutputPath = GetValue(values, "OutputPath", string.Empty, null);
             config.IsSolidMode = ParseBool(values, "IsSolidMode", false);
             config.IsEncFileName = ParseBool(values, "IsEncFileName", false);
             config.CompressionLevel = ParseCompressionLevel(GetValue(values, "CompressionLevel", CompressionLevelPreset.Normal.ToString(), null));
             config.UnzipPassword = GetValue(values, "UnzipPassword", string.Empty, null);
-            config.SevenZUsageCount = ParseLong(values, "SevenZUsageCount", 0);
             config.ErrorLevel = ParseErrorLevel(GetValue(values, "ErrorLevel", "Warning", null));
         }
 
@@ -290,20 +279,6 @@ namespace Auto7z_WPF.Services
 
             // 布尔解析失败时保持默认值而不是当作 false，否则拼错的 true 会静默改掉行为。
             if (bool.TryParse(value.Trim(), out bool result))
-            {
-                return result;
-            }
-
-            return defaultValue;
-        }
-
-        private static long ParseLong(Dictionary<string, string> values, string key, long defaultValue)
-        {
-            string value = values.TryGetValue(key, out string raw) ? raw : null;
-            if (string.IsNullOrWhiteSpace(value)) return defaultValue;
-
-            // 使用量统计不接受负数，负数与非法文本同样按默认值处理，避免统计值倒退。
-            if (long.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long result) && result >= 0)
             {
                 return result;
             }
@@ -387,7 +362,7 @@ namespace Auto7z_WPF.Services
         }
         #endregion
 
-        #region 节点写回与废弃键清理
+        #region 节点写回
         private static void Set(Dictionary<string, string> values, string key, string value)
         {
             values[key] = value ?? string.Empty;
@@ -412,32 +387,6 @@ namespace Auto7z_WPF.Services
 
             return false;
         }
-
-        // 这些键旧版本用过，继续留在文件里会被误认为仍然生效；
-        // 写回前统一剔除，让配置文件只描述当前版本。
-        private static readonly string[] _deprecatedKeys =
-        {
-            "ScreenWidth",
-            "ScreenHeight",
-            "SystemScale",
-            "LocationX",
-            "LocationY",
-            "DisableVolume",
-            "Portable",
-            "ZipLevel",
-            "MainText",
-            "IsDeleteTemp"
-        };
-
-        private static Dictionary<string, string> RemoveDeprecated(Dictionary<string, string> values)
-        {
-            foreach (var key in _deprecatedKeys)
-            {
-                values.Remove(key);
-            }
-
-            return values;
-        }
         #endregion
 
         #region 默认配置重建
@@ -452,7 +401,6 @@ namespace Auto7z_WPF.Services
                 case "Zstd": return bool.TrueString;
                 case "GenerateSHA256": return bool.TrueString;
                 case "AutoSave": return bool.TrueString;
-                case "MaxLevelCompress": return bool.FalseString;
                 case "IsTopMost": return bool.FalseString;
                 case "RuntimeMode": return RuntimeModePreset.Balanced.ToString();
                 case "OutputPath": return string.Empty;
@@ -460,7 +408,6 @@ namespace Auto7z_WPF.Services
                 case "IsEncFileName": return bool.FalseString;
                 case "CompressionLevel": return CompressionLevelPreset.Normal.ToString();
                 case "UnzipPassword": return string.Empty;
-                case "SevenZUsageCount": return "0";
                 case "ErrorLevel": return "Warning";
                 default: return string.Empty;
             }

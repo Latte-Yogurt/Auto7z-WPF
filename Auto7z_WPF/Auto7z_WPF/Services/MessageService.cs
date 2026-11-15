@@ -154,12 +154,27 @@ namespace Auto7z_WPF.Services
                 }
                 else
                 {
+                    // Dispatcher 已经在关闭时 BeginInvoke 会直接抛，show() 永远不执行，
+                    // 下面的 Wait() 就会无限期挂住调用方线程（任务线程时表现为进程卡死）。
+                    if (app.Dispatcher.HasShutdownStarted || app.Dispatcher.HasShutdownFinished)
+                    {
+                        return;
+                    }
+
                     app.Dispatcher.BeginInvoke(show);
                 }
 
                 // 非 UI 线程调用时必须等 UI 线程把窗口关掉才返回，
                 // 否则调用方拿到的永远是最初的默认结果。
-                completed.Wait();
+                // 但等待必须有上界：窗口没能建出来（Owner 失效、Dispatcher 关闭）时
+                // 没有任何人会 Set 这个事件，无上界等待等于让任务线程永久挂起。
+                if (!completed.Wait(TimeSpan.FromMinutes(5)))
+                {
+                    // 纯诊断日志，与 ViewModel 里「解压尝试 N: exit=…」同类，不走资源键。
+                    new LogService().WriteLog(
+                        "提示框在 5 分钟内没有关闭，按默认结果继续（Owner 可能已失效或 Dispatcher 正在关闭）",
+                        LogService.ErrorLevel.Warning);
+                }
             }
             catch
             {
