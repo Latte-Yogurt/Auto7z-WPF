@@ -266,7 +266,7 @@ def p_invalid_single_key():
         "Language": "zh-CN", "Volume": "abc", "Format": "rar",
         "CompressionLevel": "Nope", "RuntimeMode": "Weird",
         "ErrorLevel": "Verbose", "Zstd": True, "GenerateSHA256": False,
-        "AutoSave": True, "MaxLevelCompress": False, "IsTopMost": False,
+        "AutoSave": True, "IsTopMost": False,
         "Password": "", "UnzipPassword": "", "IsSolidMode": False,
         "IsEncFileName": False, "OutputPath": "", "SevenZUsageCount": 0,
     }
@@ -576,14 +576,31 @@ def p_shellmenu_dispatch():
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              stdin=subprocess.DEVNULL)
         seen = []
+        seen = []
         deadline = time.time() + 8
         while time.time() < deadline:
-            for title in _window_titles(p.pid):
+            # 按**整个产品家族**的 PID 枚举窗口，而不是只看刚启动的这个进程。
+            # 产品是单实例的：如果此刻已有实例在跑，刚启动的进程会把共享内存参数
+            # 交接过去、自己以 0 退出，真正的进度窗开在**接收方**进程里。
+            #
+            # 采样间隔必须短：任务一结束进度窗立刻关闭，实测小文件任务全程只有
+            # 几十毫秒。原来 200ms 轮询会让窗口在两次采样之间开了又关，
+            # 把「有窗口」误报成「没有窗口」—— 那是采样率问题，不是产品缺陷。
+            for title in _window_titles_of_product():
                 if title not in seen:
                     seen.append(title)
-            if p.poll() is not None:
+            exited = p.poll() is not None
+            if exited:
+                # 进程已退出：再补扫几轮，覆盖「窗口在退出瞬间才销毁」的时序。
+                for _ in range(4):
+                    for title in _window_titles_of_product():
+                        if title not in seen:
+                            seen.append(title)
+                    if seen:
+                        break
+                    time.sleep(0.02)
                 break
-            time.sleep(0.2)
+            time.sleep(0.01)
         try:
             p.wait(timeout=90)
         except subprocess.TimeoutExpired:
@@ -662,6 +679,64 @@ def p_sha256_single_manifest():
     else:
         ok("SHA256", "一份清单覆盖全部 %d 卷，逐行哈希正确" % len(vols),
            shas[0].name)
+
+
+
+def _window_titles_of_product():
+    """取所有 Auto7z / Auto7zGUI 进程的可见窗口标题。
+
+    单实例机制下「刚启动的进程」可能只是把参数交接出去就退出，真正的窗口在另一个
+    进程里，所以窗口归属必须按整个产品家族看，不能只看某一个 PID。
+    """
+    import ctypes
+    import ctypes.wintypes
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+
+    target_pids = set()
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", ctypes.wintypes.DWORD),
+            ("cntUsage", ctypes.wintypes.DWORD),
+            ("th32ProcessID", ctypes.wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+            ("th32ModuleID", ctypes.wintypes.DWORD),
+            ("cntThreads", ctypes.wintypes.DWORD),
+            ("th32ParentProcessID", ctypes.wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", ctypes.wintypes.DWORD),
+            ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            if entry.szExeFile.lower() in ("auto7z.exe", "auto7zgui.exe"):
+                target_pids.add(entry.th32ProcessID)
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+    found = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+    def cb(hwnd, lparam):
+        wpid = ctypes.wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+        if wpid.value in target_pids and user32.IsWindowVisible(hwnd):
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n:
+                buf = ctypes.create_unicode_buffer(n + 1)
+                user32.GetWindowTextW(hwnd, buf, n + 1)
+                found.append(buf.value)
+        return True
+
+    user32.EnumWindows(cb, 0)
+    return found
 
 
 def _window_titles(pid):

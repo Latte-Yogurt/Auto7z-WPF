@@ -153,7 +153,7 @@ def find_lang_dir():
 
 
 BOOLEAN_KEYS = {
-    "Zstd", "GenerateSHA256", "AutoSave", "MaxLevelCompress",
+    "Zstd", "GenerateSHA256", "AutoSave",
     "IsTopMost", "IsPortable", "IsSolidMode", "IsEncFileName",
 }
 
@@ -678,9 +678,9 @@ def main():
             if not any(x.endswith("a.txt") for x in p):
                 bad("自动模式混合: 压缩包没有被解压")
 
-    # T14 废键
+    # T14 废键（历史键保留，不再清理）
     say("")
-    say("##### T14: 废键清理 #####")
+    say("##### T14: 废键保留 #####")
     old = ["ScreenWidth", "ScreenHeight", "SystemScale", "LocationX",
            "LocationY", "DisableVolume", "Portable", "ZipLevel", "MainText"]
     # 变量名不能叫 data：main() 里 data 已经是测试数据目录（Path），
@@ -690,16 +690,18 @@ def main():
         cfg_now.setdefault(k, "0")
     CFG.write_text(json.dumps(cfg_now, ensure_ascii=False, indent=2) + "\n",
                    encoding="utf-8")
-    before = len(cfg_now)
     set_cfg(AutoSave=True)
     close_gracefully([], 2)
     after = read_cfg()
     left = [k for k in old if k in after]
-    say("  键数 %d -> %d" % (before, len(after)))
-    if left:
-        bad("废键未清理: %s" % ", ".join(left))
+    say("  键数 %d -> %d" % (len(cfg_now), len(after)))
+    # 历史键对程序无影响，产品已不再主动清理它们；断言这些键仍留在文件里，
+    # 而不是被悄悄删掉（用户手工加的键同样应保留）。
+    if left != old:
+        bad("废键被意外清理: 应保留 %d 个, 实际剩 %d 个（%s）"
+            % (len(old), len(left), ", ".join(left)))
     else:
-        say("  废键清理: OK")
+        say("  废键保留: OK（%d 个历史键原样保留）" % len(left))
 
     # T15 非法格式
     say("")
@@ -884,7 +886,7 @@ def main():
                     #
                     # 便携状态不再写进配置：它由「程序目录旁有没有 .config\Auto7z」决定。
                     # 所以这里只断言两件事 —— 内存状态对不对、磁盘目录搬得干不干净。
-                    # 配置里的 IsPortable 键已经不存在，旧文件残留该键也不影响使用，
+                    # 配置里的 IsPortable 键属于历史键，既不读也不写，旧文件残留它不影响使用，
                     # 因此不再断言它（断言一个刻意不维护的键只会变成假失败）。
                     if "IsPortable = True" not in text:
                         bad("便携模式: 没有切到便携模式")

@@ -249,6 +249,15 @@ def main():
         else:
             r.status, r.detail = judge_report_file(work / "verify.txt", code)
 
+    r = add("chromecheck", "无边框窗口标题栏命令绑定（关闭/最小化）")
+    if ensure_tool(r):
+        code, text = run(tool("chromecheck"), [work, app])
+        r.raw, r.code = text, code
+        if is_release_skip(code, text):
+            r.status, r.detail = "跳过", "Release 构建无测试钩子"
+        else:
+            r.status, r.detail = judge(text, code)
+
     r = add("taborder", "Tab 顺序（静态 TabIndex + 运行时可达）")
     if ensure_tool(r):
         xaml_dir = WORKSPACE / "Auto7z_WPF" / "Auto7z_WPF"
