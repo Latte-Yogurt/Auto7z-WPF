@@ -314,7 +314,9 @@ int wmain(int argc, wchar_t **argv)
         L"cl /nologo /c /utf-8 /EHsc /O2 /MT /W3 /DUNICODE /D_UNICODE"
         // /Fo 显式指定目标文件位置，否则 cl 会按当前工作目录把 .obj 写在源码旁边。
         L" /I \"" + context.srcDir + L"\" /Fo\"" + object + L"\" \"" + source + L"\" && "
-        L"rc /nologo /fo \"" + resFile + L"\" \"" + resource + L"\" && "
+        // rc 默认按系统 ANSI 代码页读 .rc；ShellResource.rc 是 UTF-8（含中文菜单文字），
+        // 不显式给 /c 65001 就会被当 GBK 解出乱码。此参数是修复右键菜单乱码的关键。
+        L"rc /nologo /c 65001 /fo \"" + resFile + L"\" \"" + resource + L"\" && "
         L"link /nologo /DLL /OUT:\"" + dll + L"\""
         L" \"" + object + L"\" \"" + resFile + L"\""
         L" /DEF:\"" + defFile + L"\""

@@ -101,6 +101,7 @@ call vcvars64.bat && cl ... && rc ... && link ...
 | 选项 | 原因 |
 |---|---|
 | `/utf-8` | 源码是 UTF-8，不加这个编译器会按本地代码页（GBK）读，中文注释和字符串会乱 |
+| `rc /c 65001` | `.rc` 是 UTF-8，rc 默认按 ANSI 读；不显式指定代码页会把中文菜单文字解成乱码 |
 | `/MT` | 静态链接 CRT，dll 不依赖运行库，部署到别的机器不用带 VC++ redistributable |
 | `/O2` | 优化 |
 | `/W3` | 警告级别 |
@@ -116,11 +117,11 @@ call vcvars64.bat && cl ... && rc ... && link ...
 | `ShellExtension.cpp` | UTF-8 无 BOM | 靠 `/utf-8` 让编译器按 UTF-8 读 |
 | `ShellProtocol.h` | UTF-8 无 BOM | 同上 |
 | `ShellExtension.def` | ASCII | 链接器只认这个 |
-| **`ShellResource.rc`** | **UTF-16LE 带 BOM** | **`rc` 工具按 ANSI 读 `.rc`，UTF-8 的中文会被截断，菜单项就成了空白** |
+| **`ShellResource.rc`** | **UTF-8 无 BOM** | **靠 `rc /c 65001` 让 rc 按 UTF-8 读，中文菜单文字不乱码** |
 | `BuildTool.cpp` | UTF-8 无 BOM | 同上，`buildtool.bat` 编译它时也带 `/utf-8` |
 | `buildtool.bat` | ASCII | cmd 按本地代码页读，UTF-8 会解析出错 |
 
-改 `ShellResource.rc` 时必须存成 **UTF-16LE 带 BOM**（Visual Studio 默认就是）。
+改 `ShellResource.rc` 时存成 **UTF-8 无 BOM**，靠构建命令里的 `/c 65001` 识别。
 
 改 `ShellExtension.cpp` / `BuildTool.cpp` 时反过来，存成 **UTF-8 无 BOM** —— 这两个文件靠编译器的 `/utf-8` 开关识别，带 BOM 也能编，但源码里的中文注释会依赖编译器版本的处理方式。
 
@@ -139,7 +140,7 @@ IShellExtInit  接收资源管理器传来的选中项
 |---|---|
 | `DllGetClassObject` | COM 入口，返回类工厂 |
 | `DllCanUnloadNow` | COM 入口 |
-| `DllRegisterServer` | 写注册表：CLSID、InprocServer32、Approved、四个菜单挂载点，顺带写主程序路径 |
+| `DllRegisterServer` | 写注册表：CLSID、InprocServer32、Approved、三个菜单挂载点，顺带写主程序路径 |
 | `DllUnregisterServer` | 删掉上面那些 |
 | `DllSetMainExePath` | 记录主程序位置，供菜单图标与启动时使用 |
 | `DllRemoveMainExePath` | 清掉上面那个 |
@@ -174,7 +175,6 @@ HKLM\Software\Classes\CLSID\{6C3F8A21-...}
 HKLM\Software\Classes\*\shellex\ContextMenuHandlers\Auto7z
 HKLM\Software\Classes\Directory\shellex\ContextMenuHandlers\Auto7z
 HKLM\Software\Classes\Folder\shellex\ContextMenuHandlers\Auto7z
-HKLM\Software\Classes\Directory\Background\shellex\ContextMenuHandlers\Auto7z
     (默认)                = {6C3F8A21-...}
 
 HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved

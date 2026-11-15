@@ -82,16 +82,26 @@ void FormatClassId(wchar_t *buffer, size_t bufferChars)
                  kClassId.Data4[4], kClassId.Data4[5], kClassId.Data4[6], kClassId.Data4[7]);
 }
 
-const HKEY kClassesRoot = HKEY_CLASSES_ROOT;
+// 不要用 HKEY_CLASSES_ROOT：它是 HKLM\Software\Classes 与 HKCU\Software\Classes 的
+// 合并视图，且 **HKCU 优先**。本组件要注册的都是机器级的 COM 与外壳挂载点，
+// 走 HKCR 会带来两个后果：
+//   1) 写：理论上可能落到 HKCU 视图，等于「注册成功」但只有当前用户看得到；
+//   2) 读：会被低权限用户提前种下的 HKCU 影子键劫持（见 ReadRegisteredExePath）。
+// 所以这里统一用 HKLM + KEY_WOW64_64KEY，与 RegCreateKeyEx 里的访问标志对齐。
+const HKEY kClassesRoot = HKEY_LOCAL_MACHINE;
 
 const HKEY kMachineClasses = HKEY_LOCAL_MACHINE;
 
+// 挂载点与 CLSID 都在 Software\Classes 之下，用 HKLM 时要显式补上这一段前缀。
+const wchar_t kClassesPrefix[] = L"Software\\Classes\\";
+
 // MainExePath 挂在 CLSID 之下而不是类名之下：它是本组件的私有登记项，卸载时随 CLSID 一并删除。
+// 根键从 HKCR 换成 HKLM 之后，路径必须自己带上 Software\Classes 这一段。
 std::wstring GetMainExeValueKey()
 {
     wchar_t clsid[64];
     FormatClassId(clsid, 64);
-    return std::wstring(L"CLSID\\") + clsid + L"\\Auto7z";
+    return std::wstring(kClassesPrefix) + L"CLSID\\" + clsid + L"\\Auto7z";
 }
 
 // 从组件自身的加载位置推目录，组件被拷到哪里都按同目录找主程序。
@@ -107,10 +117,18 @@ bool GetModuleDirectory(wchar_t *buffer, size_t bufferChars)
 }
 
 // 优先读注册时登记的主程序路径，这样主程序被改名或挪动后仍能用注册表里的真值。
+//
+// **必须读 HKLM 而不是 HKCR**：HKCR 是 HKLM\Software\Classes 与 HKCU\Software\Classes
+// 的合并视图，且 HKCU 优先。而 HKCU 下的这个键普通用户自己就能写 —— 于是任何低权限
+// 进程都能把 MainExePath 改成任意 exe，等这个外壳扩展在**提权后的**资源管理器里被
+// 加载、被点一下菜单时，那个任意 exe 就以高完整性级别跑起来了。这是一条完整的提权链。
+// 注册侧（RegisterHandlers / DllRegisterServer）写的都是 HKLM，读侧必须对齐，
+// 并且显式带 KEY_WOW64_64KEY，保证 32/64 位视图落到同一个物理键上。
 bool ReadRegisteredExePath(std::wstring &path)
 {
     HKEY key = nullptr;
-    if (RegOpenKeyExW(kClassesRoot, GetMainExeValueKey().c_str(), 0, KEY_READ, &key) != ERROR_SUCCESS)
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, GetMainExeValueKey().c_str(), 0,
+                      KEY_READ | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS)
         return false;
 
     wchar_t buffer[MAX_PATH] = {};
@@ -122,7 +140,13 @@ bool ReadRegisteredExePath(std::wstring &path)
 
     if (result != ERROR_SUCCESS || type != REG_SZ) return false;
 
-    if (size == 0 || size > sizeof(buffer)) return false;
+    // size 是字节数。必须至少容得下一个 wchar_t 再加终止符，否则下面的
+    // buffer[(size / sizeof(wchar_t)) - 1] 在 size == 1 时会下溢成 SIZE_MAX，
+    // 变成一个完全落在数组之外的写。奇数 size 说明数据本身不可信（REG_SZ 必然是
+    // 偶数字节），同样拒绝。
+    if (size < 2 * sizeof(wchar_t) || size > sizeof(buffer)) return false;
+    if ((size % sizeof(wchar_t)) != 0) return false;
+
     buffer[(size / sizeof(wchar_t)) - 1] = L'\0';
     if (buffer[0] == L'\0') return false;
 
@@ -426,36 +450,65 @@ bool ReadSelectedPaths(IDataObject *dataObject, std::vector<std::wstring> &paths
         if (!paths.empty()) return true;
     }
 
-    FORMATETC idListFormat = {static_cast<CLIPFORMAT>(reinterpret_cast<ULONG_PTR>(CFSTR_SHELLIDLIST)),
-                               nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
-    if (SUCCEEDED(dataObject->GetData(&idListFormat, &medium)))
+    // CFSTR_SHELLIDLIST 是**剪贴板格式名**，不是格式 ID。取 ID 必须走
+    // RegisterClipboardFormatW，直接把字符串指针强转成 CLIPFORMAT 只会拿到
+    // 指针的低 16 位，与真实 ID 毫无关系 —— 结果是这个回退分支从来没命中过，
+    // 虚拟命名空间里的条目（也就是注释承诺要兜住的那一类）一直被静默丢掉。
+    CLIPFORMAT idListFormatId = static_cast<CLIPFORMAT>(
+        RegisterClipboardFormatW(CFSTR_SHELLIDLIST));
+
+    if (idListFormatId != 0)
     {
-        const CIDA *cida = static_cast<const CIDA *>(GlobalLock(medium.hGlobal));
-        if (cida != nullptr)
+        FORMATETC idListFormat = {idListFormatId, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        if (SUCCEEDED(dataObject->GetData(&idListFormat, &medium)))
         {
-            if (cida->cidl > 0 && cida->cidl < 0x10000)
+            const CIDA *cida = nullptr;
+            SIZE_T mediumBytes = GlobalSize(medium.hGlobal);
+            const BYTE *base = static_cast<const BYTE *>(GlobalLock(medium.hGlobal));
+            if (base != nullptr) cida = reinterpret_cast<const CIDA *>(base);
+
+            // 三重校验，缺一不可：
+            //   1) 缓冲区至少容得下 CIDA 头（cidl + aoffset[1]）；
+            //   2) cidl 的每个元素都要有对应的 aoffset[i+1]，总长不能越过缓冲区；
+            //   3) 每个 aoffset 指向的 IDLIST 起点必须落在缓冲区内。
+            // 少了这些校验，一个「格式对但内容不是 CIDA」的 medium 会让下面
+            // 按 aoffset 取值时越界读，把属于别的进程的内存当成指针用。
+            if (cida != nullptr
+                && mediumBytes >= sizeof(CIDA) + sizeof(UINT)
+                && cida->cidl > 0
+                && cida->cidl < 0x10000)
             {
-                const BYTE *base = reinterpret_cast<const BYTE *>(cida);
-                PCIDLIST_ABSOLUTE parent = reinterpret_cast<PCIDLIST_ABSOLUTE>(
-                    const_cast<BYTE *>(base + cida->aoffset[0]));
-
-                for (UINT i = 0; i < cida->cidl; i++)
+                SIZE_T needed = sizeof(CIDA) + (static_cast<SIZE_T>(cida->cidl) + 1) * sizeof(UINT);
+                if (needed <= mediumBytes)
                 {
-                    PCUIDLIST_RELATIVE child = reinterpret_cast<PCUIDLIST_RELATIVE>(
-                        const_cast<BYTE *>(base + cida->aoffset[i + 1]));
+                    PCIDLIST_ABSOLUTE parent = nullptr;
+                    if (cida->aoffset[0] < mediumBytes)
+                    {
+                        parent = reinterpret_cast<PCIDLIST_ABSOLUTE>(
+                            const_cast<BYTE *>(base + cida->aoffset[0]));
+                    }
 
-                    PIDLIST_ABSOLUTE full = ILCombine(parent, child);
-                    if (full == nullptr) continue;
+                    for (UINT i = 0; parent != nullptr && i < cida->cidl; i++)
+                    {
+                        if (cida->aoffset[i + 1] >= mediumBytes) continue;
 
-                    wchar_t path[MAX_PATH];
-                    if (SHGetPathFromIDListW(full, path)) paths.push_back(path);
-                    ILFree(full);
+                        PCUIDLIST_RELATIVE child = reinterpret_cast<PCUIDLIST_RELATIVE>(
+                            const_cast<BYTE *>(base + cida->aoffset[i + 1]));
+
+                        PIDLIST_ABSOLUTE full = ILCombine(parent, child);
+                        if (full == nullptr) continue;
+
+                        wchar_t path[MAX_PATH] = {};
+                        if (SHGetPathFromIDListW(full, path) && path[0] != L'\0')
+                            paths.push_back(path);
+                        ILFree(full);
+                    }
                 }
             }
 
-            GlobalUnlock(medium.hGlobal);
+            if (cida != nullptr) GlobalUnlock(medium.hGlobal);
+            ReleaseStgMedium(&medium);
         }
-        ReleaseStgMedium(&medium);
     }
 
     return !paths.empty();
@@ -699,14 +752,23 @@ public:
     }
 
     // Initialize 只记录选区，不做任何耗时操作：它跑在资源管理器的界面线程上。
+    // 只认 dataObject：本组件不对文件夹空白处出菜单（空白处没有选中项，压缩/解压无从谈起），
+    // 因此不再注册 Directory\Background 挂载点，也不处理 pidlFolder。
     STDMETHODIMP Initialize(PCIDLIST_ABSOLUTE pidlFolder, LPDATAOBJECT dataObject, HKEY hkeyProgID) override
     {
-        (void)pidlFolder;
         (void)hkeyProgID;
+        (void)pidlFolder;
 
         m_paths.clear();
+
         if (dataObject != nullptr)
-            ReadSelectedPaths(dataObject, m_paths);
+        {
+            std::vector<std::wstring> selected;
+            if (ReadSelectedPaths(dataObject, selected) && !selected.empty())
+            {
+                m_paths.swap(selected);
+            }
+        }
 
         return S_OK;
     }
@@ -859,6 +921,14 @@ private:
     }
 
     // 只认 MAKEINTRESOURCE 形态的谓词；字符串谓词不带 Unicode 位时同样算认不出来。
+    //
+    // 注意：这里**不能**把 nullptr 当成「无效命令」。在 ANSI 形态下，调用方就是用
+    // lpVerb = MAKEINTRESOURCE(0) 来表示「第 0 项」，而 MAKEINTRESOURCE(0) 的值
+    // 恰好等于 nullptr —— 索引 0 与空指针在 Win32 的这套编码里本来就无法区分。
+    // 于是 lpVerb == NULL 的唯一合理含义就是「压缩」，这是菜单项 0 的正常调用，
+    // 不是「调用方什么都没给」。真正的失败关闭发生在 Unicode 分支：那里
+    // lpVerbW 与 lpVerb 都为空时按第 0 项处理同样是既定语义，而字符串谓词无法
+    // 匹配到任何槽位时才返回 E_FAIL（见 FindCommandSlot）。
     HRESULT FindAnsiCommandSlot(LPCSTR verb, UINT *slot)
     {
         if (!IS_INTRESOURCE(verb)) return E_FAIL;
@@ -942,11 +1012,15 @@ private:
 
 
 // 注册表写入集中在这一处，成功与否用返回值表达，调用方据此决定是否上报注册失败。
+//
+// 一律带 KEY_WOW64_64KEY：组件是 x64 的，注册表写点必须落在 64 位视图里。
+// 否则 32 位进程调用 DllRegisterServer 时会被重定向到 Wow6432Node，
+// 64 位资源管理器去正规视图里找 CLSID 自然找不到，菜单静默消失。
 bool WriteStringValue(HKEY root, const wchar_t *path, const wchar_t *name, const wchar_t *value)
 {
     HKEY key = nullptr;
     LONG result = RegCreateKeyExW(root, path, 0, nullptr, REG_OPTION_NON_VOLATILE,
-                                  KEY_WRITE, nullptr, &key, nullptr);
+                                  KEY_WRITE | KEY_WOW64_64KEY, nullptr, &key, nullptr);
     if (result != ERROR_SUCCESS) return false;
 
     result = RegSetValueExW(key, name, 0, REG_SZ,
@@ -957,21 +1031,33 @@ bool WriteStringValue(HKEY root, const wchar_t *path, const wchar_t *name, const
 }
 
 // 递归删除要自下而上：先清空子键再删自己，否则 RegDeleteKey 会因为还有子键而失败。
-void DeleteKeyTree(HKEY root, const wchar_t *path)
+// 返回 true 表示「已删除或本来就不存在」，false 表示「存在但删不掉」。
+bool DeleteKeyTree(HKEY root, const wchar_t *path)
 {
     HKEY key = nullptr;
-    if (RegOpenKeyExW(root, path, 0, KEY_WRITE | KEY_READ, &key) != ERROR_SUCCESS) return;
+    LONG openResult = RegOpenKeyExW(root, path, 0, KEY_WRITE | KEY_READ | KEY_WOW64_64KEY, &key);
+    // 键本来就不存在等于「已经注销」，按成功处理；打不开（权限等）才是失败。
+    if (openResult == ERROR_FILE_NOT_FOUND) return true;
+    if (openResult != ERROR_SUCCESS) return false;
 
-    wchar_t subName[256];
-    DWORD subNameChars = 256;
-    while (RegEnumKeyExW(key, 0, subName, &subNameChars, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS)
-    {
-        DeleteKeyTree(root, (std::wstring(path) + L"\\" + subName).c_str());
-        subNameChars = 256;
+    {   // 子键名最长 255 字符，缓冲留 256 并每轮复位长度：RegEnumKeyEx 失败时会
+        // 把需要的长度写回 subNameChars，不复位会让下一轮带着错误长度继续枚举。
+        wchar_t subName[256];
+        DWORD subNameChars = 256;
+        while (true)
+        {
+            subNameChars = 256;
+            LONG enumerated = RegEnumKeyExW(key, 0, subName, &subNameChars, nullptr, nullptr, nullptr, nullptr);
+            // ERROR_MORE_DATA 表示名字比缓冲长，这种子键本产品不会创建，跳过即可；
+            // 只把 ERROR_SUCCESS 当成「还有一个子键」。
+            if (enumerated != ERROR_SUCCESS) break;
+            DeleteKeyTree(root, (std::wstring(path) + L"\\" + subName).c_str());
+        }
     }
 
     RegCloseKey(key);
-    RegDeleteKeyW(root, path);
+    LONG deleteResult = RegDeleteKeyW(root, path);
+    return deleteResult == ERROR_SUCCESS || deleteResult == ERROR_FILE_NOT_FOUND;
 }
 
 // 只删值不删键：值可能被别的组件共用，键本身留给后续注册继续使用。
@@ -984,15 +1070,18 @@ void DeleteRegValue(HKEY root, const wchar_t *subKeyPath, const wchar_t *valueNa
     RegCloseKey(key);
 }
 
-// 四个挂载点是产品的注册契约，一处都不能少：文件、文件夹、Folder 与目录背景。
+// 挂载点是产品的注册契约：文件、文件夹、Folder 三类，缺一个都算失败。
+// 不注册 Directory\Background：文件夹空白处没有选中项，压缩/解压无从谈起。
+// 注册时三个挂载点必须**全部**写入成功，注销时必须**全部**清除干净，缺一个都算失败。
 bool RegisterHandlers(bool set)
 {
-    static const wchar_t *kTypes[] = {L"*", L"Directory", L"Folder", L"Directory\\Background"};
+    static const wchar_t *kTypes[] = {L"*", L"Directory", L"Folder"};
+    const int kTypeCount = static_cast<int>(sizeof(kTypes) / sizeof(kTypes[0]));
 
     wchar_t clsid[64];
     FormatClassId(clsid, 64);
 
-    bool anyWritten = false;
+    int succeeded = 0;
     for (const wchar_t *type : kTypes)
     {
         std::wstring path = std::wstring(L"Software\\Classes\\")
@@ -1001,7 +1090,7 @@ bool RegisterHandlers(bool set)
         {
             if (WriteStringValue(kMachineClasses, path.c_str(), nullptr, clsid))
             {
-                anyWritten = true;
+                succeeded++;
             }
             else
             {
@@ -1010,11 +1099,14 @@ bool RegisterHandlers(bool set)
         }
         else
         {
-            DeleteKeyTree(kMachineClasses, path.c_str());
+            if (DeleteKeyTree(kMachineClasses, path.c_str()))
+            {
+                succeeded++;
+            }
         }
     }
 
-    return set ? anyWritten : true;
+    return succeeded == kTypeCount;
 }
 
 }
@@ -1060,7 +1152,8 @@ extern "C" HRESULT STDAPICALLTYPE DllCanUnloadNow()
     return idle ? S_OK : S_FALSE;
 }
 
-// 注册要写 HKCR 的 CLSID、HKLM 的 Approved 列表与四个挂载点；任何一步失败都整次按失败上报。
+// 注册要写 CLSID、Approved 列表与三个挂载点；任何一步失败都整次按失败上报。
+// 全部落在 HKLM\Software\Classes 之下（见 kClassesRoot 的说明），不用 HKCR。
 extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
 {
     wchar_t dllPath[MAX_PATH];
@@ -1070,14 +1163,18 @@ extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
     wchar_t clsid[64];
     FormatClassId(clsid, 64);
 
-    std::wstring classPath = std::wstring(L"CLSID\\") + clsid;
+    std::wstring classPath = std::wstring(kClassesPrefix) + L"CLSID\\" + clsid;
     if (!WriteStringValue(kClassesRoot, classPath.c_str(), nullptr, kClassName))
         return SELFREG_E_CLASS;
 
     std::wstring inprocPath = classPath + L"\\InprocServer32";
     if (!WriteStringValue(kClassesRoot, inprocPath.c_str(), nullptr, dllPath))
         return SELFREG_E_CLASS;
-    WriteStringValue(kClassesRoot, inprocPath.c_str(), L"ThreadingModel", L"Apartment");
+
+    // ThreadingModel 写失败同样是注册失败：缺了它 COM 会假设 Single，
+    // 而本组件是 Apartment，行为会悄悄变成每次调用都走主线程。
+    if (!WriteStringValue(kClassesRoot, inprocPath.c_str(), L"ThreadingModel", L"Apartment"))
+        return SELFREG_E_CLASS;
 
     if (!WriteStringValue(HKEY_LOCAL_MACHINE,
                           L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
@@ -1091,28 +1188,33 @@ extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
     wchar_t exePath[MAX_PATH] = {};
     if (GetMainExePath(exePath, MAX_PATH))
     {
-        WriteStringValue(kClassesRoot, GetMainExeValueKey().c_str(), L"MainExePath", exePath);
+        // 登记主程序路径失败不影响「菜单能不能用」——LaunchAuto7z 会用 dll 同目录回退，
+        // 所以这里只记调试输出，不把整次注册判死。
+        if (!WriteStringValue(kClassesRoot, GetMainExeValueKey().c_str(), L"MainExePath", exePath))
+            OutputDebugStringW(L"Auto7z: 主程序路径登记失败，将回退到 dll 同目录查找\r\n");
     }
 
     return S_OK;
 }
 
 // 注销的顺序与注册相反：先摘挂载点再删 CLSID，避免中途失败留下指向不存在组件的菜单。
+// 返回值如实反映处理结果，不再恒为 S_OK —— 删不掉却报成功，调用方会以为系统已经干净。
 extern "C" HRESULT STDAPICALLTYPE DllUnregisterServer()
 {
-    RegisterHandlers(false);
+    bool mountsCleared = RegisterHandlers(false);
 
     wchar_t clsid[64];
     FormatClassId(clsid, 64);
 
-    std::wstring classPath = std::wstring(L"CLSID\\") + clsid;
+    std::wstring classPath = std::wstring(kClassesPrefix) + L"CLSID\\" + clsid;
     DeleteKeyTree(kClassesRoot, (classPath + L"\\InprocServer32").c_str());
     DeleteKeyTree(kClassesRoot, classPath.c_str());
 
     DeleteRegValue(HKEY_LOCAL_MACHINE,
                    L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
                    clsid);
-    return S_OK;
+
+    return mountsCleared ? S_OK : SELFREG_E_CLASS;
 }
 
 // 主程序把自身路径写进登记项，外壳扩展启动子进程时优先用它，便携拷贝也能跟着走。
