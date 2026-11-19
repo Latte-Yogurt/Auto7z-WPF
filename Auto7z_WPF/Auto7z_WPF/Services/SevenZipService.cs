@@ -473,44 +473,107 @@ namespace Auto7z_WPF.Services
         #endregion
 
         #region 分卷判定
+        /// <summary>分卷大小（配置文本）的解析结果。</summary>
+        public enum VolumeSpecState
+        {
+            /// <summary>未填，或格式本身不支持分卷（tar）。静默不分卷，不是配置问题。</summary>
+            Disabled = 0,
+
+            /// <summary>显式填了 0：这是文档约定的「禁用分卷」，合法配置，值得留一条 Info 痕迹。</summary>
+            ExplicitlyOff = 1,
+
+            /// <summary>合法且应当尝试分卷，字节值有效。</summary>
+            Valid = 2,
+
+            /// <summary>配置值非法：不是纯数字、超出 long、或换算成字节后溢出。按不分卷处理。</summary>
+            Invalid = 3
+        }
+
+        // 分卷大小以 MB 计，换算成字节必须落在 long 里：再大就溢出成负数，
+        // 让"体积没超过分卷就不分卷"这条守卫恒不成立。
+        private const long MaxVolumeMegabytes = long.MaxValue / (1024L * 1024L);
+
+        /// <summary>
+        /// 解析分卷大小并算出最终字节值。纯函数：不写日志、不改状态，
+        /// 供界面判定、体积预估与命令拼装共用同一套规则。
+        ///
+        /// 判据顺序即"先算出最终值，再判断这个值是否合法"：
+        /// 1) 只接受**纯数字**（不接受正负号、千分位、小数、空白以外的任何字符）；
+        /// 2) 数字能装进 long；
+        /// 3) 0 是合法的「禁用分卷」，单独报 <see cref="VolumeSpecState.ExplicitlyOff"/>；
+        /// 4) 换算成字节后不溢出 long —— 这一步等价于"算出来放不下就是不合法"。
+        /// </summary>
+        /// <param name="volumeBytes">Valid 时给出最终的字节数，其余情况为 0。</param>
+        public static VolumeSpecState ResolveVolumeSpec(ArchiveFormat format, string volume, out long volumeBytes)
+        {
+            volumeBytes = 0;
+
+            // tar 是连续字节流，切分后失去可解析结构：无论填什么都按不分卷处理，这不是配置错误。
+            if (format == ArchiveFormat.Tar) return VolumeSpecState.Disabled;
+
+            // 未填与"填 0"是两回事：前者是没配置，后者是用户明确关掉了分卷。分开报，日志才有信息量。
+            if (string.IsNullOrWhiteSpace(volume)) return VolumeSpecState.Disabled;
+
+            string text = volume.Trim();
+
+            // 仅数字：逐字符判定，避免 NumberStyles 的宽松模式放过 "+5"、"1,000"、"5.5" 之类。
+            if (!IsAllDigits(text)) return VolumeSpecState.Invalid;
+
+            if (!long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out long volumeMb))
+            {
+                // 全是数字但超出 long 能表示的十进制范围。
+                return VolumeSpecState.Invalid;
+            }
+
+            // 0 在文档里就是「禁用分卷」的开关值，属合法配置。
+            if (volumeMb == 0) return VolumeSpecState.ExplicitlyOff;
+
+            // 先判上界再相乘：这一步就是"算出最终字节值，发现放不下 → 不合法"。
+            if (volumeMb > MaxVolumeMegabytes) return VolumeSpecState.Invalid;
+
+            volumeBytes = volumeMb * 1024L * 1024L;
+            return VolumeSpecState.Valid;
+        }
+
+        private static bool IsAllDigits(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (text[i] < '0' || text[i] > '9') return false;
+            }
+
+            return true;
+        }
+
         /// <summary>
         /// 仅在归档体积确实超过分卷大小时才追加 -v，避免产出无意义的单卷。
+        /// 非 Valid 一律不分卷；留痕由任务入口统一处理，这里保持纯函数不写日志。
         /// </summary>
         private static void AppendVolumeSwitch(StringBuilder sb, AppConfig config)
         {
-            if (!TryGetVolumeMegabytes(config.Format, config.Volume, out long volumeMb)) return;
+            if (ResolveVolumeSpec(config.Format, config.Volume, out long volumeBytes) != VolumeSpecState.Valid)
+            {
+                return;
+            }
 
             // 总大小未知时分卷数量无法预估，按不分卷处理，界面上的分卷开关也据此禁用。
             if (config.TotalSize <= 0) return;
 
-            long volumeBytes = volumeMb * 1024L * 1024L;
             if (config.TotalSize <= volumeBytes) return;
 
-            sb.AppendFormat(" -v{0}m", volumeMb);
-        }
-
-        /// <summary>
-        /// 把配置里的分卷大小解析成 MB，tar 与非法值、零值都视为不可分卷。
-        /// </summary>
-        private static bool TryGetVolumeMegabytes(ArchiveFormat format, string volume, out long volumeMb)
-        {
-            volumeMb = 0;
-
-            // tar 是连续字节流，切分后会失去可解析的结构；分卷大小为 0 或非法时同样拒绝，
-            // 这两类输入都要在体积预估之前就被挡掉。
-            if (format == ArchiveFormat.Tar) return false;
-
-            if (!long.TryParse(volume, NumberStyles.Integer, CultureInfo.InvariantCulture, out volumeMb)) return false;
-
-            return volumeMb > 0;
+            sb.AppendFormat(" -v{0}m", volumeBytes / (1024L * 1024L));
         }
 
         /// <summary>
         /// 判断给定格式与配置是否允许分卷，供界面与体积预估共享同一套判定。
+        /// 纯函数：只要不是 Valid 就返回 false，且**不**在这里记日志
+        /// （它被界面反复调用，写日志会把问题日志刷满）。
         /// </summary>
         public static bool CanSplitVolume(ArchiveFormat format, string volume)
         {
-            return TryGetVolumeMegabytes(format, volume, out _);
+            return ResolveVolumeSpec(format, volume, out _) == VolumeSpecState.Valid;
         }
         #endregion
 
@@ -1203,35 +1266,6 @@ namespace Auto7z_WPF.Services
         }
 
 
-        /// <summary>
-        /// 把「一次任务产出的整组文件」算成**一份**校验文件。
-        ///
-        /// 这是校验文件的正确形态：一个归档（尤其分卷）是多文件组成的产物，
-        /// 校验清单必须把这些文件**全部列在一份 .sha256 里**，每行一条。
-        /// 早先的实现对每个分卷各调一次，产出 7 个 x.7z.001.sha256 … x.7z.007.sha256 ——
-        /// 那样谁也没法用它校验一整套包：校验工具拿到的是 7 份只含一行的清单，
-        /// 用户还得手工拼起来，而这正是校验文件存在的意义所在。
-        /// </summary>
-        /// <param name="producedFiles">本次产出的全部文件，按顺序列入清单。</param>
-        /// <param name="checksumFilePath">要写出的 .sha256 路径。</param>
-        public void GenerateSHA256ForSet(IReadOnlyList<string> producedFiles, string checksumFilePath,
-            Action<int> progress, CancellationToken cancellationToken)
-        {
-            if (producedFiles == null || producedFiles.Count == 0) return;
-            if (string.IsNullOrWhiteSpace(checksumFilePath)) return;
-
-            using (var sha256Service = new SHA256Service())
-            {
-                var lines = sha256Service.CalculateSHA256(
-                    producedFiles.ToArray(), progress, cancellationToken);
-
-                // 只写一份，且把全部行一次写进去；单文件时与旧行为完全一致。
-                if (lines != null && lines.Length > 0)
-                {
-                    sha256Service.WriteSHA256File(checksumFilePath, lines);
-                }
-            }
-        }
         #endregion
 
 

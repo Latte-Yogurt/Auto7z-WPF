@@ -1,6 +1,6 @@
 # Auto7z
 
-v2.3.0（开发者内测）
+v2.4.0（开发者内测）
 
 Windows 图形化压缩工具，基于 7-Zip ZS 内核（7-Zip 22.01 ZS v1.5.5 R3，x64）。
 
@@ -265,7 +265,8 @@ end;
 | `Password` | 字符串 | 压缩密码 | 空 |
 | `UnzipPassword` | 字符串 | 解压密码 | 空 |
 | `Zstd` | 布尔 | tar 归档是否用 zstd 压缩 | `true` |
-| `GenerateSHA256` | 布尔 | 是否生成 SHA256 校验文件 | `true` |
+| `GenerateSHA256` | 布尔 | 是否生成校验文件 | `true` |
+| `ChecksumAlgorithm` | 字符串 | 校验算法标识：`sha256` / `sha3-256` / `blake3` / `crc32` …（见「校验算法」一节） | `sha256` |
 | `AutoSave` | 布尔 | 是否自动保存设置 | `true` |
 | `IsSolidMode` | 布尔 | 是否固实压缩 | `false` |
 | `IsEncFileName` | 布尔 | 是否加密文件名（仅 7z，且需要密码） | `false` |
@@ -282,10 +283,73 @@ end;
 
 `Volume` 有三条限制：tar 格式不支持分卷（7-Zip 会生成解不开的 `.tar.001`）；输入总大小不超过分卷大小时不切分；输入为空时不切分（否则会产出一个孤零零的 `.7z.001`）。
 
+`Volume` 的合法取值**只认纯数字**。判定顺序是「先算出最终字节值，再判断这个值是否合法」：
+不是纯数字（`abc`、`-5`、`+5`、`1,000`、`5.5`、`0x10`、`1e3`）、超出 `long` 能表示的范围、
+以及换算成字节后溢出 `long` 的（例如 `9007199254740992`，乘 `1024*1024` 会溢出成 0）都算非法。
+**非法值不阻断任务**：一律按不分卷继续压缩，并在问题日志里写一条 WARNING
+（`分卷大小无效（<值>），已按不分卷处理`）。之所以要在乘以 `1024*1024` 之前挡掉上界，
+是因为溢出会让「体积没超过分卷就不分卷」这条守卫恒不成立，进而无条件下发 `-v<huge>m`，
+7-Zip 会直接报 `Incorrect volume size` 并以退出码 1 结束、零产物。
+
+`0` 与「非法值」是两种不同的情形，产品用三种状态区分：
+
+| 输入 | 状态 | 行为 | 日志 |
+|---|---|---|---|
+| 未填 / 纯空白 | Disabled | 不分卷 | 不记录（没配置，不是问题） |
+| `0` | ExplicitlyOff | 不分卷 | **Info**：`分卷大小设为 0，本次不分卷 —— 0 是「禁用分卷」的合法取值，不是错误` |
+| 纯数字且换算后不溢出 | Valid | 按值分卷 | 不记录 |
+| 其他（含溢出） | Invalid | 不分卷 | **Warning**：`分卷大小无效（<值>），已按不分卷处理` |
+
+`0` 那条落在 **Info** 级、写进当天的普通日志；其余非 Info 级别都进 `Auto7z_Issue_*.log`。
+注意 `LogService.MinLogLevel` 默认是 `Warning`，所以 **Info 默认会被过滤掉** ——
+想在日志里看到「填 0」这条痕迹，需要把配置里的 `ErrorLevel` 调成 `Info`。
+这是既有的日志阈值设计，不是本次改动引入的。
+
 `RuntimeMode` 与 `CompressionLevel` 是两个独立的旋钮：前者决定 `-mmt` 线程数（低占用 1、均衡取一半核心、高性能取满全部核心），后者决定 `-md` 字典大小（标准 4/16/32 MB、极限 16/32/64 MB，按低/均衡/高排列）。存储等级不下发 `-md`——那一档 7-Zip 用 Copy 方法，本来就没有字典。
 
 配置文件坏了会自动重建，缺键也会补齐；单个键的值非法只回落该键的默认值，不整份作废。
 早期版本用过的 `ZipLevel`、`Portable`、`MainText` 等旧键对程序没有影响，既不读也不写，原样保留在文件里。
+
+### 校验算法
+
+校验文件的算法由 `ChecksumAlgorithm` 决定，可选值来自 `Services\Hash\HashAlgorithms.cs` 的算法目录
+（18 种：MD5、SHA-1/224/256/384/512、SHA-512/224、SHA-512/256、SHA3-224/256/384/512、
+BLAKE2s-256、BLAKE2b-256/512、BLAKE3、CRC-32、CRC-64）。
+
+三条契约：
+
+1. **配置里存标识，不存显示名。** 显示名（`SHA-256`）跟语言走，标识（`sha256`）不跟。
+   读取时按别名归一化（`SHA-256`、`sha2-256`、`sha256sum` 都归到 `sha256`），认不出回落默认。
+2. **文件后缀跟着算法走。** `x.7z` 配 SHA-256 得到 `x.7z.sha256`；换成 SHA3-256 就是 `x.7z.sha3-256`。
+   后缀是校验工具辨认算法的唯一线索，写错会被按另一个算法读回去，校验必然对不上。
+3. **行格式与 sha256sum 通用**：`<小写十六进制> *<文件名>`，UTF-8 无 BOM。
+   文件名以 `*` 开头时前面补一个下划线，避免和引导符混淆。
+
+**一次任务只产出一份清单。** 分卷场景尤其明显：7 个卷各写一份只含一行的文件是没法用的，
+校验工具需要的是「一份清单覆盖整套包」。清单名取逻辑名（`big.7z.001…` →
+`big.7z.sha256`），不挂在某个分卷上。
+
+校验计算只有一处实现：`Services\Hash\HashingService.cs`。两份实现必然会在某次改动后
+悄悄漂移，而哈希算错是静默的。
+
+2.4.0 把原先那层 `SHA256Service` 兼容壳**整体删掉了**（连同它的
+`CalculateSHA256ToFile`）：产品侧早就没有调用方，只有运行时探针还按名反射它。
+现在探针直接反射 `HashingService`，正式流程一律走
+`HashingService.WriteChecksumManifest`（一套分卷产物只写一份清单）。
+
+### `AUTO7Z_DATA_ROOT` 环境变量
+
+设成**绝对路径**时，普通模式的数据目录挂到该路径下（仍叫 `Auto7z`），而不是 `%LOCALAPPDATA%`。
+配置、日志、`TaskState.json`、释放出来的 7-Zip 组件全都跟着走。
+
+这是给测试工具用的：测试驱动的是真实程序，默认会写进用户自己那份数据目录。
+有了这条改道，测试把所有东西都写进 `%TEMP%` 下的受控目录，用户真实的那份一个字节都不会被碰。
+相对路径与非法值一律当未设置处理（相对路径的含义取决于当前工作目录，而工作目录可能在运行期间被改掉）。
+
+便携模式的判定不受这个变量影响：它只看 `程序目录\.config` 是否存在。
+
+> 它不能靠改 `LOCALAPPDATA` 环境变量替代：`Environment.GetFolderPath(SpecialFolder.LocalApplicationData)`
+> 走 `SHGetFolderPath`，读的是用户配置文件里的已知文件夹，与环境变量无关（已实测确认）。
 
 ## 多语言
 
@@ -333,7 +397,7 @@ Auto7z_WPF/
 │   ├── LanguageService.cs      语言切换
 │   ├── LaunchContext.cs        判定启动方式（拖拽 / 双击 / 命令行）
 │   ├── LogService.cs           日志
-│   ├── SHA256Service.cs        SHA256 计算（文件/目录的流式哈希与 .sha256 产物）
+
 │   ├── MessageService.cs       弹窗
 │   ├── SevenZipService.cs      调 7z.exe 的核心逻辑
 │   ├── ShellCommandService.cs  命令行解析
@@ -344,8 +408,7 @@ Auto7z_WPF/
 │   └── WindowHelper.cs         窗口辅助
 ├── ViewModel/
 │   ├── Auto7zViewModel.cs      主视图模型
-│   ├── ObservableObject.cs     INotifyPropertyChanged 基类
-│   └── RelayCommand.cs         ICommand 实现
+│   └── ObservableObject.cs     INotifyPropertyChanged 基类 + ICommand 实现（RelayCommand&lt;T&gt;）
 ├── Properties/
 │   ├── AssemblyInfo.cs         程序集信息
 │   ├── Resources.resx          资源
@@ -406,12 +469,12 @@ PE 子系统这一个字段同时决定「cmd 等不等」与「启动时给不�
 中文密码打不进去。压缩包的密码本来就允许中文，能输进去比看不见更重要。
 代价是密码在界面上是明文显示的。
 
-**SHA256 计算只有一处实现**：`Services/SHA256Service.cs` 是本项目所有 SHA256 调用的唯一入口，
+**SHA256 计算只有一处实现**：`Services/Hash/HashingService.cs` 是本项目所有 SHA256 调用的唯一入口，
 `SevenZipService.GenerateSHA256` 也是转手交给它。
 不要在调用方内联第二份哈希循环：缓冲区大小与 `FileShare` 一旦跟这个类不一致，
 就是一份谁也测不出来的静默分叉。
 
-`SHA256Service` 对「读不到的文件」是**跳过而不是整体失败**（批量计算不会因为一个坏文件全废）。
+`HashingService` 对「读不到的文件」是**跳过而不是整体失败**（批量计算不会因为一个坏文件全废）。
 代价是它自己不报错，所以调用方要负责比对条数：少算了就明确提示，别让用户拿到一份
 不完整的 `.sha256` 却毫不知情。
 
@@ -468,7 +531,7 @@ Release 构建把整段编掉。目前有两处：
 
 加任何测试便利设施前先问：**这条代码会出现在用户的 `Auto7zGUI.exe` 里吗？**
 会，就必须包 `#if DEBUG`，或者改成测试侧反射实现。
-反射探针（`guardprobe` / `sha256probe` 等）不受影响 —— 它们从测试进程侧
+反射探针（`guardprobe` / `hashprobe` 等）不受影响 —— 它们从测试进程侧
 `Assembly.LoadFrom` 产品程序集，产品不需要为测试开任何口子。
 
 ## 测试
@@ -479,7 +542,7 @@ Release 构建把整段编掉。目前有两处：
 
 ```powershell
 cd ..\testtools
-python run_regress.py         # 一键回归（14 项）
+python run_regress.py         # 一键回归（16 项）
 python run_system_test.py     # 一键系统测试（18 项）
 python run_bench.py           # 性能基准（不判失败）
 ```
@@ -496,9 +559,14 @@ python regress.py --app "..\Auto7z_WPF\Auto7z_WPF\bin\Debug\Auto7z.exe"
 
 `regress.py` 的默认被测程序路径已失效，必须显式用 `--app` 指定。
 
-本项目的 `Services/SHA256Service.cs` 有专门的运行时探针（`testtools\cs\sha256probe`，
-已接进一键回归）：反射直调这个类，验哈希值、`hash *name` 格式、`.sha256` 不带 BOM、
-目录递归、坏文件跳过、进度单调与取消响应。
+本项目的 `Services/Hash/HashingService.cs` 有专门的运行时探针（`testtools\cs\hashprobe`，
+已接进一键回归）：反射直调这个类，**对 18 种算法逐一**比对独立算出的标准摘要
+（值、长度、`hash *name` 格式），另验目录递归、坏文件跳过、进度单调与取消响应；
+并断言已删除的 `SHA256Service` 与非泛型 `RelayCommand` 都不在程序集里。
+
+**为什么必须逐算法验**：产品支持 md5 / sha1 / sha2 家族 / sha3 家族 / BLAKE2 / BLAKE3 / CRC
+共 18 种摘要，只验 SHA-256 的话其余 17 条计算路径一条都没被测到 —— 而哈希算错是**静默**的，
+界面上不报错、校验文件照样生成，只有拿去比对才会发现对不上。
 
 ## 已知限制
 

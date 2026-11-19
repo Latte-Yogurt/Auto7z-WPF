@@ -16,6 +16,23 @@ namespace Auto7z_WPF.Services
 
         public const string ConfigFileName = "Auto7z.json";
 
+        /// <summary>
+        /// 数据根目录的改道变量。设成一个绝对路径时，普通模式的数据目录挂到它下面，
+        /// 而不是 %LOCALAPPDATA%。
+        ///
+        /// 这条改道是给测试工具用的：测试驱动的是真实的程序，程序会往数据目录写配置、
+        /// 日志、TaskState 与释放出来的 7-Zip 组件。默认落在 %LOCALAPPDATA%\Auto7z 时，
+        /// 跑一轮测试就把用户自己的配置改了、日志刷了、组件覆盖了 —— 用户下次打开程序
+        /// 看到的是测试留下的状态。有了这条改道，测试把所有东西都写进 %TEMP% 下的
+        /// 受控目录，用户真实的那份目录一个字节都不会被碰。
+        ///
+        /// 注意：不能靠改 LOCALAPPDATA 环境变量达到同样效果 ——
+        /// Environment.GetFolderPath(SpecialFolder.LocalApplicationData) 走的是
+        /// SHGetFolderPath，读的是用户配置文件里的已知文件夹，与环境变量无关（实测确认）。
+        /// 所以只能由程序自己提供一个明确的改道点。
+        /// </summary>
+        public const string DataRootVariable = "AUTO7Z_DATA_ROOT";
+
         private static readonly object _syncRoot = new object();
 
         private static bool _portable;
@@ -112,7 +129,45 @@ namespace Auto7z_WPF.Services
 
         public static string GetLocalRootDirectory()
         {
+            // 改道优先：测试工具把它指到 %TEMP% 下的受控目录，
+            // 于是配置、日志、TaskState 与 7-Zip 组件全都写进临时目录，
+            // 用户真实的 %LOCALAPPDATA%\Auto7z 一次都不会被碰。
+            string redirect = GetDataRootOverride();
+            if (redirect != null) return redirect;
+
             return Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        }
+
+        /// <summary>
+        /// 读改道变量。只认绝对路径：相对路径的含义取决于当前工作目录，
+        /// 而工作目录可能在程序运行期间被改掉，那会让同一台机器上的两次运行
+        /// 写进两个不同的地方 —— 这种不确定性比"忽略改道"更危险。
+        /// 非法或空的改道一律当作未设置。
+        /// </summary>
+        private static string GetDataRootOverride()
+        {
+            string value;
+            try
+            {
+                value = Environment.GetEnvironmentVariable(DataRootVariable);
+            }
+            catch
+            {
+                // 环境变量读不出来时按未设置处理：普通模式才是没有副作用的那一侧。
+                return null;
+            }
+
+            if (string.IsNullOrWhiteSpace(value)) return null;
+
+            try
+            {
+                string full = Path.GetFullPath(value.Trim());
+                return Path.IsPathRooted(full) ? full : null;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public static string GetPortableRootDirectory()

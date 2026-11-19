@@ -289,12 +289,23 @@ namespace Auto7z_WPF
                 return;
             }
 
+            // 混合批里丢了部分输入：不能只写一条默认级别看不到的 WARNING 就完事。
+            // README 的退出码契约写明「1 = 任务跑了但失败、被取消，或有文件被跳过」，
+            // 部分输入被丢弃正属这一档；控制台也要说一句，否则脚本无从察觉少处理了东西。
+            bool someInputRejected = viewModel.LastRejectedInputCount > 0;
+            if (someInputRejected)
+            {
+                Console.WriteLine(EnumText.GetErrorText(
+                    "Log_InputRejected", "{0} 个输入路径不存在或不可访问，已跳过",
+                    viewModel.LastRejectedInputCount));
+            }
+
             var runner = new ConsoleTaskRunner(viewModel);
             runner.Run(paths, mode);
 
             // 用 Shutdown 而不是 Environment.Exit：日志与配置才有机会正常落盘。
             _singleInstance.Dispose();
-            Shutdown(viewModel.LastTaskFailed ? 1 : 0);
+            Shutdown(viewModel.LastTaskFailed || someInputRejected ? 1 : 0);
             return;
         }
 

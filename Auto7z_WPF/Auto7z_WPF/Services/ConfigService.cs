@@ -25,6 +25,7 @@ namespace Auto7z_WPF.Services
             new ConfigKey("Password", false),
             new ConfigKey("Zstd", true),
             new ConfigKey("GenerateSHA256", true),
+            new ConfigKey("ChecksumAlgorithm", false),
             new ConfigKey("AutoSave", true),
             new ConfigKey("IsTopMost", true),
             // IsPortable 不再是一个配置项：便携与否由 AppPaths 按「程序目录旁有没有数据目录」
@@ -104,6 +105,7 @@ namespace Auto7z_WPF.Services
                 Set(values, "Password", config.Password);
                 Set(values, "Zstd", config.Zstd.ToString());
                 Set(values, "GenerateSHA256", config.GenerateSHA256.ToString());
+                Set(values, "ChecksumAlgorithm", config.ChecksumAlgorithm);
                 Set(values, "AutoSave", config.AutoSave.ToString());
                 Set(values, "IsTopMost", config.IsTopMost.ToString());
                 Set(values, "RuntimeMode", config.RuntimeMode.ToString());
@@ -243,6 +245,7 @@ namespace Auto7z_WPF.Services
             config.Password = GetValue(values, "Password", string.Empty, null);
             config.Zstd = ParseBool(values, "Zstd", true);
             config.GenerateSHA256 = ParseBool(values, "GenerateSHA256", true);
+            config.ChecksumAlgorithm = ParseChecksumAlgorithm(GetValue(values, "ChecksumAlgorithm", HashAlgorithms.Default.Id, null));
             config.AutoSave = ParseBool(values, "AutoSave", true);
             config.IsTopMost = ParseBool(values, "IsTopMost", false);
             // 便携模式不在配置里读：旧文件即使残留 IsPortable 键也不会被采信，
@@ -299,6 +302,14 @@ namespace Auto7z_WPF.Services
                 LogService.ErrorLevel.Warning);
 
             return ArchiveFormat.SevenZip;
+        }
+
+        // 校验算法标识：认得出就用规范标识（sha256 / SHA-256 / sha2-256 都归到 sha256），
+        // 认不出回落默认。规范化放在这里，配置里同一个算法就只有一种写法。
+        private static string ParseChecksumAlgorithm(string text)
+        {
+            HashAlgorithmInfo info = HashAlgorithms.ByName(text ?? string.Empty);
+            return info != null ? info.Id : HashAlgorithms.Default.Id;
         }
 
         private static LogService.ErrorLevel ParseErrorLevel(string text)
@@ -400,6 +411,7 @@ namespace Auto7z_WPF.Services
                 case "Password": return string.Empty;
                 case "Zstd": return bool.TrueString;
                 case "GenerateSHA256": return bool.TrueString;
+                case "ChecksumAlgorithm": return HashAlgorithms.Default.Id;
                 case "AutoSave": return bool.TrueString;
                 case "IsTopMost": return bool.FalseString;
                 case "RuntimeMode": return RuntimeModePreset.Balanced.ToString();

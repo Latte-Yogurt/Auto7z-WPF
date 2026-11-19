@@ -39,6 +39,12 @@ namespace Auto7z_WPF
         private bool _autoSave = true;
         private bool _generateSHA256 = true;
 
+        // 校验文件用的算法。存的是算法目录里的标识（sha256、sha3-256、blake3 …），
+        // 而不是枚举：算法目录是数据驱动的，加一个算法不该改配置契约。
+        //
+        // 初值取 HashAlgorithms.Default.Id，不写死字符串：默认算法只在 HashAlgorithms 定义一次。
+        private string _checksumAlgorithmId = HashAlgorithms.Default.Id;
+
         private bool _isTopMost;
         private RuntimeModePreset _runtimeMode = RuntimeModePreset.Balanced;
         private string _outputPath = string.Empty;
@@ -154,6 +160,7 @@ namespace Auto7z_WPF
             Zstd = config.Zstd;
             AutoSave = config.AutoSave;
             GenerateSHA256 = config.GenerateSHA256;
+            ChecksumAlgorithmId = config.ChecksumAlgorithm;
             IsTopMost = config.IsTopMost;
             // 便携状态以目录事实为准（构造函数已按磁盘探测过），不再从配置里读。
             _isPortable = AppPaths.IsPortable;
@@ -373,6 +380,7 @@ namespace Auto7z_WPF
                 Password = Password,
                 Zstd = Zstd,
                 GenerateSHA256 = GenerateSHA256,
+                ChecksumAlgorithm = ChecksumAlgorithmId,
                 AutoSave = AutoSave,
                 IsTopMost = IsTopMost,
                 RuntimeMode = RuntimeMode,
@@ -509,6 +517,32 @@ namespace Auto7z_WPF
         {
             get => _generateSHA256;
             set => SetProperty(ref _generateSHA256, value);
+        }
+
+        /// <summary>
+        /// 校验算法标识。界面上是下拉框里的显示名，配置里存这个标识：
+        /// 显示名会跟语言走，标识不会，所以配置契约必须落在标识上。
+        /// </summary>
+        public string ChecksumAlgorithmId
+        {
+            get => _checksumAlgorithmId;
+            set
+            {
+                // 未知标识一律回落到默认算法：配置被手改成乱码时不该让校验功能失效。
+                string normalized = HashAlgorithms.ById(value)?.Id ?? HashAlgorithms.Default.Id;
+                if (normalized == _checksumAlgorithmId) return;
+
+                if (SetProperty(ref _checksumAlgorithmId, normalized))
+                {
+                    OnPropertyChanged(nameof(ChecksumAlgorithm));
+                }
+            }
+        }
+
+        /// <summary>当前校验算法。取不到（标识非法）时退回默认算法，调用方不必判空。</summary>
+        public HashAlgorithmInfo ChecksumAlgorithm
+        {
+            get => HashAlgorithms.ById(_checksumAlgorithmId) ?? HashAlgorithms.Default;
         }
 
         public string ZipPasswordInputText
@@ -788,8 +822,20 @@ namespace Auto7z_WPF
 
         public bool HasPendingFiles => _pendingBatch != null && !_pendingBatch.IsEmpty;
 
+        /// <summary>
+        /// 上一次 <see cref="SetPendingFiles"/> 丢弃了多少个输入路径（不存在、不可访问或按当前模式不接受）。
+        ///
+        /// 为什么要把它暴露出来：混合批里丢掉一部分输入时，归档照样产出、任务照样「成功」，
+        /// 而调用方只能看到退出码 0 —— 脚本与计划任务无从察觉少处理了东西。
+        /// 按 README 退出码契约「1 = 任务跑了但失败、被取消，或有文件被跳过」，
+        /// 这种情况必须让调用方看得见，而不是只写一条默认级别看不到的 WARNING 日志。
+        /// </summary>
+        public int LastRejectedInputCount { get; private set; }
+
         public void SetPendingFiles(IEnumerable<string> files)
         {
+            LastRejectedInputCount = 0;
+
             if (files == null)
             {
                 _pendingBatch = new PendingFileBatch(null);
@@ -862,6 +908,9 @@ namespace Auto7z_WPF
                     EnumText.GetErrorText("Log_InputRejected", "{0} 个输入路径不存在或不可访问，已跳过", rejected),
                     LogService.ErrorLevel.Warning);
             }
+
+            // 记住丢弃数，供调用方把它反映到控制台提示与退出码上。
+            LastRejectedInputCount = rejected;
 
             _pendingBatch = new PendingFileBatch(items);
         }
@@ -1372,9 +1421,31 @@ namespace Auto7z_WPF
 
             string baseName = BuildArchiveBaseName(batch);
 
-            if (SevenZipService.CanSplitVolume(Format, Volume))
+            // 分卷大小只解析一次：既决定要不要扫体积，也决定要不要留痕。
+            // 留痕放在任务入口而不是 CanSplitVolume，是因为后者被界面反复调用，
+            // 每次判定都写日志会把问题日志刷满，而用户真正失败的场景反而找不到。
+            SevenZipService.VolumeSpecState volumeState =
+                SevenZipService.ResolveVolumeSpec(Format, Volume, out long volumeBytes);
+
+            switch (volumeState)
             {
-                batch.EnsureSizes(path => _sevenZipService.GetSizeInBytes(path));
+                case SevenZipService.VolumeSpecState.Valid:
+                    batch.EnsureSizes(path => _sevenZipService.GetSizeInBytes(path));
+                    break;
+
+                case SevenZipService.VolumeSpecState.ExplicitlyOff:
+                    // 填 0 是用户的明确选择，不是错误：记一条 Info，让"这次为什么没分卷"在日志里可查。
+                    _logService.WriteLog(
+                        EnumText.GetErrorText("Log_VolumeSplitDisabled", "分卷大小设为 0，本次不进行分卷（该值是合法的禁用开关）"),
+                        LogService.ErrorLevel.Info);
+                    break;
+
+                case SevenZipService.VolumeSpecState.Invalid:
+                    // 非法值不阻断任务：按不分卷继续压缩，但必须让用户从日志里看到配置写错了。
+                    _logService.WriteLog(
+                        EnumText.GetErrorText("Log_VolumeInvalid", "分卷大小无效（{0}），已按不分卷处理", Volume),
+                        LogService.ErrorLevel.Warning);
+                    break;
             }
 
             var runtimeConfig = BuildCompressConfig(batch);
@@ -1404,6 +1475,8 @@ namespace Auto7z_WPF
             ReportTaskResult(!partial, doneText, partial: partial);
         }
 
+        #endregion
+        #region 压缩参数与命令执行
         private AppConfig BuildCompressConfig(PendingFileBatch batch)
         {
             return new AppConfig
@@ -1490,23 +1563,27 @@ namespace Auto7z_WPF
 
 
         #endregion
-        #region 校验文件与命名
+        #region 压缩产物与校验文件
         private void WriteChecksumFiles(string archivePath, string outputDirectory, Action<ProgressInfo> report)
         {
             var produced = _sevenZipService.CollectProducedFiles(archivePath);
             if (produced.Count == 0) return;
 
             // 校验文件是「一次任务一份」，把这套产物全部列在里面。
-            // 分卷尤其明显：7 个卷各写一份只含一行的 .sha256 是没法用的，
-            // 校验工具需要的是「一份清单覆盖整套包」。清单路径取逻辑名（归档名 + .sha256），
+            // 分卷尤其明显：7 个卷各写一份只含一行的清单是没法用的，
+            // 校验工具需要的是「一份清单覆盖整套包」。清单路径取逻辑名（归档名 + 算法后缀），
             // 而不是挂到某个分卷上，否则用户面对 7 个后缀各异的文件无从下手。
-            string checksumPath = GetChecksumFilePath(archivePath);
+            HashAlgorithmInfo algorithm = ChecksumAlgorithm;
+            string checksumPath = GetChecksumFilePath(archivePath, algorithm);
 
             try
             {
-                _sevenZipService.GenerateSHA256ForSet(produced, checksumPath,
-                    p => OutputProgress(report, new ProgressInfo(p, ProgressStage.CalculatingSHA256)),
-                    CurrentToken);
+                using (var hashing = new HashingService())
+                {
+                    hashing.WriteChecksumManifest(produced, checksumPath, algorithm,
+                        p => OutputProgress(report, new ProgressInfo(p, ProgressStage.CalculatingSHA256)),
+                        CurrentToken);
+                }
             }
             catch (OperationCanceledException)
             {
@@ -1518,23 +1595,25 @@ namespace Auto7z_WPF
             catch (Exception ex)
             {
                 _logService.WriteLog(
-                    EnumText.GetErrorText("Log_SHA256Failed", "生成 SHA256 失败：{0}", ex.Message),
+                    EnumText.GetErrorText("Log_SHA256Failed", "生成校验文件失败：{0}", ex.Message),
                     LogService.ErrorLevel.Warning);
             }
         }
 
         /// <summary>
-        /// 校验文件落在归档旁边，文件名取逻辑名：分卷 x.7z.001… 对应 x.7z.sha256。
+        /// 校验文件落在归档旁边，文件名取逻辑名 + 算法首选后缀：分卷 x.7z.001… 对应 x.7z.sha256。
         ///
         /// 不分卷时逻辑名就是归档本身，得到 x.7z.sha256 —— 与旧行为一致，
-        /// 已有脚本按这个路径取文件不会受影响。
+        /// 已有脚本按这个路径取文件不会受影响。换了算法时后缀跟着换（x.7z.sha3-256），
+        /// 这正是校验工具认算法的唯一线索，写错后缀会被按另一个算法读回去。
         /// </summary>
-        private static string GetChecksumFilePath(string archivePath)
+        private static string GetChecksumFilePath(string archivePath, HashAlgorithmInfo algorithm)
         {
             if (string.IsNullOrWhiteSpace(archivePath)) return archivePath;
 
             string logical = SevenZipService.GetLogicalArchiveName(archivePath);
-            return logical + ".sha256";
+            string extension = algorithm != null ? algorithm.Extension : HashAlgorithms.Default.Extension;
+            return logical + extension;
         }
 
         private static void DeleteQuietly(string path)

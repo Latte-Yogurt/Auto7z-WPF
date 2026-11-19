@@ -104,7 +104,31 @@
     <Compile Include="Services\FileSystemHelper.cs" />
     <Compile Include="Services\LanguageService.cs" />
     <Compile Include="Services\LogService.cs" />
-    <Compile Include="Services\SHA256Service.cs" />
+    <Compile Include="Services\Hash\HashAlgorithms.cs" />
+    <Compile Include="Services\Hash\HashingService.cs" />
+    <Compile Include="Services\Hash\Cores\IHashCore.cs" />
+    <Compile Include="Services\Hash\Cores\FrameworkCore.cs" />
+    <Compile Include="Services\Hash\Cores\Md5Core.cs" />
+    <Compile Include="Services\Hash\Cores\Sha1Core.cs" />
+    <Compile Include="Services\Hash\Cores\Sha224Core.cs" />
+    <Compile Include="Services\Hash\Cores\Sha256Core.cs" />
+    <Compile Include="Services\Hash\Cores\Sha384Core.cs" />
+    <Compile Include="Services\Hash\Cores\Sha512Core.cs" />
+    <Compile Include="Services\Hash\Cores\Sha512FamilyCore.cs" />
+    <Compile Include="Services\Hash\Cores\Sha512T224Core.cs" />
+    <Compile Include="Services\Hash\Cores\Sha512T256Core.cs" />
+    <Compile Include="Services\Hash\Cores\Sha3Core.cs" />
+    <Compile Include="Services\Hash\Cores\Sha3_224Core.cs" />
+    <Compile Include="Services\Hash\Cores\Sha3_256Core.cs" />
+    <Compile Include="Services\Hash\Cores\Sha3_384Core.cs" />
+    <Compile Include="Services\Hash\Cores\Sha3_512Core.cs" />
+    <Compile Include="Services\Hash\Cores\Blake2bFamilyCore.cs" />
+    <Compile Include="Services\Hash\Cores\Blake2b256Core.cs" />
+    <Compile Include="Services\Hash\Cores\Blake2b512Core.cs" />
+    <Compile Include="Services\Hash\Cores\Blake2sCore.cs" />
+    <Compile Include="Services\Hash\Cores\Blake3Core.cs" />
+    <Compile Include="Services\Hash\Cores\Crc32Core.cs" />
+    <Compile Include="Services\Hash\Cores\Crc64Core.cs" />
     <Compile Include="Services\SevenZipService.cs" />
     <Compile Include="Services\ShellCommandService.cs" />
     <Compile Include="Services\ShellMenuTaskRunner.cs" />
@@ -114,7 +138,6 @@
     <Compile Include="Services\TestHooks.cs" />
     <Compile Include="ViewModel\Auto7zViewModel.cs" />
     <Compile Include="ViewModel\ObservableObject.cs" />
-    <Compile Include="ViewModel\RelayCommand.cs" />
     <Page Include="AboutWindow.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>

@@ -124,7 +124,7 @@ namespace Auto7z_WPF.Services
         }
 
         #endregion
-        #region 目录探测与清理
+        #region 目录探测与写入探针
         // 用随机文件名做写入探针：固定名会覆盖并截断用户目录里的同名文件，随机名写完立即删除。
         public static bool IsDirectoryWritable(string directoryPath)
         {
@@ -147,6 +147,8 @@ namespace Auto7z_WPF.Services
             }
         }
 
+        #endregion
+        #region 目录体积统计
         // 目录按文件逐个累加；无法获取时返回 -1 而不是 0，调用方才能区分空目录与读取失败。
         public static long GetSizeInBytes(string path)
         {
@@ -279,6 +281,8 @@ namespace Auto7z_WPF.Services
             }
         }
 
+        #endregion
+        #region 目录清理
         // 清理临时目录失败不应中断压缩与解压主流程，残留文件留待下次清理。
         public static void DeleteDirectoryQuietly(string directoryPath)
         {

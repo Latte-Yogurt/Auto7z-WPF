@@ -42,8 +42,9 @@
     <sys:String x:Key="SolidModeContent">固實壓縮</sys:String>
     <sys:String x:Key="ZstdContent">zstd</sys:String>
     <sys:String x:Key="EncFileNameContent">完全加密</sys:String>
-    <sys:String x:Key="GenerateSHA256Label">SHA256:</sys:String>
     <sys:String x:Key="GenerateSHA256Content">產生校驗檔</sys:String>
+    <sys:String x:Key="ChecksumLabel">計算校驗：</sys:String>
+    <sys:String x:Key="ChecksumAlgorithmLabel">校驗算法：</sys:String>
     <sys:String x:Key="AddPasswordLabel">添加密碼:</sys:String>
     <sys:String x:Key="CompressionLevelLabel">壓縮等級:</sys:String>
     <sys:String x:Key="Level_Store">存儲</sys:String>
@@ -65,13 +66,14 @@
     <sys:String x:Key="Tip_AutoSave">程式關閉時自動儲存目前所有設定。取消勾選則保留上次的設定。</sys:String>
     <sys:String x:Key="Tip_RuntimeMode">控制壓縮時的資源占用：執行緒數量與字典大小。低佔用最省記憶體，高效能最快。</sys:String>
     <sys:String x:Key="Tip_OutputPath">壓縮檔的輸出目錄。可直接輸入，也可拖入資料夾（取該資料夾）或拖入檔案（取其上一層目錄）。留空則輸出到來源檔案所在目錄。</sys:String>
-    <sys:String x:Key="Tip_Volume">分卷大小（MB）。填 0 表示不分卷。資料量小於該值時也不會分卷。</sys:String>
-    <sys:String x:Key="Tip_Volume_Invalid">輸入無效：請填寫大於等於 0 的整數（單位 MB），0 表示不分卷。</sys:String>
+    <sys:String x:Key="Tip_Volume">分卷大小，單位 MB。填 0 = 不分卷（這是「停用分卷」的合法取值，不是錯誤）；資料總量不超過該值時也不會分卷。</sys:String>
+    <sys:String x:Key="Tip_Volume_Invalid">輸入無效：只能填純數字（單位 MB），0 表示不分卷。不接受正負號、千分位和小數。</sys:String>
     <sys:String x:Key="Tip_Format">生成格式。7z 支援加密與固實；zip 相容性最好；tar 僅封裝不壓縮。</sys:String>
     <sys:String x:Key="Tip_SolidMode">固實壓縮：把多個檔案合併成一個資料區塊壓縮，壓縮率更高，但解壓時需整塊解出。多檔案時建議開啟。</sys:String>
     <sys:String x:Key="Tip_Zstd">對 tar 封裝再使用 zstd 壓縮，產生 .tar.zst，可顯著減小體積。</sys:String>
     <sys:String x:Key="Tip_EncFileName">完全加密：連檔名也一起加密。需要先設定密碼，僅 7z 格式支援。</sys:String>
-    <sys:String x:Key="Tip_GenerateSHA256">壓縮完成後在同目錄產生 .sha256 校驗檔，可用於校驗檔案完整性。</sys:String>
+    <sys:String x:Key="Tip_GenerateSHA256">壓縮完成後在同目錄產生校驗檔，可用於校驗壓縮檔完整性。</sys:String>
+<sys:String x:Key="Tip_ChecksumAlgorithm">校驗檔使用的演算法。後綴跟著演算法走（SHA-256 產生 .sha256、SHA3-256 產生 .sha3-256），校驗工具按後綴辨認演算法。</sys:String>
     <sys:String x:Key="Tip_CompressionLevel">壓縮等級。存儲=不壓縮（最快）；標準=均衡；極限=體積最小但最慢。7z 與 zip 有效，tar 本身不壓縮故無效。</sys:String>
     <sys:String x:Key="Tip_ZipPassword">壓縮密碼。留空表示不加密。tar 格式不支援加密。</sys:String>
     <sys:String x:Key="Tip_UnzipPassword">解壓密碼。留空表示不解密。tar 格式不需要密碼。</sys:String>
@@ -102,6 +104,8 @@
     <sys:String x:Key="Log_BusyIgnore">已有工作在執行，忽略本次傳入的 {0} 個項目</sys:String>
     <sys:String x:Key="Log_ReceivedItems">接收 {0} 個項目：{1}</sys:String>
     <sys:String x:Key="Log_UnknownFormat">設定中的壓縮格式無法辨識，已按 7z 處理：{0}</sys:String>
+    <sys:String x:Key="Log_VolumeInvalid">分卷大小無效（{0}），已按不分卷處理</sys:String>
+    <sys:String x:Key="Log_VolumeSplitDisabled">分卷大小設為 0，本次不分卷 —— 0 是「停用分卷」的合法取值，不是錯誤</sys:String>
     <sys:String x:Key="Log_DialogConfirmed">詢問框：使用者選擇「是」</sys:String>
     <sys:String x:Key="Log_DialogCancelled">詢問框：使用者選擇「否」</sys:String>
     <sys:String x:Key="Log_SHA256Failed">產生 SHA256 失敗：{0}</sys:String>

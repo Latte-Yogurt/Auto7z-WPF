@@ -1,7 +1,6 @@
 using System;
 using System.Threading;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Threading;
 
 namespace Auto7z_WPF.Services

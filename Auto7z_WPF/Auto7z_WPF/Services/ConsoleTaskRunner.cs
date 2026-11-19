@@ -1,7 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using Auto7z_WPF.Models;
 
 namespace Auto7z_WPF.Services

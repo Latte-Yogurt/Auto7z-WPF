@@ -43,8 +43,9 @@
     <sys:String x:Key="SolidModeContent">Solid</sys:String>
     <sys:String x:Key="ZstdContent">zstd</sys:String>
     <sys:String x:Key="EncFileNameContent">Encrypt names</sys:String>
-    <sys:String x:Key="GenerateSHA256Label">SHA256:</sys:String>
     <sys:String x:Key="GenerateSHA256Content">SHA256 file</sys:String>
+    <sys:String x:Key="ChecksumLabel">Checksum:</sys:String>
+    <sys:String x:Key="ChecksumAlgorithmLabel">Algorithm:</sys:String>
     <sys:String x:Key="AddPasswordLabel">Password:</sys:String>
     <sys:String x:Key="CompressionLevelLabel">Level:</sys:String>
     <sys:String x:Key="Level_Store">Store</sys:String>
@@ -66,13 +67,14 @@
     <sys:String x:Key="Tip_AutoSave">Save all settings automatically when the app closes. Uncheck to keep the previous config.</sys:String>
     <sys:String x:Key="Tip_RuntimeMode">Controls resource usage while compressing: thread count and dictionary size. Low uses least memory, High is fastest.</sys:String>
     <sys:String x:Key="Tip_OutputPath">Output directory for archives. Type it, or drop a folder (used as-is) or a file (its parent folder is used). Leave empty to output next to the source file.</sys:String>
-    <sys:String x:Key="Tip_Volume">Split size in MB. Enter 0 to disable splitting. No split happens when the data is smaller than this value.</sys:String>
-    <sys:String x:Key="Tip_Volume_Invalid">Invalid input: enter an integer greater than or equal to 0 (in MB), where 0 means no splitting.</sys:String>
+    <sys:String x:Key="Tip_Volume">Split size in MB. 0 means "splitting disabled" — that is a valid value, not an error. Nothing is split when the total data size does not exceed this value.</sys:String>
+    <sys:String x:Key="Tip_Volume_Invalid">Invalid input: digits only (in MB), and 0 disables splitting. Signs, thousands separators and decimals are not accepted.</sys:String>
     <sys:String x:Key="Tip_Format">Archive format. 7z supports encryption and solid mode; zip is the most compatible; tar only stores without compressing.</sys:String>
     <sys:String x:Key="Tip_SolidMode">Solid compression merges files into one block for better ratio, but the whole block must be extracted. Recommended with multiple files.</sys:String>
     <sys:String x:Key="Tip_Zstd">Compress the tar package with zstd to produce a .tar.zst, which is significantly smaller.</sys:String>
     <sys:String x:Key="Tip_EncFileName">Encrypt file names as well. Requires a password first. Only supported by 7z.</sys:String>
-    <sys:String x:Key="Tip_GenerateSHA256">Generate a .sha256 checksum file next to the archive to verify its integrity.</sys:String>
+    <sys:String x:Key="Tip_GenerateSHA256">Generate a checksum file next to the archive to verify its integrity.</sys:String>
+<sys:String x:Key="Tip_ChecksumAlgorithm">Algorithm used for the checksum file. The extension follows the algorithm (SHA-256 writes .sha256, SHA3-256 writes .sha3-256), and verifiers recognise the algorithm by that extension.</sys:String>
     <sys:String x:Key="Tip_CompressionLevel">Compression level. Store = no compression (fastest); Normal = balanced; Ultra = smallest but slowest. Effective for 7z and zip; tar does not compress.</sys:String>
     <sys:String x:Key="Tip_ZipPassword">Password for compression. Leave empty for no encryption. The tar format does not support encryption.</sys:String>
     <sys:String x:Key="Tip_UnzipPassword">Password for extraction. Leave empty if the archive is not encrypted. tar archives need no password.</sys:String>
@@ -103,6 +105,8 @@
     <sys:String x:Key="Log_BusyIgnore">A task is already running, ignoring the {0} incoming item(s)</sys:String>
     <sys:String x:Key="Log_ReceivedItems">Received {0} item(s): {1}</sys:String>
     <sys:String x:Key="Log_UnknownFormat">Unrecognized archive format in the config, using 7z: {0}</sys:String>
+    <sys:String x:Key="Log_VolumeInvalid">Invalid split size ({0}), continuing without splitting</sys:String>
+    <sys:String x:Key="Log_VolumeSplitDisabled">Split size is 0, so this archive is not split — 0 is the valid value for "splitting disabled", not an error</sys:String>
     <sys:String x:Key="Log_DialogConfirmed">Prompt: the user chose Yes</sys:String>
     <sys:String x:Key="Log_DialogCancelled">Prompt: the user chose No</sys:String>
     <sys:String x:Key="Log_SHA256Failed">Failed to generate the SHA256 file: {0}</sys:String>

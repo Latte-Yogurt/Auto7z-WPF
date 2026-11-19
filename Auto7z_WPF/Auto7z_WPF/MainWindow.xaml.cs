@@ -97,6 +97,8 @@ namespace Auto7z_WPF
                 {
                     // 换语言后资源字典已替换，工具提示是现取文案的，必须重挂一遍；BeginInvoke 让这一步排在语言应用之后。
                     Dispatcher.BeginInvoke(new Action(AttachSettingToolTips));
+                    // 校验算法下拉框的项是算法对象，显示名由 ToString 现给，单靠换词典不会重取文案。
+                    Dispatcher.BeginInvoke(new Action(RefreshAlgorithmText));
                 }
             };
 
@@ -219,7 +221,28 @@ namespace Auto7z_WPF
             // 资源缺失时取到 null，此时不设提示，免得留下一个空白的提示框。
             if (string.IsNullOrEmpty(text)) return;
 
-            ToolTipService.SetToolTip(target, text);
+            ToolTipService.SetToolTip(target, BuildToolTip(text));
+        }
+
+        /// <summary>
+        /// 把提示文案包成会自动换行的 ToolTip。
+        ///
+        /// 直接给字符串时 WPF 套默认模板，里面的 TextBlock 是 NoWrap ——
+        /// 英文提示动辄 150+ 字符，会拉成一条竖不过去也读不完的长条。
+        /// 这里显式给一个带 MaxWidth 与 TextWrapping 的 TextBlock，长文案就会折行。
+        /// </summary>
+        private static ToolTip BuildToolTip(string text)
+        {
+            return new ToolTip
+            {
+                MaxWidth = 360,
+                Content = new TextBlock
+                {
+                    Text = text,
+                    TextWrapping = TextWrapping.Wrap,
+                    MaxWidth = 340
+                }
+            };
         }
 
         private void AttachSettingToolTips()
@@ -236,6 +259,7 @@ namespace Auto7z_WPF
             SetToolTip(CheckBox_Zstd, "Tip_Zstd");
             SetToolTip(CheckBox_ENCFileName, "Tip_EncFileName");
             SetToolTip(CheckBox_GenerateSHA256, "Tip_GenerateSHA256");
+            SetToolTip(ComboBox_Algorithm, "Tip_ChecksumAlgorithm");
             SetToolTip(ComboBox_ZipLevel, "Tip_CompressionLevel");
             SetToolTip(ZipPasswordInput, "Tip_ZipPassword");
             SetToolTip(UnZipPasswordInput, "Tip_UnzipPassword");
@@ -404,7 +428,7 @@ namespace Auto7z_WPF
         }
 
         #endregion
-        #region 配置同步与事件绑定
+        #region 配置回填与下拉项选择
         private void SyncConfigToControls()
         {
             // 回填期间必须挂起控件事件：属性变更触发的回调会把刚读出的配置又写回 ViewModel。
@@ -419,6 +443,7 @@ namespace Auto7z_WPF
                 CheckBox_SolidMode.IsChecked = _vm.IsSolidMode;
                 CheckBox_ENCFileName.IsChecked = _vm.IsEncFileName;
                 CheckBox_GenerateSHA256.IsChecked = _vm.GenerateSHA256;
+                FillAlgorithmComboBox();
                 SelectComboBoxItem(ComboBox_ZipLevel, EnumText.ToText(_vm.CompressionLevel));
 
                 CheckBox_TopMost.IsChecked = _vm.IsTopMost;
@@ -459,6 +484,67 @@ namespace Auto7z_WPF
             return (comboBox?.SelectedItem as ComboBoxItem)?.Content?.ToString();
         }
 
+        /// <summary>
+        /// 按算法目录填充校验算法下拉框。
+        ///
+        /// 项是 HashAlgorithmInfo 本身而不是临时的 ComboBoxItem：显示名由 ToString 给出，
+        /// 选中项直接就是算法对象，不必再从界面上把显示名解析回算法 —— 那个来回转换
+        /// 在多语言下必然出错（显示名会跟语言走）。目录是唯一的算法来源，
+        /// 以后加算法只改目录，界面自动跟上。
+        /// </summary>
+        private void FillAlgorithmComboBox()
+        {
+            if (ComboBox_Algorithm == null) return;
+
+            ComboBox_Algorithm.Items.Clear();
+            foreach (HashAlgorithmInfo info in HashAlgorithms.All)
+            {
+                ComboBox_Algorithm.Items.Add(info);
+            }
+
+            SelectAlgorithm(HashAlgorithms.ById(_vm.ChecksumAlgorithmId) ?? HashAlgorithms.Default);
+        }
+
+        /// <summary>把下拉框选中项指到给定算法；算法不在列表里时退回第一项，不留空选择。</summary>
+        private void SelectAlgorithm(HashAlgorithmInfo algorithm)
+        {
+            if (ComboBox_Algorithm == null) return;
+
+            object target = null;
+            foreach (object candidate in ComboBox_Algorithm.Items)
+            {
+                var info = candidate as HashAlgorithmInfo;
+                if (info != null && algorithm != null
+                    && string.Equals(info.Id, algorithm.Id, StringComparison.OrdinalIgnoreCase))
+                {
+                    target = candidate;
+                    break;
+                }
+            }
+
+            ComboBox_Algorithm.SelectedItem = target ?? ComboBox_Algorithm.Items.Cast<object>().FirstOrDefault();
+        }
+
+        private HashAlgorithmInfo GetSelectedAlgorithm()
+        {
+            return ComboBox_Algorithm?.SelectedItem as HashAlgorithmInfo;
+        }
+
+        /// <summary>
+        /// 换语言后重填下拉框：项是算法对象，显示名由 ToString 给出，
+        /// 单靠换词典不会让已经建好的项重新取文案，只能整列表重建一次。
+        /// </summary>
+        public void RefreshAlgorithmText()
+        {
+            if (ComboBox_Algorithm == null) return;
+
+            HashAlgorithmInfo selected = GetSelectedAlgorithm();
+            FillAlgorithmComboBox();
+            SelectAlgorithm(selected);
+        }
+
+        #endregion
+        #region 控件事件绑定
         // 先摘再挂：这个方法可能被重复调用，不去重会让同一个处理器叠加执行。
         private void RegisterControlEvents()
         {
@@ -485,6 +571,9 @@ namespace Auto7z_WPF
 
             ComboBox_ZipLevel.SelectionChanged -= ComboBox_ZipLevel_SelectionChanged;
             ComboBox_ZipLevel.SelectionChanged += ComboBox_ZipLevel_SelectionChanged;
+
+            ComboBox_Algorithm.SelectionChanged -= ComboBox_Algorithm_SelectionChanged;
+            ComboBox_Algorithm.SelectionChanged += ComboBox_Algorithm_SelectionChanged;
 
             TextBox_FilePath.TextChanged -= TextBox_FilePath_TextChanged;
             TextBox_FilePath.TextChanged += TextBox_FilePath_TextChanged;
@@ -615,6 +704,15 @@ namespace Auto7z_WPF
         {
             if (_isSyncingControls) return;
             _vm.GenerateSHA256 = CheckBox_GenerateSHA256.IsChecked == true;
+        }
+
+        private void ComboBox_Algorithm_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isSyncingControls) return;
+
+            // 下拉框直接装算法对象，选中项本身就是配置要存的那个标识，不需要反解析。
+            HashAlgorithmInfo selected = GetSelectedAlgorithm();
+            if (selected != null) _vm.ChecksumAlgorithmId = selected.Id;
         }
 
         private void ComboBox_ZipLevel_SelectionChanged(object sender, SelectionChangedEventArgs e)

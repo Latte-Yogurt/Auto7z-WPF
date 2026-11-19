@@ -21,6 +21,13 @@ namespace Auto7z_WPF.Services
 
         public bool GenerateSHA256 { get; set; } = true;
 
+        // 校验文件的算法标识（sha256 / sha3-256 / blake3 …），对应 HashAlgorithms 的目录项。
+        // 存标识而不是显示名：显示名跟语言走，标识不跟。
+        //
+        // 初值取 HashAlgorithms.Default.Id，不写死字符串：默认算法只在 HashAlgorithms 里定义一次，
+        // 这里跟着走，改默认值时不会漏掉本处（HashAlgorithms 不反向依赖 AppConfig，无循环初始化）。
+        public string ChecksumAlgorithm { get; set; } = HashAlgorithms.Default.Id;
+
         public bool AutoSave { get; set; } = true;
 
         public bool IsTopMost { get; set; } = false;
