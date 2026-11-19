@@ -184,7 +184,7 @@ can tell success from failure:
 | Code | Meaning |
 |---|---|
 | 0 | everything succeeded (or the usage was printed for `-h`) |
-| 1 | the task ran but failed or was cancelled |
+| 1 | the task ran but failed, was cancelled, **or finished with some files skipped** (a missing path inside a mixed batch lands here) |
 | 2 | nothing ran: missing/unknown arguments, or none of the input paths exist |
 
 Relative input paths are accepted (`Auto7z.exe -z file.txt` inside the file's
@@ -201,7 +201,7 @@ folder is deleted before the window disappears.
 
 ### How it works
 
-The context menu extension is a small COM component (`Auto7zShell.dll`) that implements `IContextMenu` and `IShellExtInit`. It is registered under `*\shellex\ContextMenuHandlers`, `Directory\...`, `Folder\...` and `Directory\Background\...`, which is what makes Explorer hand over the whole selection at once. A `shell\command` registration would start one process per file instead.
+The context menu extension is a small COM component (`Auto7zShell.dll`) that implements `IContextMenu` and `IShellExtInit`. It is registered under `*\shellex\ContextMenuHandlers`, `Directory\...` and `Folder\...`, which is what makes Explorer hand over the whole selection at once. A `shell\command` registration would start one process per file instead. `Directory\Background` is deliberately **not** registered: a folder's empty background area has no selection, so there is nothing to compress or extract.
 
 The selected paths are passed to the application through a named shared memory block, because the command line cannot hold hundreds of long paths (32767 character limit). The command line only carries a reference to it. That shared-memory form is also how the application recognises "this came from the context menu" and switches to the no-main-window mode.
 
@@ -382,7 +382,7 @@ Auto7z.exe -ur
 | 码 | 含义 |
 |---|---|
 | 0 | 全部成功（`-h` 打印用法也算成功） |
-| 1 | 任务跑了但失败，或被取消 |
+| 1 | 任务跑了但失败、被取消，**或有文件被跳过**（混合批里缺失的路径属于这一档） |
 | 2 | 根本没跑：参数缺失/无法识别，或输入路径一个都不存在 |
 
 相对路径可用（在文件所在目录里 `Auto7z.exe -z file.txt` 能正常压缩）——
@@ -396,7 +396,7 @@ Auto7z.exe -ur
 
 ### 大概原理
 
-右键菜单扩展是个小的 COM 组件（`Auto7zShell.dll`），实现 `IContextMenu` 与 `IShellExtInit`。它注册在 `*\shellex\ContextMenuHandlers`、`Directory\...`、`Folder\...` 与 `Directory\Background\...` 下，资源管理器会把整个选区一次性交过来。换成 `shell\command` 那种注册方式，资源管理器会对每个文件各起一个进程。
+右键菜单扩展是个小的 COM 组件（`Auto7zShell.dll`），实现 `IContextMenu` 与 `IShellExtInit`。它注册在 `*\shellex\ContextMenuHandlers`、`Directory\...` 与 `Folder\...` 下，资源管理器会把整个选区一次性交过来。换成 `shell\command` 那种注册方式，资源管理器会对每个文件各起一个进程。`Directory\Background` 是**有意不注册**的：文件夹空白处没有选中项，压缩/解压无从谈起。
 
 选中的路径走命名共享内存传给程序，因为命令行装不下几百个长路径（32767 字符上限），命令行里只带一个引用。程序也靠这个共享内存形式认出「这是右键菜单来的」，从而切到无主窗口模式。
 
