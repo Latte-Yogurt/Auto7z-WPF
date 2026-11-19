@@ -17,7 +17,7 @@ r"""死代码审查（只报告，不改代码）。
 "引用"= 标识符作为独立单词出现在**任一**被扫文件里，包含注释与字符串字面量。
 
 为什么把字符串也算进来：本项目大量按名字取成员——反射探针
-（`sha256probe` 调 `CalculateSHA256`、`guardprobe` 调守卫方法）、
+（`hashprobe` 调 `Calculate` / 取 `HashAlgorithms.All`、`guardprobe` 调守卫方法）、
 WPF 的 `DynamicResource` / `{Binding X}`、安装脚本的命令行开关。
 把这些算成"未引用"会得到一份满屏假阳性的报告，比不报更糟。
 

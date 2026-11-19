@@ -33,18 +33,29 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_ops import SafeTemp, safe_rmtree
+
+# 数据目录改道必须在导入 config_guard **之前**：配置与状态文件路径都在那一刻算出来。
+# 本套件要直接写 TaskState.json / job.lock 来伪造崩溃残留，不隔离的话
+# 伪造出来的残留会被用户真实的程序读到，变成一次真实的"崩溃恢复"。
+from test_env import isolate_data_root
+DATA_ROOT = isolate_data_root("crashrecover")
+
 from config_guard import ConfigGuard, claim_checkout, release_checkout
 
 HERE = Path(__file__).resolve().parent
 WORKSPACE = HERE.parent
 PROJECT = WORKSPACE / "Auto7z_WPF" / "Auto7z_WPF"
 
-LOCAL = Path(os.environ["LOCALAPPDATA"]) / "Auto7z"
+LOCAL = DATA_ROOT / "Auto7z"
 STATE_FILE = LOCAL / "TaskState.json"
 STATE_BAK = Path(str(STATE_FILE) + ".bak")
 LOCK_FILE = LOCAL / "job.lock"
 
 TEMP = SafeTemp("crashrecover")
+
+# 启动被测程序时统一用的环境：带上数据目录改道变量。
+import test_env as _test_env
+PRODUCT_ENV = _test_env.child_env("crashrecover")
 
 
 class Result(object):
@@ -103,7 +114,8 @@ def cleanup_state_files():
 def run_app(app, args, timeout=20):
     """启动被测程序并等它退出，返回退出码。"""
     try:
-        r = subprocess.run([str(app)] + args, capture_output=True, timeout=timeout)
+        r = subprocess.run([str(app)] + args, capture_output=True, timeout=timeout,
+                           env=PRODUCT_ENV)
         return r.returncode
     except subprocess.TimeoutExpired:
         return -1
@@ -179,7 +191,7 @@ def scenario_b(res, app):
 
     # 启动压缩，等锁 + active 都出现后强杀
     proc = subprocess.Popen([str(app), "-z", str(big)], stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL)
+                            stderr=subprocess.DEVNULL, env=PRODUCT_ENV)
     try:
         ready = wait_for(lambda: STATE_FILE.exists() and LOCK_FILE.exists(), 15)
         if not ready:

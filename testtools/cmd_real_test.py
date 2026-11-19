@@ -128,7 +128,10 @@ def case_password(r):
     print("\n=== C4  加密包：密码在控制台问、错密码重试提示独占一行且带冒号 ===")
     src = r.work / "secret.txt"
     src.write_text("top secret", encoding="utf-8")
-    sz = Path(os.environ["LOCALAPPDATA"]) / "Auto7z" / "7-Zip" / "7z.exe"
+    # 组件在产品的数据目录里；该目录可能被改道到 %TEMP%（见 test_env.py）。
+    _root = os.environ.get("AUTO7Z_DATA_ROOT")
+    sz = (Path(_root) if _root and os.path.isabs(_root)
+          else Path(os.environ["LOCALAPPDATA"])) / "Auto7z" / "7-Zip" / "7z.exe"
     if not sz.exists():
         r.bad("找不到 7z.exe，无法构造加密包")
         return

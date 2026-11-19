@@ -6,7 +6,7 @@ r"""一键性能基准测试。
 把结果解析成一张表，并跟上一次的结果对比。
 
 覆盖的热点（B1–B9）:
-    B1/B2/B3  SHA256 吞吐：共用 SHA256Service / 裸 SHA256.Create() / 可压缩文本
+    B1/B2/B3  SHA256 吞吐：共用 HashingService / 裸 SHA256.Create() / 可压缩文本
     B4/B5     7-Zip 压缩 / 解压吞吐
     B6        配置读 / 写
     B7/B8     目录扫描（GetSizeInBytes）/ 安全文件夹名生成
@@ -33,10 +33,25 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_ops import SafeTemp
 
+# 数据目录改道必须在导入 config_guard / 使用 PRODUCT_ENV **之前**：
+# 产品的配置路径是在进程启动那一刻按环境变量算出来的。
+#
+# 为什么这条对本脚本尤其重要：bench 的 B6 项会反射调用 ConfigService.Save 共 200 次，
+# 保存的正是"当前数据目录"里那份配置。没有改道时它写的就是用户真实的
+# %LOCALAPPDATA%\Auto7z\Auto7z.json —— 实测跑完一轮基准后用户的
+# Language / RuntimeMode / CompressionLevel 全被改成默认值。
+from test_env import isolate_data_root
+DATA_ROOT = isolate_data_root("bench")
+import test_env as _test_env
+PRODUCT_ENV = _test_env.child_env("bench")
+
 HERE = Path(__file__).resolve().parent
 WORKSPACE = HERE.parent
 PROJECT = WORKSPACE / "Auto7z_WPF" / "Auto7z_WPF"
-BENCH_DIR = HERE / "bench"
+
+# 基准产物一律写进本次运行的临时目录，不再落进项目树的 testtools\bench\。
+# 旧实现写 testtools/bench/last.json，等于每跑一次就往工程里丢一个未跟踪文件。
+BENCH_DIR = DATA_ROOT / "bench-out"
 
 TEMP = SafeTemp("bench")
 
@@ -114,7 +129,10 @@ def main():
     print("=" * 74)
 
     TEMP.ensure()
-    _, out = run([str(bench_exe), str(app), str(TEMP.path)], cwd=str(HERE))
+    # 显式把改道后的 env 传给 bench.exe：它反射调用产品代码，产品按 env 里的
+    # AUTO7Z_DATA_ROOT 决定往哪写配置，不传就会写进用户真实目录（D3-09）。
+    _, out = run([str(bench_exe), str(app), str(TEMP.path)],
+                 cwd=str(HERE), env=PRODUCT_ENV)
     print(out)
 
     rows = parse_bench(out)

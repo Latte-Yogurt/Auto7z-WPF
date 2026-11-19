@@ -151,7 +151,12 @@ class UiWidth
                 string text = File.ReadAllText(path, Encoding.UTF8);
                 foreach (string tag in FindControlTags(text))
                 {
+                    // 标签控件用 Text、按钮/复选框用 Content，两者都要查。
+                    // 早先只读 Content，于是 <TextBlock Text="{DynamicResource …}"/> 这一整类
+                    // （侧栏所有字段标签都是这种写法）从来没被检查过 —— 繁中「校驗演算法：」
+                    // 在 Width=70 里溢出到 78px、被右侧下拉框盖住，工具却报「(无)」。
                     string key = ReadAttribute(tag, "Content");
+                    if (key == null) key = ReadAttribute(tag, "Text");
                     if (key == null || !key.StartsWith("{DynamicResource ")) continue;
                     key = key.Substring("{DynamicResource ".Length).TrimEnd('}').Trim();
 
@@ -209,7 +214,9 @@ class UiWidth
     static List<string> FindControlTags(string text)
     {
         var result = new List<string>();
-        string[] names = { "CheckBox", "ComboBox", "TextBox", "Button", "RadioButton" };
+        // TextBlock 必须在列表里：侧栏每个字段标签都是 <TextBlock Text="{DynamicResource …}" Width="70"/>，
+        // 它们的固定宽同样会把长文案裁掉。早先漏了 TextBlock，这整类标签从未被检查过。
+        string[] names = { "CheckBox", "ComboBox", "TextBox", "Button", "RadioButton", "TextBlock" };
 
         int pos = 0;
         while (pos < text.Length)
@@ -240,7 +247,22 @@ class UiWidth
 
     static string ReadAttribute(string tag, string attribute)
     {
-        int idx = tag.IndexOf(attribute + "=", StringComparison.Ordinal);
+        // 必须要求属性名前是空白，否则 "Width=" 会命中 "MinWidth=" / "MaxWidth=" 的子串 ——
+        // 那会把 MinWidth 当成固定宽，于是本工具把「按内容自适应」的标签误报成「固定宽溢出」。
+        // 这个子串误匹配曾导致一次错误的判断：RuntimeModeLabel 的 MinWidth=38 被读成 Width=38，
+        // 工具报「中文需要 55px、固定宽 38px」，实际上 WPF 的 MinWidth 不裁文字。
+        int idx = -1;
+        int from = 0;
+        string needle = attribute + "=";
+        while (true)
+        {
+            int hit = tag.IndexOf(needle, from, StringComparison.Ordinal);
+            if (hit < 0) break;
+            // 前一个字符必须是空白（或属性名就在标签名之后），这样才是一个独立的属性名。
+            bool atBoundary = hit == 0 || char.IsWhiteSpace(tag[hit - 1]);
+            if (atBoundary) { idx = hit; break; }
+            from = hit + 1;
+        }
         if (idx < 0) return null;
 
         int quoteStart = tag.IndexOf('"', idx);

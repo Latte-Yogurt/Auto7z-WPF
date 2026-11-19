@@ -48,6 +48,13 @@ def decode_console_output(data):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_ops import SafeTemp, safe_rmtree, UnsafeDeleteError
+
+# 数据目录改道必须在导入 config_guard **之前**：配置路径是在那一刻按环境变量算出来的。
+# 不先改道的话，本套件改的是 %LOCALAPPDATA%\Auto7z 里用户自己那份配置，
+# 而产品实际读写的也是那份 —— 跑一轮测试就把用户设置改了。
+from test_env import isolate_data_root
+DATA_ROOT = isolate_data_root("regress")
+
 from config_guard import ConfigGuard
 
 WORKSPACE = Path(__file__).resolve().parent.parent
@@ -58,6 +65,11 @@ PROJECT = WORKSPACE / "Auto7z_WPF" / "Auto7z_WPF"
 
 # 临时目录：受控在 %TEMP% 下，路径含标记串，删除前有白名单校验
 TEMP = SafeTemp("regress")
+
+# 启动被测程序时统一用的环境：带上数据目录改道变量。
+# 每一处 Popen / run 都要传它，漏一处产品就会写进用户的真实数据目录。
+import test_env as _test_env
+PRODUCT_ENV = _test_env.child_env("regress")
 
 
 def parse_args():
@@ -94,7 +106,7 @@ if not GUI_APP.exists():
 def exe_for(args):
     """没有参数 = 界面模式，走图形入口；带参数 = 命令行模式，走命令行入口。"""
     return GUI_APP if not list(args) else APP
-LOCAL = Path(os.environ["LOCALAPPDATA"]) / "Auto7z"
+LOCAL = DATA_ROOT / "Auto7z"
 CFG = LOCAL / "Auto7z.json"
 LOGS = LOCAL / "Logs"
 SZ = LOCAL / "7-Zip" / "7z.exe"
@@ -280,7 +292,7 @@ def close_gracefully(args, wait=5.0):
     kill_running()
     p = subprocess.Popen([exe_for(args)] + list(args),
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         stdin=subprocess.DEVNULL)
+                         stdin=subprocess.DEVNULL, env=PRODUCT_ENV)
 
     # 先等它自己结束
     deadline = time.time() + wait
@@ -315,7 +327,8 @@ def windows_of(pid):
 
 def probe(args, wait=4.0):
     p = subprocess.Popen([APP] + list(args),
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         env=PRODUCT_ENV)
     time.sleep(wait)
     titles = windows_of(p.pid)
     if p.poll() is None:
@@ -337,7 +350,7 @@ def run_capture(args, wait=6.0):
     try:
         out = subprocess.run([APP] + list(args), stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                             timeout=wait)
+                             timeout=wait, env=PRODUCT_ENV)
         return decode_console_output(out.stdout)
     except subprocess.TimeoutExpired as e:
         raw = e.stdout or b""
@@ -357,8 +370,6 @@ def sha256_of(p):
     return h.hexdigest()
 
 
-
-
 def registered_main_exe():
     """读右键菜单登记的 MainExePath；读不到返回 None。"""
     try:
@@ -373,7 +384,6 @@ def registered_main_exe():
             winreg.CloseKey(key)
     except Exception:
         return None
-
 
 
 def shell_menu_registered():
@@ -803,7 +813,8 @@ def main():
     backup = cfg_text()
     try:
         CFG.write_text("not json <<<", encoding="utf-8")
-        p = subprocess.Popen([exe_for([])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen([exe_for([])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             env=PRODUCT_ENV)
         time.sleep(3)
         alive = p.poll() is None
         if p.poll() is None:
@@ -860,7 +871,8 @@ def main():
                 # 直接丢在工程根目录里 —— 那是产品代码的地盘，不该留测试产物。
                 # 改成传到受控临时目录，跟着其它临时产物一起被统一清理。
                 out = subprocess.run([str(exe), str(TEMP.path), str(APP)],
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     env=PRODUCT_ENV)
                 # 同 T21：辅助程序按控制台代码页输出中文，不能用默认的 UTF-8 解码
                 text = decode_console_output(out.stdout)
                 for line in text.splitlines():
@@ -925,7 +937,7 @@ def main():
         for attempt in range(3):
             try:
                 subprocess.run([APP, "-ur"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               stdin=subprocess.DEVNULL, timeout=60)
+                               stdin=subprocess.DEVNULL, timeout=60, env=PRODUCT_ENV)
             except Exception as e:
                 say("  注销失败: %s" % e)
                 continue

@@ -136,7 +136,7 @@ class Bench
                           + smallFiles.Count + " 个小文件");
         Console.WriteLine("");
 
-        var typeSHA256 = asm.GetType("Auto7z_WPF.Services.SHA256Service");
+        var typeSHA256 = asm.GetType("Auto7z_WPF.Services.HashingService");
         var typeSeven = asm.GetType("Auto7z_WPF.Services.SevenZipService");
         var typeConfig = asm.GetType("Auto7z_WPF.Services.ConfigService");
         var typeFs = asm.GetType("Auto7z_WPF.Services.FileSystemHelper");
@@ -184,6 +184,19 @@ class Bench
         Console.WriteLine("=== 基准结束 ===");
     }
 
+    /// <summary>
+    /// 产品侧的「默认哈希算法」描述对象。HashingService.Calculate 要求显式传算法，
+    /// 基准只想测默认行为，所以从 HashAlgorithms.Default 上读出来再用。
+    /// </summary>
+    static object DefaultAlgorithm()
+    {
+        Type algorithms = asm == null ? null : asm.GetType("Auto7z_WPF.Services.HashAlgorithms");
+        if (algorithms == null) return null;
+
+        PropertyInfo def = algorithms.GetProperty("Default",
+            BindingFlags.Public | BindingFlags.Static);
+        return def == null ? null : def.GetValue(null, null);
+    }
     static object NewInstance(Type t)
     {
         return Activator.CreateInstance(t);
@@ -196,19 +209,20 @@ class Bench
 
     static void BenchSha256(Type sha256Type, string file)
     {
-        Console.WriteLine("[B1] SHA256Service.CalculateSHA256 —— 单文件 256MB");
-        if (sha256Type == null) { Console.WriteLine("  !! 找不到 SHA256Service"); return; }
+        Console.WriteLine("[B1] HashingService.Calculate —— 单文件 256MB");
+        if (sha256Type == null) { Console.WriteLine("  !! 找不到 HashingService"); return; }
 
         var svc = NewInstance(sha256Type);
-        var method = sha256Type.GetMethod("CalculateSHA256");
+        var method = sha256Type.GetMethod("Calculate");
+        object algorithm = DefaultAlgorithm();
 
         for (int i = 0; i < 3; i++)
-            method.Invoke(svc, new object[] { new[] { file }, null, CancellationToken.None });
+            method.Invoke(svc, new object[] { new[] { file }, algorithm, null, CancellationToken.None });
 
         const int iters = 5;
         var sw = Stopwatch.StartNew();
         for (int i = 0; i < iters; i++)
-            method.Invoke(svc, new object[] { new[] { file }, null, CancellationToken.None });
+            method.Invoke(svc, new object[] { new[] { file }, algorithm, null, CancellationToken.None });
         sw.Stop();
 
         double mb = (double)new FileInfo(file).Length * iters / (1024.0 * 1024.0);
@@ -254,19 +268,20 @@ class Bench
 
     static void BenchSha256Text(Type sha256Type, string file)
     {
-        Console.WriteLine("[B3] SHA256Service.CalculateSHA256 —— 可压缩文本（接近真实压缩包场景）");
+        Console.WriteLine("[B3] HashingService.Calculate —— 可压缩文本（接近真实压缩包场景）");
         if (sha256Type == null) return;
 
         var svc = NewInstance(sha256Type);
-        var method = sha256Type.GetMethod("CalculateSHA256");
+        var method = sha256Type.GetMethod("Calculate");
+        object algorithm = DefaultAlgorithm();
 
         for (int i = 0; i < 3; i++)
-            method.Invoke(svc, new object[] { new[] { file }, null, CancellationToken.None });
+            method.Invoke(svc, new object[] { new[] { file }, algorithm, null, CancellationToken.None });
 
         const int iters = 5;
         var sw = Stopwatch.StartNew();
         for (int i = 0; i < iters; i++)
-            method.Invoke(svc, new object[] { new[] { file }, null, CancellationToken.None });
+            method.Invoke(svc, new object[] { new[] { file }, algorithm, null, CancellationToken.None });
         sw.Stop();
 
         double mb = (double)new FileInfo(file).Length * iters / (1024.0 * 1024.0);

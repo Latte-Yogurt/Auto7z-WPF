@@ -12,12 +12,13 @@ python run_regress.py          # 一键回归测试
 python run_system_test.py      # 一键系统测试
 python splitvol_test.py        # 分卷压缩 / 分卷解压专项
 python heuristic_probe.py      # 启发式探测（列可疑行为，不判失败）
+python tipcheck.py             # 提示文案质量（过长 / 空 / 换行 / 折行 / 标点）
 python run_bench.py            # 一键性能基准（不判失败，只做前后对比）
 ```
 
 ### `run_cs_probes.py` —— C# 探针的统一入口
 
-`cs\` 下那 15 个 exe 各自要一串参数（dll 路径、CLSID、样本文件、输出目录……），
+`cs\` 下那 16 个 exe 各自要一串参数（dll 路径、CLSID、样本文件、输出目录……），
 逐个手敲既麻烦又容易传错。这个脚本自动定位被测程序、按各工具真正需要的参数调起来，
 最后打印一张表：
 
@@ -29,7 +30,7 @@ python run_bench.py            # 一键性能基准（不判失败，只做前�
  menuprobe     [通过]     点击槽位分派：压缩/解压 × 两种调用形态
  ...
 --------------------------------------------------------------------------
- 合计 15 项：通过/完成 15，失败 0，跳过 0
+ 合计 16 项：通过/完成 16，失败 0，跳过 0
 ```
 
 ```powershell
@@ -114,7 +115,7 @@ subprocess.run([sys.executable, "splitvol_test.py", "--app", app],
 | 并行（同时两个） | 第二个被拒 | 退出码 2 + 明确提示 |
 
 
-- **回归**（`run_regress.py`）：主回归 T01–T22 + 静态检查 + 命名/region/行为/防护检查 + 词典一致性 + 注册契约 + 改名残留 + 删除守卫运行时验证 + 结果颜色契约运行时验证 + **本项目计算服务运行时验证** + 幽灵注册检查 + **死代码审查**（共 14 项）
+- **回归**（`run_regress.py`）：主回归 T01–T22 + 静态检查 + 命名/region/行为/防护检查 + 词典一致性 + 注册契约 + 改名残留 + 删除守卫运行时验证 + 结果颜色契约运行时验证 + **本项目计算服务运行时验证** + 幽灵注册检查 + **死代码审查** + **崩溃残留清理**（共 16 项）
 - **系统**（`run_system_test.py`）：命令行模式、加密包密码交互、多文件 Y/N、分卷压缩/解压、外壳扩展、界面检查（共 18 项）
 
 跑完会自动清理临时目录，删除带白名单校验（见下面的「临时目录与删除边界」）。
@@ -124,16 +125,16 @@ subprocess.run([sys.executable, "splitvol_test.py", "--app", app],
 ```
 testtools/
 ├── README.md              本文件
-├── COVERAGE.md            覆盖维度台账（逐轮追加，见文末）
-├── run_cs_probes.py       一键跑完 cs\ 下全部 C# 探针（15 项，带结果表）
-├── run_regress.py         一键回归测试（14 项）
+├── run_cs_probes.py       一键跑完 cs\ 下全部 C# 探针（16 项，带结果表）
+├── run_regress.py         一键回归测试（16 项）
 ├── run_system_test.py     一键系统测试（18 项）
 ├── run_bench.py           一键性能基准（不判失败）
 ├── safe_ops.py            临时目录与安全删除（白名单校验）
+├── test_env.py            数据目录隔离：把产品的 AUTO7Z_DATA_ROOT 指到 %TEMP%
 ├── config_guard.py        配置隔离：清空 / 还原真实配置、单实例闸门、便携配置检测
 ├── splitvol_test.py       分卷压缩 / 分卷解压专项（三种模式对分卷的处理，48 项）
 ├── crashrecover_test.py    崩溃残留清理专项测试（5 场景 13 项：强杀进程后分卷残片清理）
-├── heuristic_probe.py     启发式探测（找不符合文档契约的行为，30 项，不判失败只列可疑）
+├── heuristic_probe.py     启发式探测（找不符合文档契约的行为，24 项实测，不判失败只列可疑）
 ├── cs_check.py            静态检查：命名类型一致性、文档标签、路径边界、空 catch
 ├── namecheck.py           命名风格一致性：字段/属性/方法/局部变量各自风格
 ├── regioncheck.py         region 结构：配对、嵌套 ≤1、跨度 ≤150 行
@@ -146,6 +147,7 @@ testtools/
 ├── cmd_real_test.py       真实 cmd 语义测试（C1–C4）
 ├── check_reg.py           右键菜单注册状态检查
 ├── find_dead2.py          更全面的废键审查（含 C++ 导出函数）
+├── tipcheck.py            提示文案质量：过长 / 空文案 / 真实换行 / 手工折行 / 标点风格
 ├── deadcode.py            死代码审查（零引用成员 / 只写不读状态 / 废词典键 / 死枚举 / 无人调用的工具）
 ├── ui_probe.ps1           UI 自动化：主窗口进度、右键模式进度与取消
 ├── ui_feed_test.ps1       拖拽入窗（接口级，走 Debug 版 --feed）
@@ -158,7 +160,7 @@ testtools/
     ├── bench/             性能基准：反射直调热点方法（B1–B9），机器可读输出
     ├── guardprobe/        删除守卫的运行时验证：反射直调守卫，拿真实路径试
     ├── resultprobe/       结果颜色契约的运行时验证：反射建 ViewModel、调 SetResult，验通知属性名与颜色依据
-    ├── sha256probe/       本项目计算服务的运行时验证：反射直调 SHA256Service，验哈希/格式/无 BOM/递归/进度/取消
+    ├── hashprobe/         本项目计算服务的运行时验证：反射直调 HashingService，逐算法校验 18 种摘要（值/长度/格式），另验目录递归/坏文件跳过/进度/取消，并断言已删的 SHA256Service 与 RelayCommand 不在
     ├── shellproto/        外壳扩展协议：共享内存传参、模式开关、单实例
     ├── shellcheck/        外壳扩展自检：建类工厂、建菜单、读菜单项文字
     ├── scopeprobe/        外壳扩展作用范围：哪些目标该出现菜单项
@@ -168,7 +170,7 @@ testtools/
     └── langcheck/         系统语言 → 界面语言的映射
 ```
 
-这 15 个 exe 都遵守同一条约定：**不带参数时打印用法并返回退出码 2**，不会抛
+这 16 个 exe 都遵守同一条约定：**不带参数时打印用法并返回退出码 2**，不会抛
 `IndexOutOfRangeException`。想一次性跑完并看到汇总表，用 `python run_cs_probes.py`；
 想单独跑某一个，直接执行它的 exe 就会看到该填哪些参数。
 
@@ -267,8 +269,94 @@ python namecheck.py "<源码目录>"              # 查任意一份（变异测�
 | 便携根要按**入口程序集**（`portable.exe` 自己）算，不能按被测的 `Auto7z.exe` 位置算 | 产品用的是 `Assembly.GetEntryAssembly().Location`。两者位置不同（探针在 `testtools\cs\portable`，被测程序在 `bin\Debug`），按 `asmPath` 算会去检查另一个目录 —— 曾因此误报「切回后便携目录还在」 |
 | 断言只看 `IsPortable`、`DataDirectory` 与目录是否存在 | `IsPortable` 属于历史键，产品既不读也不写，断言它必然变成假失败 |
 
-另外提醒：探针会**清空并重建 `%LOCALAPPDATA%\Auto7z`** 来准备夹具，所以别在它之后立刻跑别的测试 ——
-7-Zip 组件会跟着没掉，表现为「找不到 7z 组件」。跑一次产品压缩即可让它自动重新释放。
+另外提醒：探针会清空并重建**数据目录**来准备夹具，但那个目录现在是
+`%TEMP%\Auto7zTest_data\csprobes`（见下节），不再是用户真实的 `%LOCALAPPDATA%\Auto7z`。
+
+---
+
+## 数据目录隔离：测试一个字节都不许写进 `%LOCALAPPDATA%`
+
+被测程序是**真实程序**，启动后会往数据目录写配置、日志、`TaskState.json`，
+并在第一次压缩时把 `7-Zip` 组件释放到那儿。数据目录默认是 `%LOCALAPPDATA%\Auto7z` ——
+也就是用户自己那份。历史问题正是这个：跑一轮测试之后，用户的 `Auto7z.json`
+被改成测试用的值、`Logs` 被刷满、组件被覆盖。**靠"跑完再还原"是不够的**：
+测试中途被 Ctrl+C、崩溃、或两个套件交错时，还原根本执行不到。
+
+正确做法是**一开始就不写那里**。产品为此提供了一个明确的改道点：
+
+```
+AUTO7Z_DATA_ROOT=<绝对路径>   ⇔   普通模式的数据目录挂到该路径下（仍叫 Auto7z）
+```
+
+实现见 `Auto7z_WPF\Services\AppPaths.cs` 的 `DataRootVariable` / `GetLocalRootDirectory()`。
+便携模式的判定不受影响（它看的是 `程序目录\.config`，与这个变量正交）。
+
+### 为什么不能改 `LOCALAPPDATA` 环境变量
+
+产品的 `Environment.GetFolderPath(SpecialFolder.LocalApplicationData)` 走的是
+`SHGetFolderPath`，读的是用户配置文件里的已知文件夹，**与环境变量无关**（已实测确认：
+把 `LOCALAPPDATA` 指到别处，`GetFolderPath` 仍然返回原路径）。所以必须由产品自己
+提供改道点，测试再把它指到临时目录。
+
+### 测试侧怎么用（`test_env.py`）
+
+`test_env.isolate_data_root(<套件名>)` 在一个套件的最顶端被调用，做两件事：
+
+1. 清掉并重建 `%TEMP%\Auto7zTest_data\<套件名>`（删除前校验在 `%TEMP%` 下且路径带标记串）；
+2. 设置 `AUTO7Z_DATA_ROOT`。
+
+**它必须在 `import config_guard` 之前调用** —— `config_guard.local_config_path()`
+是在导入时按环境变量算出来的，晚一步快照/清空/还原就会指回用户真实那份文件。
+`config_guard` 自己也会读同一个变量来算路径，两边因此始终指向同一个地方。
+
+| 套件 | 数据根 |
+|---|---|
+| `run_cs_probes.py` | `%TEMP%\Auto7zTest_data\csprobes` |
+| `run_regress.py` / `regress.py` | `%TEMP%\Auto7zTest_data\regress` |
+| `run_system_test.py` | `%TEMP%\Auto7zTest_data\systemtest` |
+| `splitvol_test.py` | `%TEMP%\Auto7zTest_data\splitvol` |
+| `crashrecover_test.py` | `%TEMP%\Auto7zTest_data\crashrecover` |
+| `heuristic_probe.py` | `%TEMP%\Auto7zTest_data\heuristic` |
+
+### 启动被测程序时必须带上那份 env
+
+每个套件模块顶部都有一个 `PRODUCT_ENV = test_env.child_env("<套件名>")`，
+**每一处** `subprocess.Popen` / `subprocess.run` / `Process.Start` 都要传它。
+漏传一处，那个用例就会写进用户真实的数据目录 —— 这类漏传没有任何测试能发现，
+只能靠阅读时逐个核对。
+
+C# 探针（`shellproto` / `portable` / `guardprobe`）自己也要按同一个变量算数据目录，
+否则它们会去读 `%LOCALAPPDATA%` 那份、得出"配置没生效"的假结论。
+
+验证隔离是否生效：跑任意套件前后各拍一次快照比对即可。
+
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA\Auto7z" -Recurse -File |
+    Select-Object FullName,Length,LastWriteTimeUtc
+```
+
+两次输出必须**完全一致**。
+
+### 一道硬闸门：`portable` 探针没改道就拒绝运行
+
+`cs\portable\portable.cs` 是唯一一个**会递归删除数据目录、并驱动便携模式搬迁**的探针：
+它为了准备夹具会删掉数据根下的 `Auto7z`，然后反射调 `SetPortableMode`，
+而产品的「切回普通模式」又会把数据搬回 `%LOCALAPPDATA%\Auto7z`。
+
+**实测过的事故**：不带 `AUTO7Z_DATA_ROOT` 跑一次这个探针，用户的
+`Auto7z.json` / `TaskState.json` / `7-Zip` 组件全部被清掉重建。
+所以它现在有两条闸门：
+
+| 闸门 | 行为 |
+|---|---|
+| 启动前 `EnsureIsolated()` | 变量没设或不是绝对路径 → 打印原因并以**退出码 4** 结束，一步都不往下走 |
+| 每次切换后 `CheckNotRealData(...)` | 产品报告的 `DataDirectory` 等于真实 `%LOCALAPPDATA%\Auto7z` → **退出码 5** 立即中止 |
+
+判据取的是**产品报告的 `DataDirectory`**，不是"某个目录在不在"：
+切到便携后改道根下的 `Auto7z` 本来就会消失（数据搬走了），而用户真实目录一直存在 ——
+按存在性判断会把正常情况误判成越界（第一版闸门就是这么误报的）。
+
+这两条闸门由 `behaviorcheck.py` 的 BC14 / BC15 守着，删掉就会被回归判失败。
 
 ---
 
@@ -301,11 +389,11 @@ python namecheck.py "<源码目录>"              # 查任意一份（变异测�
 
 ### 反射探针为什么不受影响
 
-`guardprobe` / `resultprobe` / `sha256probe` / `bench` 都是**测试进程侧**反射加载产品程序集：
+`guardprobe` / `resultprobe` / `hashprobe` / `bench` 都是**测试进程侧**反射加载产品程序集：
 
 ```csharp
 var asm = Assembly.LoadFrom(asmPath);
-var t = asm.GetType("Auto7z_WPF.Services.SHA256Service");
+var t = asm.GetType("Auto7z_WPF.Services.HashingService");
 ```
 
 产品侧不需要 `InternalsVisibleTo`、不需要把 `private` 改成 `internal`、
@@ -402,9 +490,9 @@ Release 构建里这段被 `#if DEBUG` 编译掉，最终产品中不存在这�
 
 | 编号 | 测什么 | 怎么读 |
 |---|---|---|
-| B1 | `SHA256Service.CalculateSHA256` 单文件 256MB | 跟 B2 对比：B1 ≈ B2 说明 SHA256 已到算法/IO 上限 |
+| B1 | `HashingService.Calculate` 单文件 256MB | 跟 B2 对比：B1 ≈ B2 说明 SHA256 已到算法/IO 上限 |
 | B2 | 裸 `SHA256.Create()` 流式 | 上限参照 |
-| B3 | `SHA256Service.CalculateSHA256` 可压缩文本 | 接近真实压缩包场景 |
+| B3 | `HashingService.Calculate` 可压缩文本 | 接近真实压缩包场景 |
 | B4 | `SevenZipService` 压缩 | 吞吐 |
 | B5 | `SevenZipService` 解压 | 吞吐 |
 | B6 | `ConfigService` 读 / 写 | per_op 毫秒 |
@@ -419,13 +507,19 @@ Release 构建里这段被 `#if DEBUG` 编译掉，最终产品中不存在这�
 用法：
 
 ```powershell
-python run_bench.py                                  # 跑一轮，存 bench/last.json
+python run_bench.py                                  # 跑一轮，结果落临时目录
 python run_bench.py --baseline bench/baseline.json   # 跟基线对比
 python run_bench.py --app <Auto7z.exe>               # 指定被测程序
 ```
 
 退出码 0 只代表跑完，**不设硬门槛** —— 性能基准用来观察趋势，不拿来判失败。
-结果存在 `testtools\bench\last.json`（每次跑自动写），可以直接看。
+结果写到 `%TEMP%\Auto7zTest_data\bench\bench-out\last.json`（每次跑自动写），
+**不再落进 `testtools\bench\`** —— 那里每次跑都会多出一个未跟踪文件。
+
+`run_bench.py` 与其它四个套件一样做了数据目录隔离：它会 `isolate_data_root("bench")`
+并把改道后的 env 传给 `bench.exe`。这一点对本脚本是必需的而非可选的 ——
+B6 那项会反射调用 `ConfigService.Save` 共 200 次，不隔离就会把**用户真实**的
+`%LOCALAPPDATA%\Auto7z\Auto7z.json` 改成默认值（Language / RuntimeMode / CompressionLevel 全被覆盖）。
 要跟历史值比就自己留一份基线，再显式传进去：
 
 ```powershell
@@ -438,7 +532,7 @@ python run_bench.py --baseline bench\baseline.json
 
 ## 本项目的计算服务（SHA256）
 
-`Auto7z_WPF\Auto7z_WPF\Services\SHA256Service.cs` 是本项目所有 SHA256 调用的唯一入口
+`Auto7z_WPF\Auto7z_WPF\Services\Hash\HashingService.cs` 是本项目所有 SHA256 调用的唯一入口
 （`SevenZipService.GenerateSHA256` 转手交给它）。调用方不要再内联第二份哈希循环。
 
 源码层面的几条关键约定（改动时别只改一处）：
@@ -455,20 +549,28 @@ python run_bench.py --baseline bench\baseline.json
 静态约定证明不了**跑起来算得对**，所以另有一份运行时验证（回归第 12 项）：
 
 ```powershell
-python cs\build_all.py sha256probe     # 改了探针才需要重编
+python cs\build_all.py hashprobe       # 改了探针才需要重编
 ```
 
-`cs\sha256probe` 用反射直调产品程序集里的真实方法：
+`cs\hashprobe` 用反射直调产品程序集里的真实方法：
 
 | 断言 | 内容 |
 |---|---|
+| 已删类型 | `SHA256Service` 与非泛型 `RelayCommand` **不得再存在**于程序集（2.4.0 已删除；若被加回来，本项立刻报错） |
+| 算法目录 | `HashAlgorithms.All` 的算法数必须与标准值表相等（18），且两边集合**互为子集** —— 产品多一个少一个都算失败 |
+| **逐算法数值** | **18 种算法各算一次**：摘要必须与独立实现（Python hashlib / zlib）算出的标准值逐字符相等，长度必须等于 `DigestBytes * 2`，行格式必须是 `hash *payload.bin`。**这是本探针存在的理由**：只验默认算法等于放掉其余 17 条路径，而哈希算错是静默的 |
 | 单文件 | 返回一行、行格式 `hash *filename`、哈希等于独立计算值 |
 | 多文件 | 条数、逐行哈希 |
-| 目录 | 递归展开；`CalculateSHA256ToFile` 给目录内每个文件各写一份 `.sha256` |
-| 编码 | `.sha256` 是 UTF-8 且**不带 BOM** |
+| 目录 | 递归展开成逐文件结果；深层文件的哈希值正确 |
 | 坏文件 | 读不到的文件跳过，其余照常产出（不是整体失败） |
 | 进度 | 0–100 单调不减，结束时到达 100 |
 | 取消 | 已取消的令牌立即中止并抛 `OperationCanceledException` |
+
+标准值表的来源与用途：载荷固定为 ASCII `Auto7z hash algorithm probe`（28 字节），
+18 个期望值由 **Python hashlib / zlib** 独立算出并写死在探针里 —— 与被测代码完全无关。
+这样验的是「产品算得对不对」，不是「产品算得跟自己一样」。
+覆盖的算法：md5、sha1、sha224、sha256、sha384、sha512、sha512-224、sha512-256、
+sha3-224、sha3-256、sha3-384、sha3-512、blake2s-256、blake2b-256、blake2b-512、blake3、crc32、crc64。
 
 ## 空 catch 规则：可以吞，但必须写明为什么
 
@@ -569,11 +671,12 @@ python check_reg.py
 | 行为约束成立 | `behaviorcheck.py` | BC1–BC13，13 条关键行为断言 |
 | 破坏性操作防护完好 | `guardcheck.py` | `safe_ops.py` 的四条规则还在不在、拿真实危险输入实测拦不拦得住 |
 | 三语词典键集合一致 | `find_dead2.py` | 各语言键数相等且无「多出」的键 |
+| 提示文案质量 | `tipcheck.py` | `Tip_*` 文案的**内容**质量：显示宽度是否超阈值（默认 200，CJK 记 2）、有无空文案 / 真实换行符 / 连续空格手工折行 / 英文里的无空格长串、三语 `Tip_*` 键集合是否一致、中英标点风格是否各自统一。**为什么单列一项**：`langkeycheck` 只验键在不在、`uiwidth` 只验控件上的可见文案，两边都不管 tooltip —— 英文提示涨到 150+ 字符也没人发现，而 WPF 用纯字符串设 tooltip 时默认模板 `TextWrapping=NoWrap`，会拉成一条读不完的长条。产品侧已改成显式 `TextBlock + Wrap + MaxWidth=340`，这一项负责守住「别再把长文案塞回来」 |
 | 外壳扩展注册/注销契约 | `shellreg_check.py` | 注册写 Approved 的 hive 与注销删的必须是**同一个**（B02 的回归保护） |
 | 改名无残留且引用一致 | `renamecheck.py` | 旧名清零、新名在 XAML 有定义且被引用、控件名不带错的类型词（B04 的回归保护） |
 | 递归删除守卫运行时验证 | `cs\guardprobe` | **反射直调**守卫方法，拿 12 条真实路径（数据目录本身/子目录应放行；根目录/无关路径/空串/null/`..` 越界应拦住）验证它真的拦得住 —— 守卫「写了但不生效」只有这条能查出来 |
 | 结果颜色契约运行时验证 | `cs\resultprobe` | **反射建** `Auto7zViewModel`、调 `SetResult`，在 `PropertyChanged` 回调里查：通知的属性名是不是 `ResultText`（`SetProperty` 靠 `[CallerMemberName]`，从方法里调用会把名字写成方法名）、通知到来时 `IsResultFailed` 是不是已经是新值（决定红字/绿字）、文本没变时是不是照样通知。静态检查报不出这三点 |
-| 本项目计算服务运行时验证 | `cs\sha256probe` | **反射直调** `SHA256Service`：哈希对不对、行格式是不是 `hash *name`、`.sha256` 带不带 BOM（应为不带）、目录递不递归、坏文件跳不跳过、进度单不单调、取消响不响应 |
+| 本项目计算服务运行时验证 | `cs\hashprobe` | **反射直调** `HashingService`：**18 种算法逐一**比对独立算出的标准摘要（值 + 长度 + 行格式），另验目录递不递归、坏文件跳不跳过、进度单不单调、取消响不响应；并断言已删的 `SHA256Service` 与非泛型 `RelayCommand` 不在程序集里。**为什么必须逐算法**：产品支持 18 种摘要，只验 SHA-256 时其余 17 条是黑的，而算错不报错、校验文件照样生成 |
 | 系统里无右键菜单残留注册 | 注册表查询 | 测试不往系统里留注册 |
 
 静态检查（`cs_check.py ⑤`）只看删除点前有没有写边界校验的**关键字**，
@@ -634,7 +737,9 @@ python check_reg.py
 - **部分脚本里的路径是写死的**。`regress.py` 开头还写着一个**旧目录结构**的
   `PROJECT` 常量（指向一个已经不存在的 `Auto7z_WPF\Auto7z_WPF`，注意没有 `\ Project` 段）：
   - `regress.py` 用 `--app` 指定被测程序即可，词典目录会从被测程序位置反推；
-  - `find_dead2.py`、`cs_check.py`、`namecheck.py`、`regioncheck.py`、`behaviorcheck.py`、`shellreg_check.py`、`renamecheck.py` 都可以传路径参数，默认指向当前工程。
+  - `find_dead2.py`、`cs_check.py`、`namecheck.py`、`regioncheck.py`、`behaviorcheck.py`、`shellreg_check.py`、`renamecheck.py`、`tipcheck.py` 都可以传路径参数，默认指向当前工程。
+    `tipcheck.py` 两种入参都收：传产品源码根（和其它工具一致），或传 `--dir <语言词典目录>`；
+    阈值可用 `--max-width` 调整，`--json` 给机器可读输出。
 - **控制台输出的编码跟着控制台代码页走**，不固定是 GBK：
   父 cmd 默认 936(GBK)，用了 `chcp 65001` 就是 UTF-8。
   解码要两种都试（见 `run_system_test.py` 里的 `decode_console`），

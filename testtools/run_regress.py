@@ -31,6 +31,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_ops import SafeTemp
+
+# 数据目录改道必须在导入 config_guard **之前**：配置路径是在那一刻按环境变量算出来的。
+from test_env import isolate_data_root
+DATA_ROOT = isolate_data_root("regress")
+
 from config_guard import (ConfigGuard, claim_checkout, release_checkout,
                           child_env_with_inherited_checkout)
 
@@ -39,6 +44,10 @@ WORKSPACE = HERE.parent
 PROJECT = WORKSPACE / "Auto7z_WPF" / "Auto7z_WPF"
 
 TEMP = SafeTemp("regress")
+
+# 启动被测程序时统一用的环境：带上数据目录改道变量。
+import test_env as _test_env
+PRODUCT_ENV = _test_env.child_env("regress")
 
 
 class Result:
@@ -68,6 +77,9 @@ def run(cmd, encoding="gbk", **kw):
     Auto7z 往控制台写的是 GBK（跟控制台代码页一致），
     而 cs_check.py / find_dead2.py 这些 python 工具输出的是 UTF-8。
     """
+    # 统一带上数据目录改道变量：子测试脚本与产品都会继承到，
+    # 漏传一次产品就会写进用户真实的数据目录。
+    kw.setdefault("env", PRODUCT_ENV)
     return subprocess.run(cmd, capture_output=True, text=True,
                           encoding=encoding, errors="replace", **kw)
 
@@ -217,6 +229,33 @@ def t_dead_keys(res, app):
             "键数=%s" % (", ".join("%s:%s" % c for c in counts) if counts else "未知"))
 
 
+def t_tip_text(res, app):
+    """提示文案质量：过长 / 空文案 / 真实换行 / 手工折行 / 标点风格 / 无空格长串。
+
+    为什么单独一项：`langkeycheck` / `find_dead2` 只验**键在不在**，
+    `uiwidth` 只验控件上的**可见文案**宽度 —— 两边都不管 tooltip。
+    结果英文提示涨到 150+ 字符也没人发现，而 WPF 用纯字符串设 tooltip 时
+    默认模板是 NoWrap，会拉成一条读不完的长条。
+    产品侧已改成显式 TextBlock + Wrap + MaxWidth，这一项负责守住"别再把长文案塞回来"。
+    """
+    print("")
+    print("=== 提示文案质量 ===")
+    r = run([sys.executable, str(HERE / "tipcheck.py")], encoding="utf-8")
+    out = (r.stdout or "") + (r.stderr or "")
+    total = re.search(r"TOTAL PROBLEMS:\s*(\d+)", out)
+    n = int(total.group(1)) if total else -1
+    if n < 0:
+        res.add("提示文案质量", False, "tipcheck.py 未给出结论（退出码=%s）" % r.returncode)
+        return
+    if n:
+        kinds = re.findall(r"^--- (\S+) \((\d+)\) ---$", out, re.M)
+        detail = "问题=%d（%s）" % (n, "，".join("%s×%s" % (k, c) for k, c in kinds) or "见报告")
+    else:
+        longest = re.search(r"^\s+(\d+)\s+(\S+)", out, re.M)
+        detail = "问题=0" + ("，最长=%s/%s" % (longest.group(1), longest.group(2)) if longest else "")
+    res.add("提示文案质量", n == 0, detail)
+
+
 def t_dead_code(res, app):
     """死代码审查：零引用成员、只写不读的状态、无人引用的词典键、无人调用的工具。
 
@@ -356,10 +395,10 @@ def t_resultprobe(res, app):
     res.add("结果颜色契约（运行时）", ok, detail)
 
 
-def t_sha256probe(res, app):
-    """本项目计算服务（Services/SHA256Service.cs）的功能契约（运行时）。
+def t_hashprobe(res, app):
+    """本项目计算服务（Services/Hash/HashingService.cs）的功能契约（运行时）。
 
-    sha256probe —— 运行时：本项目这一份算得对不对
+    hashprobe —— 运行时：本项目这一份算得对不对（逐算法校验）
 
     为什么要单独一项：T04 只走完整压缩链路、断言「产出的 .sha256 对得上」，
     测不出行格式、有没有 BOM、目录递归、坏文件跳过、进度单调这些细节；
@@ -367,11 +406,11 @@ def t_sha256probe(res, app):
     """
     print("")
     print("=== 本项目计算服务（运行时）===")
-    probe = HERE / "cs" / "sha256probe" / "sha256probe.exe"
+    probe = HERE / "cs" / "hashprobe" / "hashprobe.exe"
     if not probe.exists():
-        res.add("本项目计算服务运行时验证", False, "探针未编译（cs\\build_all.py sha256probe）")
+        res.add("本项目计算服务运行时验证", False, "探针未编译（cs\\build_all.py hashprobe）")
         return
-    work = TEMP.sub("sha256probe")
+    work = TEMP.sub("hashprobe")
     # 探针输出跟着控制台代码页走，这里不假定编码：
     # 退出码 0 = 探针内部已逐项判定通过。
     r = run([str(probe), str(app), str(work)], encoding="gbk")
@@ -422,7 +461,8 @@ def t_crashrecover(res, app):
         return
     r = run([sys.executable, str(script), "--app", str(app)],
             encoding="utf-8",
-            env=child_env_with_inherited_checkout())
+            env=_test_env.child_env("crashrecover",
+                                    base=child_env_with_inherited_checkout()))
     out = (r.stdout or "") + (r.stderr or "")
     m = re.search(r"崩溃恢复测试汇总:\s*(\d+)\s*项,\s*失败\s*(\d+)\s*项", out)
     total = int(m.group(1)) if m else -1
@@ -482,12 +522,13 @@ def main():
         t_behavior(res, app)
         t_guard(res, app)
         t_dead_keys(res, app)
+        t_tip_text(res, app)
         t_dead_code(res, app)
         t_shellreg(res, app)
         t_rename(res, app)
         t_guardprobe(res, app)
         t_resultprobe(res, app)
-        t_sha256probe(res, app)
+        t_hashprobe(res, app)
         t_no_ghost(res, app)
         t_crashrecover(res, app)
     finally:

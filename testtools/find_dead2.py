@@ -16,7 +16,12 @@ from pathlib import Path
 _default = Path(r"C:\Users\Mocha\Desktop\VSProject\Auto7z Project\Auto7z_WPF\Auto7z_WPF")
 PROJECT = Path(sys.argv[1]) if len(sys.argv) > 1 else _default
 LANG_DIR = PROJECT / "Resources" / "Languages"
-CFG = Path(os.environ["LOCALAPPDATA"]) / "Auto7z" / "Auto7z.json"
+
+# 产品的数据目录可能被改到 %TEMP% 下（见 test_env.py）：优先读改道变量，
+# 否则读到的是用户真实那份配置，报告里"配置键有没有被代码引用"那节就没意义了。
+_root = os.environ.get("AUTO7Z_DATA_ROOT")
+CFG = (Path(_root) if _root and os.path.isabs(_root)
+       else Path(os.environ["LOCALAPPDATA"])) / "Auto7z" / "Auto7z.json"
 
 # 收集全部源码
 sources = []

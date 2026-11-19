@@ -32,6 +32,11 @@ import re
 import sys
 from pathlib import Path
 
+# 本文件所在目录（testtools）。个别断言查的是测试工具自己的源码，
+# 那些路径必须按这里解析，不能按 SRC 的相对路径找 ——
+# SRC 在变异测试里会指向一份产品副本，副本里没有 testtools\cs。
+HERE = Path(__file__).resolve().parent
+
 # 源码目录：可由命令行第一个参数指定（变异测试要指向副本）
 if len(sys.argv) > 1:
     SRC = Path(sys.argv[1])
@@ -93,6 +98,22 @@ CHECKS = [
     ("BC13", "D30", "右键菜单进度窗口的正文必须带实时百分比",
      "Services/ShellMenuTaskRunner.cs",
      "GetProgressDisplayText(info.Stage, info.Percent)"),
+
+    # BC14/BC15 护的是「测试工具不许动用户真实数据目录」这条边界。
+    # 起因是一次真实事故：portable 探针会递归删数据目录、还会驱动便携模式搬迁，
+    # 不带改道变量跑一次就把用户的 %LOCALAPPDATA%\Auto7z 清掉重建了。
+    # 这两条断言保证「没改道就拒绝运行」那道闸门不会被后来的人顺手删掉。
+    #
+    # 路径写法：SRC 由命令行给出（默认是产品的 Auto7z_WPF 目录，变异测试会指向副本），
+    # 所以 testtools 下的文件不能按 SRC 的相对路径找 —— 副本目录里没有 testtools。
+    # 统一按本文件位置解析，与 SRC 无关。
+    ("BC14", "D31", "portable 探针必须要求 AUTO7Z_DATA_ROOT 改道才肯运行",
+     str(HERE / "cs" / "portable" / "portable.cs"),
+     "if (!EnsureIsolated()) return 4;"),
+
+    ("BC15", "D31", "portable 探针切换后必须核对数据目录没有落到真实位置",
+     str(HERE / "cs" / "portable" / "portable.cs"),
+     "CheckNotRealData(dataDir, realData,"),
 ]
 
 

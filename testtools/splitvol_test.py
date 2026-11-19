@@ -48,13 +48,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_ops import SafeTemp, safe_rmtree
+
+# 数据目录改道必须在导入 config_guard **之前**：配置路径是在那一刻按环境变量算出来的。
+# 本套件也会被 run_system_test 以子进程方式调用，那时父进程已经把根改好了，
+# isolate_data_root 会看到同一个套件名并复用同一个根，配置仍然一致。
+from test_env import isolate_data_root
+DATA_ROOT = isolate_data_root("splitvol")
+
 from config_guard import ConfigGuard, claim_checkout, release_checkout
 
 HERE = Path(__file__).resolve().parent
 WORKSPACE = HERE.parent
 PROJECT = WORKSPACE / "Auto7z_WPF" / "Auto7z_WPF"
 
-LOCAL = Path(os.environ["LOCALAPPDATA"]) / "Auto7z"
+LOCAL = DATA_ROOT / "Auto7z"
 CFG = LOCAL / "Auto7z.json"
 SZ = LOCAL / "7-Zip" / "7z.exe"
 
@@ -71,6 +78,11 @@ ARCHIVE_EXTS = (".7z", ".zip", ".tar", ".gz", ".bz2", ".xz", ".zst")
 VOLUME_SUFFIX = re.compile(r"\.\d{3,}$")
 
 TEMP = SafeTemp("splitvol")
+
+# 启动被测程序时统一用的环境：带上数据目录改道变量。
+# 每一处 Popen / run 都要传它，漏一处产品就会写进用户的真实数据目录。
+import test_env as _test_env
+PRODUCT_ENV = _test_env.child_env("splitvol")
 
 APP = None
 GUI_APP = None
@@ -148,7 +160,7 @@ def run(args, exe=None, timeout=120, stdin=subprocess.DEVNULL):
     try:
         r = subprocess.run([target] + [str(a) for a in args],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           stdin=stdin, timeout=timeout)
+                           stdin=stdin, timeout=timeout, env=PRODUCT_ENV)
         return r.returncode, decode_console(r.stdout)
     except subprocess.TimeoutExpired as e:
         return None, decode_console(e.stdout or b"")
@@ -160,7 +172,7 @@ def spawn(args, exe=None):
     target = str(exe or APP)
     return subprocess.Popen([target] + [str(a) for a in args],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            stdin=subprocess.DEVNULL)
+                            stdin=subprocess.DEVNULL, env=PRODUCT_ENV)
 
 
 def stop(p, timeout=10.0):
@@ -926,7 +938,7 @@ def t_single_instance_mode_handoff(res, data):
     kill_running()
     first = subprocess.Popen([str(GUI_APP)],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             stdin=subprocess.DEVNULL)
+                             stdin=subprocess.DEVNULL, env=PRODUCT_ENV)
     try:
         time.sleep(5.0)
         if first.poll() is not None:
@@ -936,7 +948,7 @@ def t_single_instance_mode_handoff(res, data):
         # 第二个进程：-uz 传入 .001（走交接路径）
         r2 = subprocess.run([str(APP), "-uz", str(d / "big.7z.001")],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            stdin=subprocess.DEVNULL, timeout=30)
+                            stdin=subprocess.DEVNULL, timeout=30, env=PRODUCT_ENV)
 
         # 等第一个实例处理完（最多 60 秒）
         got = []

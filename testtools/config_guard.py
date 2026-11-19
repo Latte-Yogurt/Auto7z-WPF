@@ -78,6 +78,10 @@ DATA_FOLDER = "Auto7z"
 CONFIG_FILE = "Auto7z.json"
 PORTABLE_ROOT = ".config"
 
+# 产品的数据根目录改道变量，与 Services/AppPaths.cs 的 AppPaths.DataRootVariable 对齐。
+# 设成绝对路径时，产品的普通模式数据目录挂到它下面而不是 %LOCALAPPDATA%。
+DATA_ROOT_ENV = "AUTO7Z_DATA_ROOT"
+
 # 源码类扩展名：目录里有这些就说明路径是源码树而不是产品数据目录，拒绝删除。
 SOURCE_EXTS = {
     ".cs", ".py", ".cpp", ".h", ".xaml", ".csproj", ".sln", ".def", ".rc",
@@ -93,6 +97,17 @@ def _norm(p):
 
 
 def local_config_path():
+    """产品普通模式配置文件的路径。
+
+    被测程序的数据目录由 AUTO7Z_DATA_ROOT 改道（见上面「数据目录隔离」），
+    所以这里必须读同一个变量来算路径 —— 硬编码 %LOCALAPPDATA%\\Auto7z\\Auto7z.json
+    会让快照 / 清空 / 还原全部落到用户真实的那份文件上，
+    而产品实际读写的是临时目录里那份，两边永远对不上。
+    """
+    root = os.environ.get(DATA_ROOT_ENV)
+    if root and os.path.isabs(root):
+        return _norm(Path(root) / DATA_FOLDER / CONFIG_FILE)
+
     return _norm(Path(os.environ["LOCALAPPDATA"]) / DATA_FOLDER / CONFIG_FILE)
 
 
@@ -160,6 +175,60 @@ def child_env_with_inherited_checkout():
     """
     env = os.environ.copy()
     env[CHECKOUT_INHERITED_ENV] = "1"
+    return env
+
+
+# ---------------------------------------------------------------- 数据目录隔离
+#
+# 为什么必须隔离
+# --------------
+# 被测程序是**真实程序**，它启动后会往数据目录里写配置、日志、TaskState，
+# 并在第一次压缩时把 7-Zip 组件释放到那儿。数据目录默认是
+# %LOCALAPPDATA%\Auto7z —— 也就是用户自己那份。测试跑一轮之后：
+#   · 用户的 Auto7z.json 被改成了测试用的值（语言、压缩等级、算法……）；
+#   · Logs 被测试的日志刷满；
+#   · 7-Zip 组件被覆盖成测试构建释放的版本。
+# 用户下次打开程序，看到的是测试留下的状态。靠"跑完再还原"是不够的：
+# 测试中途被 Ctrl+C、崩溃、或两个套件交错时，还原根本执行不到。
+#
+# 正确做法是**一开始就不写那里**：产品支持 AUTO7Z_DATA_ROOT 改道
+# （见 Services/AppPaths.cs 的 DataRootVariable），把它指到 %TEMP% 下的
+# 受控目录，配置文件、日志、TaskState、7-Zip 组件就全都落在临时目录里，
+# 用户真实的那份目录**一个字节都不会被碰**。隔离是常态，还原只是兜底。
+#
+# 为什么不能改 LOCALAPPDATA 环境变量达到同样效果：产品的
+# Environment.GetFolderPath(SpecialFolder.LocalApplicationData) 走 SHGetFolderPath，
+# 读的是用户配置文件里的已知文件夹路径，与环境变量无关（已实测确认）。所以
+# 只能由产品自己提供一个明确的改道点，测试再把它指到临时目录。
+
+DATA_ROOT_ENV = "AUTO7Z_DATA_ROOT"
+
+DATA_ROOT_ENV = "AUTO7Z_DATA_ROOT"
+
+# 隔离根目录名：与 safe_ops 的标记串保持一致，这样某个测试忘了清理时
+# 还能被清理脚本按标记认出来。
+ISOLATED_ROOT_NAME = "Auto7zTest_data"
+
+
+def isolated_data_root(name="shared"):
+    """取（并确保存在）一个受控的数据根目录：%TEMP%\\Auto7zTest_data\\<name>。
+
+    每个套件用自己的子目录，套件之间不会互相覆盖配置；同一套件内的所有子进程
+    共用同一个，产品写出来的配置彼此可见（有些用例要读回上一轮写的值）。
+    """
+    root = Path(os.environ.get("TEMP", r"C:\Windows\Temp")) / ISOLATED_ROOT_NAME / name
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def child_env_isolated(name="shared"):
+    """给子进程用的环境变量副本：把产品的数据目录改道到受控临时目录。
+
+    这是**默认**给子进程用的那份 env：所有会启动被测程序的地方都该用它，
+    否则测试就会写进用户的真实数据目录。
+    """
+    env = os.environ.copy()
+    env[DATA_ROOT_ENV] = str(isolated_data_root(name))
     return env
 
 

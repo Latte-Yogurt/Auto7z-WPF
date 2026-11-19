@@ -62,6 +62,19 @@ class ShellProto
             .ToArray();
     }
 
+    /// <summary>
+    /// 产品的数据根目录。被测程序支持 AUTO7Z_DATA_ROOT 改道（见 AppPaths.DataRootVariable），
+    /// 测试用它把配置、日志、7-Zip 组件统一写进 %TEMP% 下的受控目录 ——
+    /// 不跟随这个变量的话，探针会去读用户真实的那份目当，得出一份"配置没生效"的假结论。
+    /// </summary>
+    static string DataRoot()
+    {
+        string redirect = Environment.GetEnvironmentVariable("AUTO7Z_DATA_ROOT");
+        if (!string.IsNullOrEmpty(redirect) && Path.IsPathRooted(redirect)) return redirect;
+
+        return Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+    }
+
     static int CountAppProcesses()
     {
         return AppProcesses().Length;
@@ -76,9 +89,7 @@ class ShellProto
             return 2;
         }
 
-        string configPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Auto7z", "Auto7z.json");
+        string configPath = Path.Combine(DataRoot(), "Auto7z", "Auto7z.json");
         // 配置是标准 JSON。这里用简单的字符串定位改一个键：
         // 探针是独立 exe，不该为了改一个值把整个 JSON 解析器搬进来。
         //
@@ -115,8 +126,7 @@ class ShellProto
         if (!File.Exists(guiExe)) guiExe = exe;
 
         string workDir = a[1];
-        string logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                                     "Auto7z", "Logs");
+        string logDir = Path.Combine(DataRoot(), "Auto7z", "Logs");
 
         if (Directory.Exists(workDir)) Directory.Delete(workDir, true);
         Directory.CreateDirectory(workDir);
@@ -430,9 +440,7 @@ class ShellProto
 
     static void RunSevenZip(string workDir, string zipPath, List<string> files)
     {
-        string sevenZip = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Auto7z", "7-Zip", "7z.exe");
+        string sevenZip = Path.Combine(DataRoot(), "Auto7z", "7-Zip", "7z.exe");
         if (!File.Exists(sevenZip)) return;
 
         var psi = new ProcessStartInfo(sevenZip);

@@ -30,6 +30,14 @@ HERE = Path(__file__).resolve().parent
 WORKSPACE = HERE.parent
 CS_DIR = HERE / "cs"
 
+# 探针会在进程内驱动产品，产品的数据目录默认是 %LOCALAPPDATA%\Auto7z（用户真实那份）。
+# 带上改道变量，让它们统一写进 %TEMP% 下的受控目录。
+from test_env import isolate_data_root
+DATA_ROOT = isolate_data_root("csprobes")
+
+import test_env as _test_env
+PRODUCT_ENV = _test_env.child_env("csprobes")
+
 CLSID = "{6C3F8A21-4B7D-4E5A-9A2C-3D710E5B8841}"
 
 # 各工具自报「全部通过」的固定说法。它们不打印 TOTAL PROBLEMS，
@@ -85,7 +93,7 @@ def run(exe, args, timeout=180, cwd=None):
         proc = subprocess.run(
             cmd, cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            timeout=timeout)
+            timeout=timeout, env=PRODUCT_ENV)
         return proc.returncode, decode(proc.stdout)
     except subprocess.TimeoutExpired:
         return -1, "<超时 %d 秒>" % timeout
@@ -231,9 +239,9 @@ def main():
         else:
             r.status, r.detail = judge(text, code)
 
-    r = add("sha256probe", "SHA256 服务（格式 / 无 BOM / 递归 / 进度）")
+    r = add("hashprobe", "计算服务（HashingService：18 种算法 / 格式 / 递归 / 进度）")
     if ensure_tool(r):
-        code, text = run(tool("sha256probe"), [app, work])
+        code, text = run(tool("hashprobe"), [app, work])
         r.raw, r.code = text, code
         if is_release_skip(code, text):
             r.status, r.detail = "跳过", "Release 构建无测试钩子"

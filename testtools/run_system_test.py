@@ -28,6 +28,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_ops import SafeTemp
+
+# 数据目录改道必须在导入 config_guard **之前**：配置路径是在那一刻按环境变量算出来的。
+# 不先改道的话，本套件改的是 %LOCALAPPDATA%\Auto7z 里用户自己那份配置，
+# 而产品实际读写的也是那份 —— 跑一轮测试就把用户设置改了。
+from test_env import isolate_data_root
+DATA_ROOT = isolate_data_root("systemtest")
+
 from config_guard import (ConfigGuard, claim_checkout, release_checkout,
                          child_env_with_inherited_checkout)
 
@@ -48,6 +55,11 @@ REFS = [
 CLSID = "{6C3F8A21-4B7D-4E5A-9A2C-3D710E5B8841}"
 
 TEMP = SafeTemp("systemtest")
+
+# 启动被测程序时统一用的环境：带上数据目录改道变量。
+# 每一处 Popen / run 都要传它，漏一处产品就会写进用户的真实数据目录。
+import test_env as _test_env
+PRODUCT_ENV = _test_env.child_env("systemtest")
 
 
 class Result:
@@ -145,6 +157,9 @@ def run(cmd, **kw):
 
     返回 RunResult，输出已按控制台实际编码解好。
     """
+    # 统一带上数据目录改道变量：被测程序与子测试脚本都在这一层启动，
+    # 漏传一次产品就会写进用户真实的数据目录。
+    kw.setdefault("env", PRODUCT_ENV)
     r = subprocess.run(cmd, capture_output=True, **kw)
     return RunResult(r.returncode,
                     decode_console(r.stdout or b""),
@@ -158,7 +173,7 @@ def run_to_file(cmd, stdin_file, out_file):
     """
     with open(str(stdin_file), "rb") as fin, open(str(out_file), "wb") as fout:
         return subprocess.run(cmd, stdin=fin, stdout=fout,
-                              stderr=subprocess.STDOUT)
+                              stderr=subprocess.STDOUT, env=PRODUCT_ENV)
 
 
 # ---------------------------------------------------------------- 各测试项
@@ -187,7 +202,9 @@ def t_cmdline_password(res, app):
     src.write_text("secret\n", encoding="utf-8")
     enc = work / "enc.7z"
 
-    sz = Path(os.environ["LOCALAPPDATA"]) / "Auto7z" / "7-Zip" / "7z.exe"
+    # 组件在数据目录里（普通模式随被测程序的根，见 DATA_ROOT）。
+    # 取隔离根而不是 %LOCALAPPDATA%：产品现在把组件释放到改道后的目录里。
+    sz = DATA_ROOT / "Auto7z" / "7-Zip" / "7z.exe"
     if not sz.exists():
         res.add("命令行加密包密码交互", False, "找不到 7z 组件, 跳过")
         return
@@ -257,9 +274,11 @@ def t_split_volume(res, app):
     print("")
     print("=== 分卷压缩 / 分卷解压 ===")
     # 嵌套调用：父进程已持有共用互斥体，子进程必须被允许继承，否则它会抢锁失败直接退出。
+    # 同时带上数据目录改道变量，子进程里的产品仍然写临时目录。
     r = run([sys.executable, str(HERE / "splitvol_test.py"),
              "--app", str(app)], cwd=str(HERE),
-            env=child_env_with_inherited_checkout())
+            env=_test_env.child_env("splitvol",
+                                    base=child_env_with_inherited_checkout()))
     out = (r.stdout or "") + (r.stderr or "")
     m = __import__("re").search(r"TOTAL ISSUES:\s*(\d+)", out)
     n = int(m.group(1)) if m else -1
@@ -390,7 +409,7 @@ def t_menu_mode(res, dll):
     为什么单列这一项：dataprobe 只构造 fMask=0 的 CMINVOKECOMMANDINFOEX，
     从不进入 FindCommandSlot 的 Unicode 分支。真实环境下资源管理器会用
     「带 CMIC_MASK_UNICODE 但 lpVerbW 为空」的形态调用，此时若组件把 NULL
-    当成下标 0，点「解压」就会执行压缩，而 InvokeCommand 照样返回 S_OK —— 
+    当成下标 0，点「解压」就会执行压缩，而 InvokeCommand 照样返回 S_OK ——
     日志、子进程、退出码全都正常，只有产物不对。这条缺陷曾经真的存在过。
     """
     exe = tool("menuprobe")

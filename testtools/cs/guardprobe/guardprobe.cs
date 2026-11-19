@@ -102,7 +102,10 @@ class GuardProbe
         Console.WriteLine("");
 
         string portableRoot = Path.Combine(programDir, ".config");
-        string localRoot = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        // 守卫按产品的数据根目录判断边界，而该根可能被 AUTO7Z_DATA_ROOT 改道 ——
+        // 不跟着改的话，这里拿 %LOCALAPPDATA% 当"根"，被测守则拿的是临时目录，
+        // 每一项都会得出与实现相反的结论。
+        string localRoot = DataRoot();
         Console.WriteLine("  便携根目录: " + portableRoot);
         Console.WriteLine("  普通根目录: " + localRoot);
         Console.WriteLine("");
@@ -139,6 +142,18 @@ class GuardProbe
 
         Console.WriteLine("!! 有 " + failures + " 项不符合预期");
         return 1;
+    }
+
+    /// <summary>
+    /// 产品的数据根目录。被测程序支持 AUTO7Z_DATA_ROOT 改道（见 AppPaths.DataRootVariable），
+    /// 测试用它把配置、日志、7-Zip 组件统一写进 %TEMP% 下的受控目录。
+    /// </summary>
+    static string DataRoot()
+    {
+        string redirect = Environment.GetEnvironmentVariable("AUTO7Z_DATA_ROOT");
+        if (!string.IsNullOrEmpty(redirect) && Path.IsPathRooted(redirect)) return redirect;
+
+        return Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
     }
 
     static bool Invoke(MethodInfo m, string path)

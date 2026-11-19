@@ -38,17 +38,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_ops import SafeTemp, safe_rmtree
+
+# 数据目录改道必须在导入 config_guard **之前**：配置路径是在那一刻按环境变量算出来的。
+from test_env import isolate_data_root
+DATA_ROOT = isolate_data_root("heuristic")
+
 from config_guard import ConfigGuard, claim_checkout, release_checkout
 
 HERE = Path(__file__).resolve().parent
 WORKSPACE = HERE.parent
 PROJECT = WORKSPACE / "Auto7z_WPF" / "Auto7z_WPF"
 
-LOCAL = Path(os.environ["LOCALAPPDATA"]) / "Auto7z"
+LOCAL = DATA_ROOT / "Auto7z"
 CFG = LOCAL / "Auto7z.json"
 SZ = LOCAL / "7-Zip" / "7z.exe"
 
 TEMP = SafeTemp("heuristic")
+
+# 启动被测程序时统一用的环境：带上数据目录改道变量。
+import test_env as _test_env
+PRODUCT_ENV = _test_env.child_env("heuristic")
 
 APP = None
 FINDINGS = []
@@ -96,7 +105,7 @@ def run(args, timeout=90, stdin=subprocess.DEVNULL, cwd=None, exe=None):
     try:
         r = subprocess.run([target] + [str(a) for a in args],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           stdin=stdin, timeout=timeout, cwd=cwd)
+                           stdin=stdin, timeout=timeout, cwd=cwd, env=PRODUCT_ENV)
         return r.returncode, decode(r.stdout)
     except subprocess.TimeoutExpired as e:
         return None, decode(e.stdout or b"")
@@ -104,6 +113,7 @@ def run(args, timeout=90, stdin=subprocess.DEVNULL, cwd=None, exe=None):
 
 def run_raw(args, **kw):
     """不经过 taskkill 的裸跑，用于观察进程是否自己退出。"""
+    kw.setdefault("env", PRODUCT_ENV)
     return subprocess.run([str(APP)] + [str(a) for a in args], **kw)
 
 
@@ -408,7 +418,9 @@ def p_silent_skip_of_missing_input():
     设计契约（README「退出码」一节）：静默丢弃会让脚本与计划任务无法从退出码
     判断到底跑没跑 / 跑全没跑全。所以「部分输入不存在」至少应当在控制台里说一句，
     或者让退出码区别于「全部成功」。
-    现状：只在日志里记一条 WARNING，控制台一个字都没有，退出码仍是 0。
+    当前实现（ReleaseFix 第 28 项修复后）：控制台打印「N 个输入路径不存在或不可访问，
+    已跳过」，退出码为 1。本用例只校验「有没有说一句」，不校验具体退出码 ——
+    退出码由 run_system_test / cmdline_test 那侧的契约用例负责。
     """
     print("\n=== 混合批中的缺失路径 ===")
     base_cfg()
@@ -428,6 +440,17 @@ def p_silent_skip_of_missing_input():
                 "退出码=%s 产物=%d 控制台=%r" % (code, len(produced), out.strip()[:80]))
     else:
         ok("输入", "缺失路径有提示", out.strip()[:60])
+
+    # 退出码契约（ReleaseFix 第 28 项的回归保护）：部分输入被丢弃时必须回报 1，
+    # 不能给 0 —— 给 0 等于把「少处理了文件」伪装成完全成功，脚本无从判断。
+    # 本条是**新增**断言，没有放宽或改写上面任何既有判据。
+    if code == 0:
+        suspect("输入", "部分输入被丢弃时退出码不能是 0（契约：有文件被跳过 → 1）",
+                "退出码=%s 控制台=%r" % (code, out.strip()[:80]))
+    elif code == 1:
+        ok("输入", "部分输入被丢弃 → 退出码 1", "退出码=%s" % code)
+    else:
+        suspect("输入", "部分输入被丢弃时退出码应为 1", "实际=%s" % code)
 
 
 def p_empty_input():
@@ -520,11 +543,11 @@ def p_single_instance():
     kill_running()
     p1 = subprocess.Popen([str(APP), "-z", str(f)],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                          stdin=subprocess.DEVNULL)
+                          stdin=subprocess.DEVNULL, env=PRODUCT_ENV)
     time.sleep(0.7)
     p2 = subprocess.Popen([str(APP), "-z", str(f)],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                          stdin=subprocess.DEVNULL)
+                          stdin=subprocess.DEVNULL, env=PRODUCT_ENV)
     rc2 = None
     try:
         rc2 = p2.wait(timeout=20)
@@ -574,7 +597,7 @@ def p_shellmenu_dispatch():
         arg, keep = _make_shell_map([str(target)])
         p = subprocess.Popen([str(gui), arg, mode],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             stdin=subprocess.DEVNULL)
+                             stdin=subprocess.DEVNULL, env=PRODUCT_ENV)
         seen = []
         seen = []
         deadline = time.time() + 8
@@ -679,7 +702,6 @@ def p_sha256_single_manifest():
     else:
         ok("SHA256", "一份清单覆盖全部 %d 卷，逐行哈希正确" % len(vols),
            shas[0].name)
-
 
 
 def _window_titles_of_product():
@@ -891,9 +913,6 @@ def main():
     if not APP.exists():
         print("找不到被测程序: %s" % APP)
         return 2
-    if not SZ.exists():
-        print("找不到 7z 组件: %s" % SZ)
-        return 2
 
     mutex = claim_checkout()
     if mutex is None:
@@ -906,6 +925,25 @@ def main():
         return 2
 
     TEMP.ensure()
+
+    # 7-Zip 组件是「首次执行任务时」才释放到数据目录，不是启动时。
+    # 而模块顶层的 isolate_data_root("heuristic") 每次导入都会清空本套件的数据根，
+    # 所以组件必然还没释放 —— 在这里先探一次是不行的（旧实现就是这么错的：
+    # 导入即清空、main() 又要求清空前就存在的 7z.exe，任何干净环境都必然退出 2）。
+    # 正确做法与 splitvol_test.py 一致：先跑一次无足轻重的压缩让产品自行释放，再判定。
+    if not SZ.exists():
+        print("7-Zip 组件缺失，先跑一次任务让产品自行释放 ...")
+        warm = TEMP.path / "warmup"
+        warm.mkdir(parents=True, exist_ok=True)
+        (warm / "w.txt").write_text("warmup", encoding="utf-8")
+        set_cfg(Format="7z", Volume=2000, GenerateSHA256=False, OutputPath="",
+                CompressionLevel="Store", ErrorLevel="Info")
+        run(["-z", warm / "w.txt"], timeout=90)
+        safe_rmtree(warm)
+        if not SZ.exists():
+            print("仍然找不到 7z 组件: %s" % SZ)
+            release_checkout(mutex)
+            return 2
     chain_token = guard.join_chain()
 
     print("=" * 74)
