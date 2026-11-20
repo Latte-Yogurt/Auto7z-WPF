@@ -29,7 +29,11 @@ def collect_sources(root):
             continue
         if p.suffix not in SRC_EXT:
             continue
-        if any(x in p.parts for x in ("bin", "obj", "build")):
+        # 生成目录：bin / obj / objgui（WPF 的中间输出）/ build。
+        # 早先只匹配 "obj"，漏掉了 objgui —— 那里全是 `.g.cs`，
+        # 由 MSBuild 生成、自带 BOM，被编码检查当成源文件报了出来。
+        # 用 startswith 而不是精确等值，这样 objgui / objRelease 之类的变体一并覆盖。
+        if any(x == "bin" or x.startswith("obj") or x == "build" for x in p.parts):
             continue
         out.append(p)
     return out
@@ -294,6 +298,81 @@ def check_path_guard(sources, findings):
                     })
 
 
+# ---------------------------------------------------------------- ⑥ 源文件编码
+# 本项目的源文件一律是 UTF-8 无 BOM，且大量注释与资源串是中文。
+#
+# 教训（真实事故）：用 PowerShell 的 `Get-Content -Raw` + `Set-Content -Encoding UTF8`
+# 改写 C# 源文件时，读的一侧按系统 ANSI(GBK) 解码了 UTF-8 字节，写的一侧又加了 BOM ——
+# 结果整份文件的中文变成「瑙ｅ帇」这类乱码，换行被吃掉，编译直接失败。
+# 更糟的是它**看起来**像一次普通编辑，等到构建报错才发现，而磁盘上没有备份。
+#
+# 所以这里加一条硬检查：任何源文件出现「疑似 GBK 被当作 UTF-8 读过」的特征，
+# 或 BOM 与项目约定不符，都判失败。这比事后从会话日志重放补丁便宜得多。
+MOJIBAKE_MARKERS = (
+    "瑙ｅ帇",   # 解压
+    "鍘嬬缉",   # 压缩
+    "鏂囦欢",   # 文件
+    "閿欒",   # 错误
+    "鍔犺浇",   # 加载
+    "鏍￠獙",   # 校验
+)
+
+# GBK 把无法映射的字节塞进 Unicode 私用区（PUA），UTF-8 源文件里本不该出现。
+PUA_START, PUA_END = 0xE000, 0xF8FF
+
+
+def check_encoding(sources, findings):
+    """源文件编码体检：BOM、乱码特征串、私用区字符、替换字符。"""
+    for p in sources:
+        if p.suffix not in (".cs", ".xaml", ".cpp", ".h"):
+            continue
+        raw = p.read_bytes()
+
+        # 约定：无 BOM。带 BOM 的 C# 能被编译，但会在 diff 与工具链里制造噪音，
+        # 而且它正是那次事故的副产物之一。
+        if raw[:3] == b"\xef\xbb\xbf":
+            findings.append({
+                "class": "⑥ 源文件编码",
+                "file": str(p.name),
+                "line": 1,
+                "detail": "文件带 UTF-8 BOM，项目约定为无 BOM",
+            })
+            continue
+
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as e:
+            findings.append({
+                "class": "⑥ 源文件编码",
+                "file": str(p.name),
+                "line": raw[:e.start].count(b"\n") + 1,
+                "detail": "不是合法 UTF-8：%s" % e.reason,
+            })
+            continue
+
+        for marker in MOJIBAKE_MARKERS:
+            if marker in text:
+                line = text[:text.index(marker)].count("\n") + 1
+                findings.append({
+                    "class": "⑥ 源文件编码",
+                    "file": str(p.name),
+                    "line": line,
+                    "detail": "疑似 ANSI/UTF-8 混读产生的乱码：%s" % marker,
+                })
+                break
+
+        for i, ch in enumerate(text):
+            if PUA_START <= ord(ch) <= PUA_END or ch == "\ufffd":
+                line = text[:i].count("\n") + 1
+                findings.append({
+                    "class": "⑥ 源文件编码",
+                    "file": str(p.name),
+                    "line": line,
+                    "detail": "出现私用区/替换字符 U+%04X，文件已被错误转码" % ord(ch),
+                })
+                break
+
+
 def main():
     if len(sys.argv) < 2:
         print("用法: python cs_check.py <源码目录> [--json]")
@@ -309,6 +388,7 @@ def main():
     check_dead_branch(sources, findings)
     check_doc_tags(sources, findings)
     check_path_guard(sources, findings)
+    check_encoding(sources, findings)
 
     problems = [f for f in findings if not f.get("registered")]
     registered = [f for f in findings if f.get("registered")]

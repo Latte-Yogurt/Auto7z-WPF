@@ -288,12 +288,27 @@ class ShellProto
 
         int answered = AutoConfirmMergeDialog(p, 8000);
 
-        Thread.Sleep(6000);
-        if (!p.HasExited) p.Kill();
-        Thread.Sleep(800);
+        // 这里**不能**死等固定秒数再 Kill。
+        //
+        // 早先的写法是 Sleep(6000) → 没退出就 Kill → Sleep(800) → 去日志里找「共 N 个文件」。
+        // 这条链上每一步都是赌：机器一忙、或者 200 个文件那一档稍慢一点，进程就会在写出那行日志
+        // 之前被杀掉，于是日志里读到 0 个文件，报「没有收到文件」—— 而产品其实完全正常。
+        // 多轮复核里那三次无法复现的失败，来源就在这里：它测的是「6 秒内能不能跑完」，
+        // 不是「共享内存传参是否正确」。
+        //
+        // 改成按条件等待：每 200ms 看一眼日志，凑够期望值就往下走；
+        // 进程自己退出了也往下走（该写的日志已经落盘）。只有真正等满超时才 Kill。
+        int received = WaitForReceivedCount(p, logDir, logBefore, 20000);
+
+        // 收尾：给进程一点时间体面退出，退不掉才动手。Kill 之后已有的日志不会丢
+        // （产品每写一行就开关一次文件流），所以这里不影响上面读到的结果。
+        if (!p.WaitForExit(3000))
+        {
+            try { p.Kill(); } catch { }
+            try { p.WaitForExit(3000); } catch { }
+        }
 
         int created = CountArchives(workDir) - before;
-        int received = GetReceivedCount(logDir, logBefore);
 
         Console.WriteLine("  [" + label + "] 日志收到 " + received + " 个, 新生成压缩包 " + created
                           + " 个" + (answered > 0 ? " (自动点了 " + answered + " 次确认)" : ""));
@@ -304,6 +319,37 @@ class ShellProto
             if (received != expectedCount) Bad(label + ": 收到的文件数不对, 期望 " + expectedCount);
         }
         return created;
+    }
+
+    /// <summary>
+    /// 轮询日志，直到收到期望数量的条目、进程退出、或超时。
+    /// 返回最后一次读到的数量（超时也返回实际值，供调用方如实报告）。
+    /// </summary>
+    static int WaitForReceivedCount(Process p, string logDir, Dictionary<string, long> before, int timeoutMs)
+    {
+        int waited = 0;
+        int last = 0;
+
+        while (waited < timeoutMs)
+        {
+            last = GetReceivedCount(logDir, before);
+
+            // 凑够了就立刻继续：这是正常路径，不该再多等一秒。
+            if (expectedCount > 0 && last >= expectedCount) return last;
+
+            // 进程已经退出且日志不再变化：该写的都写完了，结论只能按当前值下。
+            if (p.HasExited)
+            {
+                // 再给落盘留一点时间，然后读最后一次。
+                Thread.Sleep(300);
+                return GetReceivedCount(logDir, before);
+            }
+
+            Thread.Sleep(200);
+            waited += 200;
+        }
+
+        return last;
     }
 
     static int AutoConfirmMergeDialog(Process p, int timeoutMs)

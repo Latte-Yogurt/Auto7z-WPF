@@ -11,6 +11,7 @@ python run_cs_probes.py        # 一键跑完 cs\ 下全部 C# 探针（推荐�
 python run_regress.py          # 一键回归测试
 python run_system_test.py      # 一键系统测试
 python splitvol_test.py        # 分卷压缩 / 分卷解压专项
+python extract_partial_test.py # 批量解压：失败结论不被后续成功覆盖
 python heuristic_probe.py      # 启发式探测（列可疑行为，不判失败）
 python tipcheck.py             # 提示文案质量（过长 / 空 / 换行 / 折行 / 标点）
 python run_bench.py            # 一键性能基准（不判失败，只做前后对比）
@@ -541,10 +542,11 @@ python run_bench.py --baseline bench\baseline.json
 |---|---|
 | `BufferSize = 1024 * 1024` | 1MB 缓冲区，顺序扫描大文件时明显快于小缓冲 |
 | `UiRefreshMs = 100` | 进度回调节流 100ms |
-| `FileShare.ReadWrite` | 允许读被别的进程占用的文件 |
+| `FileShare.ReadWrite` | 允许读被别的进程占用的文件；代价是文件可能在读取途中被改动，所以**必须**配合下面那条指纹比对 |
 | `FileOptions.SequentialScan` | 顺序扫描 |
 | `"{0} *{1}"` | 输出行格式 `hash *filename` |
 | `new UTF8Encoding(false)` | 写 `.sha256` 用 UTF-8 **不带 BOM**（BOM 会让不少校验解析软件把首行哈希当成无效内容） |
+| 读前/读后指纹 | 每个文件读前读后各取一次 `Length + LastWriteTimeUtc`；不一致的行**照样写出**，但记进 `HashBatchResult.ChangedDuringReadFiles` 并判 `IsComplete == false`。取不到指纹算「无法判定」，不算失败。2.5.0 新增 |
 
 静态约定证明不了**跑起来算得对**，所以另有一份运行时验证（回归第 12 项）：
 
@@ -596,6 +598,72 @@ python cs_check.py "<Auto7z_WPF源码目录>"      # 退出码 1 = 有未说明�
 报告里 `TOTAL PROBLEMS` 只统计**未说明**的；已说明的另列在
 `--- 已登记（不计失败）---` 下，末尾给 `REGISTERED: N` 计数，
 这样「存量说明被删掉」也能被看出来。
+
+
+## 源文件编码：别用 PowerShell 改写带中文的源文件
+
+`cs_check.py` 的第 ⑥ 类检查盯着源文件编码，因为**这里踩过真实的坑**。
+
+### 事故经过
+
+用 `Get-Content -Raw` 读、`Set-Content -Encoding UTF8` 写，看起来是一次普通的字符串替换：
+
+```powershell
+# 不要这么做！
+$c = Get-Content $f -Raw
+$c = $c -replace 'old', 'new'
+Set-Content $f -Value $c -Encoding UTF8 -NoNewline
+```
+
+实际发生了三件互相叠加的坏事：
+
+1. **读**的一侧：`Get-Content -Raw` 在中文 Windows 上按系统 ANSI(GBK) 解码 UTF-8 字节，
+   于是每个中文字符都变成两三个乱码字（`解压` → `瑙ｅ帇`）；
+2. **写**的一侧：`-Encoding UTF8` 在 Windows PowerShell 5.x 里会加上 BOM；
+3. 顺带把行尾与部分换行吃掉，整个文件从 2400 多行塌成 2300 多行。
+
+结果是九万多字符的源文件全成乱码、编译直接失败，而**磁盘上没有备份**。
+
+### 正确做法
+
+改 C# 源文件请用 `edit` / `write` 这类按 UTF-8 精确读写的工具，
+或显式指定编码的 .NET API：
+
+```powershell
+$t = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
+[System.IO.File]::WriteAllText($p, $t, (New-Object System.Text.UTF8Encoding $false))
+```
+
+`[System.Text.UTF8Encoding] $false` 明确表示**不写 BOM**，与项目约定一致。
+
+### 已经被写坏了怎么办
+
+会话日志里完整记录了每一次 `edit` / `write` 的 `old_string` 与 `new_string`，
+可以按顺序把它们重放到一份干净基底上，精确重建文件：
+
+```powershell
+python replay_session_edits.py <session.v4.jsonl> Auto7zViewModel.cs `
+    --base <2.4.0 备份里的同名文件> --out <重建结果>
+```
+
+脚本**只读**会话日志。任一补丁找不到 `old_string` 就立即报错 ——
+说明基底不对，不能糊过去。会话日志是 `.jsonl.zstd`，可以用随包发布的
+`7z.exe x` 解开（`Type = zstd`）。
+
+### 检查项与判据
+
+| 命中 | 判失败？ |
+|---|---|
+| 文件不是合法 UTF-8 | 是 |
+| 文件带 UTF-8 BOM | 是（项目约定无 BOM） |
+| 出现 GBK 乱码特征串（`瑙ｅ帇` / `鍘嬬缉` / `鏂囦欢` …） | 是 |
+| 出现 Unicode 私用区（U+E000–U+F8FF）或替换字符 U+FFFD | 是 |
+
+私用区那一条专门针对这种损坏：GBK 把无法映射的字节塞进 PUA，
+UTF-8 源文件里本不该出现这类字符。
+
+收集源文件时排除 `bin` 与一切 `obj*` 目录（含 WPF 的 `objgui`）——
+那里是 MSBuild 生成的 `.g.cs`，按设计带 BOM，不该按项目源文件来衡量。
 
 
 ## 外壳扩展相关的检查
@@ -665,7 +733,7 @@ python check_reg.py
 
 | 项 | 工具 | 查什么 |
 |---|---|---|
-| 静态检查（空 catch 必须写明原因） | `cs_check.py` | 命名/类型不一致、文档标签、路径边界、空 catch。**未说明**的空 catch 判失败；已说明的登记计数（会随代码增减，以报告里的 `REGISTERED: N` 为准） |
+| 静态检查（空 catch 必须写明原因） | `cs_check.py` | 命名/类型不一致、文档标签、路径边界、空 catch、**源文件编码**（⑤ 之后新增 ⑥：非 UTF-8 / 带 BOM / GBK 乱码特征 / 私用区字符，任一命中即失败。理由见「源文件编码」一节 —— 这里真出过事故）。**未说明**的空 catch 判失败；已说明的登记计数（会随代码增减，以报告里的 `REGISTERED: N` 为准） |
 | 命名风格一致 | `namecheck.py` | 字段/常量/属性/方法/局部变量各自的风格，**判失败** |
 | region 结构一致 | `regioncheck.py` | 配对、嵌套 ≤1、跨度 ≤150 行 |
 | 行为约束成立 | `behaviorcheck.py` | BC1–BC13，13 条关键行为断言 |
@@ -674,7 +742,7 @@ python check_reg.py
 | 提示文案质量 | `tipcheck.py` | `Tip_*` 文案的**内容**质量：显示宽度是否超阈值（默认 200，CJK 记 2）、有无空文案 / 真实换行符 / 连续空格手工折行 / 英文里的无空格长串、三语 `Tip_*` 键集合是否一致、中英标点风格是否各自统一。**为什么单列一项**：`langkeycheck` 只验键在不在、`uiwidth` 只验控件上的可见文案，两边都不管 tooltip —— 英文提示涨到 150+ 字符也没人发现，而 WPF 用纯字符串设 tooltip 时默认模板 `TextWrapping=NoWrap`，会拉成一条读不完的长条。产品侧已改成显式 `TextBlock + Wrap + MaxWidth=340`，这一项负责守住「别再把长文案塞回来」 |
 | 外壳扩展注册/注销契约 | `shellreg_check.py` | 注册写 Approved 的 hive 与注销删的必须是**同一个**（B02 的回归保护） |
 | 改名无残留且引用一致 | `renamecheck.py` | 旧名清零、新名在 XAML 有定义且被引用、控件名不带错的类型词（B04 的回归保护） |
-| 递归删除守卫运行时验证 | `cs\guardprobe` | **反射直调**守卫方法，拿 12 条真实路径（数据目录本身/子目录应放行；根目录/无关路径/空串/null/`..` 越界应拦住）验证它真的拦得住 —— 守卫「写了但不生效」只有这条能查出来 |
+| 递归删除守卫运行时验证 | `cs\guardprobe` | **反射直调**守卫方法，拿真实路径验证它真的拦得住 —— 守卫「写了但不生效」只有这条能查出来。共 26 条断言，分三组：(a) 递归删除守卫 12 项（数据目录本身/子目录应放行；根目录/无关路径/空串/null/`..` 越界应拦住）；(b) 2.5.0 写盘边界 `FileSystemHelper.IsUnderDirectory` 11 项 —— 目录本身、直接子文件、深层子文件、仍在根下的 `..`、大小写翻转路径应放行；名字把根当后缀的兄弟目录（`根X` vs `根\`）、越出根的 `..`、无关绝对路径、空/null 路径与空根应拒绝；(c) 2.5.0 体积统计 `GetSizeInBytesDetailed` 3 项 —— 正常目录的字节数与 `skipped` 必须准确（遍历写错会直接体现成字节数不对），不存在的路径必须回 -1。**每个方向都断言**，守卫无法靠「永远给同一个答案」通过 |
 | 结果颜色契约运行时验证 | `cs\resultprobe` | **反射建** `Auto7zViewModel`、调 `SetResult`，在 `PropertyChanged` 回调里查：通知的属性名是不是 `ResultText`（`SetProperty` 靠 `[CallerMemberName]`，从方法里调用会把名字写成方法名）、通知到来时 `IsResultFailed` 是不是已经是新值（决定红字/绿字）、文本没变时是不是照样通知。静态检查报不出这三点 |
 | 本项目计算服务运行时验证 | `cs\hashprobe` | **反射直调** `HashingService`：**18 种算法逐一**比对独立算出的标准摘要（值 + 长度 + 行格式），另验目录递不递归、坏文件跳不跳过、进度单不单调、取消响不响应；并断言已删的 `SHA256Service` 与非泛型 `RelayCommand` 不在程序集里。**为什么必须逐算法**：产品支持 18 种摘要，只验 SHA-256 时其余 17 条是黑的，而算错不报错、校验文件照样生成 |
 | 系统里无右键菜单残留注册 | 注册表查询 | 测试不往系统里留注册 |
@@ -719,6 +787,18 @@ python check_reg.py
 | T3 | 模式开关 `-z` / `-uz` / `-a` |
 | T4 | 直接给路径（不带共享内存标记） |
 | T5 | 单实例：第二个实例交接后自己退出 |
+
+### 等待方式：条件等待，不是固定睡眠
+
+2.5.0 之前，T1–T4 每一档都是 `Sleep(6000)` → 没退出就 `Kill` → `Sleep(800)` → 才去日志里找
+「共 N 个文件」那一行。**这条链上每一步都是赌**：机器一忙，或者只是 T2 的 200 个文件稍慢，
+进程会在写出那行日志之前被杀掉 —— 于是日志里读到 0 个文件，一个完全正常的产品被判成
+「没有收到文件」。这就是「`shellproto` 有一个无法复现的偶发失败」的真正来源：
+它测的其实是「6 秒内能不能跑完」，而不是「共享内存传参是否正确」。
+
+现在改成 `WaitForReceivedCount`：每 200 ms 读一次日志增量，凑够期望值立刻继续；
+进程自己退出就再等 300 ms 让最后一波落盘后收尾；只有真的等满 20 秒才 `Kill`。
+判定条件仍是原来那一条，只是不再附带一个隐含的时间上限。
 
 ## cmdline_test 覆盖范围
 

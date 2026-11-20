@@ -423,9 +423,23 @@ def main():
     with open(data / "rand.bin", "wb") as f:
         for _ in range(3):
             f.write(bytes(rnd.getrandbits(8) for _ in range(1024 * 1024)))
-    # 可压缩文本: 用于对比压缩等级
+    # 可压缩文本: 用于对比压缩等级。
+    #
+    # 不能再用「同一句话重复 2 万遍」：那种素材的冗余度已经饱和，
+    # -mx=5 与 -mx=9 都会压到同一个理论下界（实测两者都是 376 字节），
+    # 于是 T02 的「Normal >= Ultra」判定会误报成压缩等级失效
+    # ——实际是素材把一个合法差异抹平了，不是产品缺陷。
+    #
+    # 换成带结构化重复、但每条内容都不同的伪日志：既有足够的可压缩性
+    # （保证 Store 明显大于 Normal），又保留等级之间的差异。
     with open(data / "text.txt", "w", encoding="utf-8") as f:
-        f.write("The quick brown fox jumps over the lazy dog.\n" * 20000)
+        rnd_text = random.Random(11)
+        for i in range(20000):
+            rid = rnd_text.randrange(1000, 9999)
+            f.write(
+                "2026-11-20 12:34:%02d [INFO] request id=%d user=u%d "
+                "status=200 path=/api/v1/items/%d elapsed=%dms\n"
+                % (i % 60, rid, i % 137, rid, rnd_text.randrange(1, 500)))
 
     set_cfg(Format="7z", Volume=2000, GenerateSHA256="False", OutputPath="",
             AutoSave="True", ErrorLevel="Info", CompressionLevel="Normal",
