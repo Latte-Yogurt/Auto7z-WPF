@@ -110,6 +110,10 @@
     <sys:String x:Key="Log_DialogConfirmed">Prompt: the user chose Yes</sys:String>
     <sys:String x:Key="Log_DialogCancelled">Prompt: the user chose No</sys:String>
     <sys:String x:Key="Log_SHA256Failed">Failed to generate the SHA256 file: {0}</sys:String>
+    <sys:String x:Key="Log_ChecksumIncomplete">The checksum manifest is incomplete: {1} of {0} files could not be read, so it lists only the other {2}. Missing: {3}</sys:String>
+    <sys:String x:Key="Log_ChecksumManifestCleared">No file could be hashed, so no new checksum manifest was written; the stale manifest left over from a previous run was removed: {0}</sys:String>
+    <sys:String x:Key="Log_ChecksumManifestStaleKept">No file could be hashed, and the previous manifest could not be confirmed as removed (it may still be there). It may not describe these files — please check it manually: {0}</sys:String>
+    <sys:String x:Key="Log_ChecksumChangedDuringRead">{0} file(s) in the manifest were modified while being hashed, so their digests may no longer match what is on disk: {1}</sys:String>
     <sys:String x:Key="Err_NoCompressInput">Nothing to compress</sys:String>
     <sys:String x:Key="Err_UnknownOutputDir">Cannot determine the output directory</sys:String>
     <sys:String x:Key="Err_OutputDirNotFound">Output directory does not exist: {0}</sys:String>
@@ -124,6 +128,8 @@
     <sys:String x:Key="Err_InnerTarFailed">Failed to extract the inner tar</sys:String>
     <sys:String x:Key="Err_ComponentMissing">7-Zip components not found</sys:String>
     <sys:String x:Key="Err_ResourceMissing">Resource not found: {0}</sys:String>
+    <sys:String x:Key="Err_ComponentReplaceFailed">Could not replace component {0}: the old file was kept. Close any program using it and try again.</sys:String>
+    <sys:String x:Key="Err_ComponentPathOccupied">The component path is occupied by a directory, so {0} cannot be written. Move that directory away and try again.</sys:String>
     <sys:String x:Key="Err_EmptyCommand">The command is empty</sys:String>
     <sys:String x:Key="Err_SevenZipExeMissing">7z.exe not found: {0}</sys:String>
 
@@ -144,6 +150,8 @@
     <sys:String x:Key="Log_TaskCancelled">Task cancelled</sys:String>
     <sys:String x:Key="Log_AutoMixed">Auto mode: mixed input, {0} archive(s) extracted one by one, {1} other item(s) compressed</sys:String>
     <sys:String x:Key="Log_InputRejected">{0} input path(s) do not exist or cannot be accessed and were skipped</sys:String>
+    <sys:String x:Key="Log_SizeEstimateIncomplete">Size estimate is incomplete: {0} input path(s) could not be fully read, so the split decision may be conservative (compression itself is unaffected)</sys:String>
+    <sys:String x:Key="Log_ArchivesMissing">{0} archive(s) do not exist and were skipped: {1}</sys:String>
     <sys:String x:Key="ProcessWindowTitle">Processing</sys:String>
     <sys:String x:Key="ProcessWaiting">Preparing…</sys:String>
     <sys:String x:Key="ProcessStageCompress">Compressing…</sys:String>

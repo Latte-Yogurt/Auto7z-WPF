@@ -219,6 +219,10 @@ namespace Auto7z_WPF.Services
             }
         }
 
+        #endregion
+
+        #region 组件释放与健康检查
+
         private static void ExtractResourceIfMissing(string resourcePath, string outputPath)
         {
             if (IsComponentUsable(resourcePath, outputPath)) return;
@@ -235,12 +239,106 @@ namespace Auto7z_WPF.Services
             using (FileStream fileStream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
             {
                 stream.CopyTo(fileStream);
+                // 落盘后再替换：否则断电或强制结束可能留下一个长度对但内容残缺的临时文件，
+                // 而它一旦被替换成正式组件，下次启动会因长度不符重新解压，或更糟——直接拿去执行。
+                fileStream.Flush(true);
             }
 
-            if (File.Exists(outputPath)) File.Delete(outputPath);
-            File.Move(tempPath, outputPath);
+            // 用 File.Replace 而不是「先删旧、再移动」：
+            // 旧写法在 Delete 成功、Move 失败之间留下一个**组件缺失**的窗口
+            // （目标文件被占用、杀毒软件短暂锁定都会触发）。File.Replace 是一次原子替换，
+            // 失败时旧文件原样保留，程序仍能跑；而先删后移失败就什么都没有了。
+            //
+            // 这里不用 File.Exists 判断「目标在不在」：它对同名目录占位、路径过长、
+            // 权限不足一律返回 false。若真有东西占着这个路径，照它的答案去 Move
+            // 会撞上 IOException，而错误信息只会说"文件已存在"，看不出真正原因。
+            // 改用 GetAttributes 明确区分三态，把「占位但不是我们以为的文件」直接报清楚。
+            FileAttributes existingAttributes;
+            bool targetExists = true;
+            try
+            {
+                existingAttributes = File.GetAttributes(outputPath);
+            }
+            catch (FileNotFoundException)
+            {
+                targetExists = false;
+                existingAttributes = default(FileAttributes);
+            }
+            catch (DirectoryNotFoundException)
+            {
+                targetExists = false;
+                existingAttributes = default(FileAttributes);
+            }
+            catch (Exception ex)
+            {
+                // 无法确认目标状态：不冒险覆盖，如实上报并保留临时文件供下次使用。
+                throw new IOException(
+                    EnumText.GetErrorText("Err_ComponentReplaceFailed",
+                        "无法替换组件 {0}：旧文件已保留。请关闭正在使用它的程序后重试。", outputPath),
+                    ex);
+            }
+
+            if (targetExists)
+            {
+                // 占位的是目录：File.Replace 与 Move 都会失败，且错误信息会误导。
+                // 这是「组件位置被别的东西占了」的部署问题，必须原样报出来。
+                if ((existingAttributes & FileAttributes.Directory) == FileAttributes.Directory)
+                {
+                    throw new IOException(
+                        EnumText.GetErrorText("Err_ComponentPathOccupied",
+                            "组件位置被同名目录占用，无法写入 {0}。请移走该目录后重试。", outputPath));
+                }
+
+                try
+                {
+                    File.Replace(tempPath, outputPath, null);
+                    return;
+                }
+                catch (IOException ex)
+                {
+                    // 目标被占用等情况下 File.Replace 会失败。
+                    //
+                    // 这里**不再**退回「先删旧、再移动」：那会把刚消除的缺失窗口原样引回来
+                    // —— 旧文件删掉、新文件移不过去时，组件就彻底没了。
+                    // 正确的取舍是保留旧组件并报出明确错误：旧版本可能仍可用，
+                    // 即使不可用，也比「什么都没有」更容易让下一次运行自愈。
+                    throw new IOException(
+                        EnumText.GetErrorText("Err_ComponentReplaceFailed",
+                            "无法替换组件 {0}：旧文件已保留。请关闭正在使用它的程序后重试。", outputPath),
+                        ex);
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    // 只读或权限问题：同样保留旧文件，把原因如实抛给调用方。
+                    throw new IOException(
+                        EnumText.GetErrorText("Err_ComponentReplaceFailed",
+                            "无法替换组件 {0}：旧文件已保留。请关闭正在使用它的程序后重试。", outputPath),
+                        ex);
+                }
+            }
+
+            // 走到这里说明目标本来就不存在（正常首次释放），
+            // 不存在「先删旧」这一步，移动是安全的。
+            try
+            {
+                File.Move(tempPath, outputPath);
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(tempPath)) File.Delete(tempPath);
+                }
+                catch
+                {
+                    // 临时文件残留不影响组件本身可用性，下次解压会覆盖同名临时文件。
+                }
+            }
         }
 
+        #endregion
+
+        #region 组件资源流读取
 
         /// <summary>
         /// 从程序集的 .g.resources 清单里取资源流，未命中或读取失败时返回 null。
@@ -291,14 +389,43 @@ namespace Auto7z_WPF.Services
                 return expected <= 0 || expected == fileInfo.Length;
             }
             // 探测失败时按可用处理：宁可沿用现有文件，也不要因一次读取异常就反复重写组件。
-            catch
+            //
+            // 但这是一个**有意的保守选择**，代价是「无法确认」被当成「可用」：
+            // 若组件其实已损坏，后续 7z 调用才会以别的方式失败，现场很难回溯到这里。
+            // 因此留下一条日志 —— 排查时可以确认「当时确实跳过了组件健康检查」。
+            catch (Exception ex)
             {
+                ReportComponentProbeFailure(outputPath, ex);
                 return true;
             }
         }
 
+        /// <summary>
+        /// 记录一次「组件健康检查无法完成」的事件。这里是静态上下文，
+        /// 拿不到实例上的日志服务，所以退到 Trace —— 它会被 LogService 的监听器接住（若已挂载），
+        /// 否则至少进 DebugView，不会彻底消失。
+        /// </summary>
+        private static void ReportComponentProbeFailure(string outputPath, Exception ex)
+        {
+            try
+            {
+                System.Diagnostics.Trace.TraceWarning(
+                    "无法校验内置组件，按可用处理：" + outputPath + " —— " + ex.GetType().Name + ": " + ex.Message);
+            }
+            catch
+            {
+                // 记录日志本身失败不应影响解压流程。
+            }
+        }
+
+        #endregion
+
+        #region 组件资源长度查询
+
         private static long GetEmbeddedResourceLength(string resourcePath)
         {
+            // 长度会被反复查询（每次启动都要判定组件是否可用），这里只算一次：
+            // 嵌入资源在本进程生命周期内不会改变，重复读取 5 MB 资源纯属浪费。
             lock (_resourceLengthLock)
             {
                 if (_resourceLengths.TryGetValue(resourcePath, out long cached)) return cached;
@@ -326,8 +453,8 @@ namespace Auto7z_WPF.Services
         }
         #endregion
 
-
         #region 压缩命令拼装
+
         /// <summary>
         /// 生成一条或两条压缩命令，返回多条时调用方必须按顺序执行。
         /// </summary>
@@ -1021,19 +1148,21 @@ namespace Auto7z_WPF.Services
         /// <summary>
         /// 准备压缩产物的落地目录，必要时把落在源目录内部的候选路径退到父目录。
         /// </summary>
-        /// <param name="firstItem">第一个待压缩项，用于推断源根目录。</param>
+        /// <param name="items">本次要压缩的全部输入项。混合选择文件与目录时必须传全 —— 只看第一个会漏判。</param>
         /// <param name="outputDirectory">准备好的输出目录。</param>
         /// <returns>准备成功时为 true。</returns>
-        public bool TryPrepareCompressOutput(string outputPath, PendingFile firstItem, out string outputDirectory, out Exception error)
+        public bool TryPrepareCompressOutput(string outputPath, IReadOnlyList<PendingFile> items, out string outputDirectory, out Exception error)
         {
             error = null;
             outputDirectory = null;
 
-            if (firstItem == null)
+            if (items == null || items.Count == 0 || items[0] == null)
             {
                 error = new ArgumentException(EnumText.GetErrorText("Err_NoCompressInput", "没有可压缩的输入"));
                 return false;
             }
+
+            PendingFile firstItem = items[0];
 
             // 用户可能选的是目录，也可能直接选了一个已存在的归档文件，两种都要归一到目录。
             string candidate = FileSystemHelper.NormalizeDirectoryPath(outputPath);
@@ -1043,22 +1172,31 @@ namespace Auto7z_WPF.Services
                 candidate = Path.GetDirectoryName(candidate);
             }
 
-            // 输出目录若落在源目录内部，7z 会把正在写入的归档再压进自己，
+            // 输出目录若落在**任意一个**待压缩目录内部，7z 会把正在写入的归档再压进自己，
             // 轻则体积暴涨，重则把输出目录越滚越大直到失败。
-            if (firstItem.IsDirectory)
+            //
+            // 这里必须逐个检查全部输入，而不是只看 items[0]：混合选择「一个文件 + 一个目录」时，
+            // 若第一个是普通文件、输出目录恰在第二个目录内部，只查第一个就完全发现不了，
+            // 结果就是归档被压进自己。这类自包含在支持多选的工具里很容易踩到。
+            string candidateFull = string.IsNullOrWhiteSpace(candidate) ? null : Path.GetFullPath(candidate);
+            foreach (PendingFile item in items)
             {
-                string parent = Path.GetDirectoryName(firstItem.Path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-                if (!string.IsNullOrWhiteSpace(parent))
-                {
-                    string candidateFull = string.IsNullOrWhiteSpace(candidate) ? null : Path.GetFullPath(candidate);
-                    string sourceFull = Path.GetFullPath(firstItem.Path);
-                    bool candidateInsideSource = candidateFull != null
-                        && candidateFull.StartsWith(sourceFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+                if (item == null || !item.IsDirectory) continue;
 
-                    if (string.IsNullOrWhiteSpace(candidate) || candidateInsideSource || string.Equals(candidateFull, sourceFull, StringComparison.OrdinalIgnoreCase))
-                    {
-                        candidate = parent;
-                    }
+                string itemParent = Path.GetDirectoryName(item.Path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                if (string.IsNullOrWhiteSpace(itemParent)) continue;
+
+                string sourceFull = Path.GetFullPath(item.Path);
+                bool candidateInsideSource = candidateFull != null
+                    && candidateFull.StartsWith(sourceFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+                bool candidateIsSource = candidateFull != null
+                    && string.Equals(candidateFull, sourceFull, StringComparison.OrdinalIgnoreCase);
+
+                if (string.IsNullOrWhiteSpace(candidate) || candidateInsideSource || candidateIsSource)
+                {
+                    // 退到这个输入目录的父目录：那是当前候选位置里唯一保证在源之外的选择。
+                    candidate = itemParent;
+                    candidateFull = Path.GetFullPath(candidate);
                 }
             }
 
@@ -1101,6 +1239,9 @@ namespace Auto7z_WPF.Services
             return true;
         }
 
+        #endregion
+
+        #region 解压输出目录准备
 
         /// <summary>
         /// 准备解压目标目录，固定放在归档所在目录下的随机子目录里。
@@ -1263,6 +1404,15 @@ namespace Auto7z_WPF.Services
         public long GetSizeInBytes(string path)
         {
             return FileSystemHelper.GetSizeInBytes(path);
+        }
+
+        /// <summary>
+        /// 体积统计，并回报读不到的子树数量。调用方据此把「统计不完整」如实写进日志 ——
+        /// 这个值只用于判断要不要分卷，读失败不该中止压缩，但「少算了」必须能被看见。
+        /// </summary>
+        public long GetSizeInBytesDetailed(string path, out int skippedDirectoryCount)
+        {
+            return FileSystemHelper.GetSizeInBytesDetailed(path, out skippedDirectoryCount);
         }
 
 

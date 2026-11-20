@@ -286,9 +286,15 @@ namespace Auto7z_WPF.Services
             string directory = Path.GetDirectoryName(target);
             if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
 
+            // 临时名带 PID：两个进程同时写状态时不会互相覆盖对方的半截文件。
             string tmp = target + ".tmp." + Process.GetCurrentProcess().Id;
 
-            JsonConfig.WriteFile(tmp, JsonConfig.Build(entries, isBoolean));
+            // 边界校验：状态文件只能落在数据目录之内。
+            // JsonConfig.WriteFile 的 allowedRoot 是可选参数，**默认不做校验** ——
+            // 也就是说漏传就等于没这道闸门。这里显式传进去，避免「加了边界校验，
+            // 却有一个调用点悄悄漏掉」这种最难发现的情形（配置写盘与日志删除都已接入，
+            // 状态文件是第三个写盘点，本轮补上）。
+            JsonConfig.WriteFile(tmp, JsonConfig.Build(entries, isBoolean), AppPaths.DataDirectory);
 
             // fsync：确保数据真正落盘，再原子替换，避免替换后只剩半截文件。
             try
@@ -322,8 +328,16 @@ namespace Auto7z_WPF.Services
                 string prefix = target + ".tmp.";
                 string directory = Path.GetDirectoryName(target);
                 if (directory == null) return;
+
+                // 边界校验：只删数据目录之内的残留。这些文件来自 GetFiles，
+                // 正常情况下必然在目录内 —— 但数据目录可以被 AUTO7Z_DATA_ROOT 改道，
+                // 也可能是一个指向别处的重解析点。删除不可逆，多问一句几乎零成本。
+                string allowedRoot = AppPaths.DataDirectory;
+
                 foreach (string f in Directory.GetFiles(directory, Path.GetFileName(prefix) + "*"))
                 {
+                    if (!FileSystemHelper.IsUnderDirectory(f, allowedRoot)) continue;
+
                     try { File.Delete(f); } catch { /* 残留的 .tmp 不影响下一次写入，下次会换新 PID 名 */ }
                 }
             }
@@ -523,7 +537,22 @@ namespace Auto7z_WPF.Services
             try
             {
                 mutex = new Mutex(false, MutexName);
-                bool acquired = mutex.WaitOne(immediate ? 0 : 1000);
+
+                bool acquired;
+                try
+                {
+                    acquired = mutex.WaitOne(immediate ? 0 : 1000);
+                }
+                catch (AbandonedMutexException)
+                {
+                    // 上一个持有者没 ReleaseMutex 就退出了（进程被杀、线程异常终止）。
+                    // 关键：这种情况下本线程**已经拿到**互斥体，异常只是通知「上一个主人是横死的」。
+                    // 早先这里被外层 catch 一并吞掉、返回 null，于是「清理残留」这条路径
+                    // 恰好在上一次崩溃之后最需要它的时候静默失效 —— 锁和 active 状态会一直留在盘上，
+                    // 下次启动仍能清（PID 已死），但当次调用完全没做事，且不留任何痕迹。
+                    acquired = true;
+                }
+
                 if (!acquired)
                 {
                     mutex.Dispose();

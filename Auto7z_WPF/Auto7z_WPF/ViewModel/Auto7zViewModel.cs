@@ -138,7 +138,9 @@ namespace Auto7z_WPF
         }
 
         #endregion
+
         #region 配置装载与便携模式
+
         public event EventHandler RequestClose;
 
         public event EventHandler OutputPathInvalidated;
@@ -480,9 +482,10 @@ namespace Auto7z_WPF
             RefreshTitle();
         }
 
-
         #endregion
+
         #region 压缩与运行参数属性
+
         public string Volume
         {
             get => _volume;
@@ -1015,7 +1018,9 @@ namespace Auto7z_WPF
 
 
         #endregion
+
         #region 后台任务调度
+
         private void StartAutoDispatch(Action<ProgressInfo> report)
         {
             var batch = _pendingBatch;
@@ -1096,7 +1101,9 @@ namespace Auto7z_WPF
         }
 
         #endregion
+
         #region 分卷套归并与残缺判定
+
         /// <summary>
         /// 从「不属于压缩包」那一组里剔掉不完整的分卷套，返回真正可以压缩的项。
         ///
@@ -1142,7 +1149,9 @@ namespace Auto7z_WPF
         }
 
         #endregion
+
         #region 按项分派与警告输出
+
         private void ExtractEach(List<PendingFile> files, Action<ProgressInfo> report)
         {
             foreach (var f in files)
@@ -1173,7 +1182,9 @@ namespace Auto7z_WPF
         }
 
         #endregion
+
         #region 后台调度与排队
+
         private void CompressEach(List<PendingFile> files, Action<ProgressInfo> report)
         {
             var original = _pendingBatch;
@@ -1410,7 +1421,7 @@ namespace Auto7z_WPF
 
             string validatedOutputPath = ValidateOutputPath();
 
-            if (!_sevenZipService.TryPrepareCompressOutput(validatedOutputPath, batch.Files[0], out string outputDirectory, out Exception pathError))
+            if (!_sevenZipService.TryPrepareCompressOutput(validatedOutputPath, batch.Files, out string outputDirectory, out Exception pathError))
             {
                 FailWithError(pathError, report);
                 return;
@@ -1430,7 +1441,22 @@ namespace Auto7z_WPF
             switch (volumeState)
             {
                 case SevenZipService.VolumeSpecState.Valid:
-                    batch.EnsureSizes(path => _sevenZipService.GetSizeInBytes(path));
+                    // 体积只用于判断要不要分卷，读失败不该中断压缩 —— 但「没读全」必须留痕，
+                    // 否则用户遇到「该分卷却没分」时日志里一个字都没有，只能靠猜。
+                    // 两种不完整都计数：整条读不出来，以及读到了但有子树被跳过。
+                    batch.EnsureSizes(path =>
+                    {
+                        long bytes = _sevenZipService.GetSizeInBytesDetailed(path, out int skipped);
+                        return new SizeProbeResult { Bytes = bytes, SkippedDirectories = skipped };
+                    }, out int sizeMisses);
+                    if (sizeMisses > 0)
+                    {
+                        _logService.WriteLog(
+                            EnumText.GetErrorText("Log_SizeEstimateIncomplete",
+                                "体积统计未能读全：{0} 个输入路径读取失败，分卷判断可能偏保守（压缩本身不受影响）",
+                                sizeMisses),
+                            LogService.ErrorLevel.Warning);
+                    }
                     break;
 
                 case SevenZipService.VolumeSpecState.ExplicitlyOff:
@@ -1561,9 +1587,10 @@ namespace Auto7z_WPF
             return true;
         }
 
-
         #endregion
+
         #region 压缩产物与校验文件
+
         private void WriteChecksumFiles(string archivePath, string outputDirectory, Action<ProgressInfo> report)
         {
             var produced = _sevenZipService.CollectProducedFiles(archivePath);
@@ -1580,9 +1607,61 @@ namespace Auto7z_WPF
             {
                 using (var hashing = new HashingService())
                 {
-                    hashing.WriteChecksumManifest(produced, checksumPath, algorithm,
+                    HashBatchResult batch = hashing.WriteChecksumManifest(produced, checksumPath, algorithm,
                         p => OutputProgress(report, new ProgressInfo(p, ProgressStage.CalculatingSHA256)),
                         CurrentToken);
+
+                    // 清单可能不完整：某个分卷读不出来时，那份 .sha256 只会列出剩下的几个。
+                    // 用户拿它去校验整套包必然对不上，而原因在界面上完全不可见 ——
+                    // 所以必须写进日志（Warning 级，默认阈值就能看到）并计入任务失败。
+                    if (batch != null && !batch.IsComplete)
+                    {
+                        _logService.WriteLog(
+                            EnumText.GetErrorText("Log_ChecksumIncomplete",
+                                "校验清单不完整：{0} 个文件中有 {1} 个无法读取，清单只包含其余的 {2} 项。缺失：{3}",
+                                batch.TotalFiles, batch.FailedFiles.Count, batch.Lines.Length,
+                                string.Join("; ", batch.FailedFiles)),
+                            LogService.ErrorLevel.Warning);
+
+                        // 一个都没算出来时清单根本没写出去。此时旧清单是否还在，
+                        // 直接决定用户要不要去磁盘上手动处理 —— 两种现场必须分开报。
+                        if (batch.Lines.Length == 0 && batch.StaleManifest != StaleManifestOutcome.NotPresent)
+                        {
+                            bool removed = batch.StaleManifest == StaleManifestOutcome.Removed;
+                            string staleText = EnumText.GetErrorText(
+                                removed ? "Log_ChecksumManifestCleared" : "Log_ChecksumManifestStaleKept",
+                                removed
+                                    ? "本次没有任何文件能算出校验值，未生成新的校验清单；上一轮遗留的同名校验文件已清除：{0}"
+                                    : "本次没有任何文件能算出校验值，且上一轮的校验文件未能确认已清除（可能仍存在），它可能与本次产物无关，请手动检查：{0}",
+                                checksumPath);
+
+                            _logService.WriteLog(staleText, LogService.ErrorLevel.Warning);
+
+                            if (CurrentRunMode == RunMode.Console)
+                            {
+                                WriteConsoleText(staleText, true);
+                            }
+                        }
+
+                        // 清单漏项与压缩时「有文件被跳过」同一性质：产物在，但内容缺了一块。
+                        LastTaskFailed = true;
+                    }
+
+                    // 行都算出来了，但其中某些文件在读取期间被别的进程改动过：
+                    // 那个摘要对应的是「读取过程中的某一瞬间」，未必等于磁盘现状。
+                    // 单独报一条 —— 这与「读不出来」是两回事，混在同一句里会让用户按错误的思路排查。
+                    if (batch != null && batch.ChangedDuringReadFiles.Count > 0)
+                    {
+                        _logService.WriteLog(
+                            EnumText.GetErrorText("Log_ChecksumChangedDuringRead",
+                                "校验清单中 {0} 个文件在计算期间被修改，对应的摘要可能已与磁盘内容不一致：{1}",
+                                batch.ChangedDuringReadFiles.Count,
+                                string.Join("; ", batch.ChangedDuringReadFiles)),
+                            LogService.ErrorLevel.Warning);
+
+                        // 与清单漏项同性质：清单在，但其中部分行已经不可信。
+                        LastTaskFailed = true;
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -1628,6 +1707,9 @@ namespace Auto7z_WPF
             }
         }
 
+        #endregion
+
+        #region 归档命名辅助
 
         private static string BuildArchiveBaseName(PendingFileBatch batch)
         {
@@ -1678,9 +1760,10 @@ namespace Auto7z_WPF
             return Path.GetFileNameWithoutExtension(path);
         }
 
-
         #endregion
+
         #region 解压启动
+
         /// <summary>
         /// 解压「解压模式」这一批输入：分卷整套归并成首卷，逐个归档各解各的。
         /// </summary>
@@ -1699,15 +1782,49 @@ namespace Auto7z_WPF
             var distinct = SevenZipService.CollapseSplitVolumes(batch.Files.Select(f => f.Path));
 
             var targets = new List<string>();
+            var missing = new List<string>();
             foreach (string path in distinct)
             {
                 bool isSplit = SevenZipService.IsSplitArchive(path);
                 if (File.Exists(path) || isSplit) targets.Add(path);
-                else FailWithError(new FileNotFoundException(
-                    EnumText.GetErrorText("Err_ArchiveNotFound", "压缩文件不存在"), path), report);
+                else missing.Add(path);
             }
 
-            if (targets.Count == 0) return;
+            // 缺失的归档要**先全部收集、再一次性报告**，不能在循环里逐个 FailWithError：
+            //
+            // FailWithError 会 SetResult(failed:true) 并报告一次失败，但它并不中断循环。
+            // 早先这里在枚举过程中直接调用它，于是排在缺失项之后的每一个正常归档解压完成时
+            // 都会走 FinishExtract → SetResult(doneText, failed:false)，把红色失败结论覆盖成
+            // 「解压完成」，退出码却仍然是 1（LastTaskFailed 没被重置）——
+            // 界面说成功、脚本收到失败，两边对不上。
+            //
+            // 收成一次报告还顺带解决了「一次多选里丢了 5 个归档就弹 5 次同样错误」的问题。
+            if (missing.Count > 0)
+            {
+                LastTaskFailed = true;
+                string detail = EnumText.GetErrorText("Err_ArchiveNotFound", "压缩文件不存在") + "：" +
+                    string.Join("; ", missing);
+                _logService.WriteLog(EnumText.GetErrorText("Log_ArchivesMissing",
+                    "{0} 个归档不存在，已跳过：{1}", missing.Count, detail), LogService.ErrorLevel.Warning);
+                ReportWarningText(detail);
+            }
+
+            if (targets.Count == 0)
+            {
+                // 一个可解压的目标都没有：此时必须给出明确的失败结论，
+                // 而不是让流程落到「无工作可做」的正常收尾上。
+                if (missing.Count > 0)
+                {
+                    FailWithError(new FileNotFoundException(
+                        EnumText.GetErrorText("Err_ArchiveNotFound", "压缩文件不存在"),
+                        string.Join("; ", missing)), report);
+                }
+                else
+                {
+                    CompleteWithoutWork(report);
+                }
+                return;
+            }
 
             foreach (string archive in targets)
             {
@@ -1804,7 +1921,8 @@ namespace Auto7z_WPF
 
                 if (result.Succeeded)
                 {
-                    FinishExtract(report, destinationDirectory, sourceArchive);
+                    // 退出码 1 = 归档解开了但有条目被跳过，不能报成完全成功。
+                    FinishExtract(report, destinationDirectory, sourceArchive, result.HasWarning);
                     return;
                 }
 
@@ -1875,7 +1993,15 @@ namespace Auto7z_WPF
         }
 
 
-        private void FinishExtract(Action<ProgressInfo> report, string destinationDirectory, string sourceArchive)
+        /// <summary>
+        /// 解压收尾。
+        ///
+        /// <paramref name="partial"/> 为 true 表示 7-Zip 退出码是 1（有警告）：
+        /// 归档确实解开了，但其中有些条目没能处理。这种情况**不能报成完全成功** ——
+        /// 界面必须显示为未完全成功、退出码给 1，与压缩侧对 exit=1 的处理保持一致。
+        /// </summary>
+        private void FinishExtract(Action<ProgressInfo> report, string destinationDirectory,
+            string sourceArchive, bool partial)
         {
             if (SevenZipService.IsCompressedTar(sourceArchive))
             {
@@ -1888,6 +2014,26 @@ namespace Auto7z_WPF
             }
 
             report(new ProgressInfo(100, ProgressStage.Finished));
+
+            // 本次解压自身有警告，**或者**同一批里更早的项已经失败（LastTaskFailed 一旦置位就不再回落）。
+            //
+            // 后一半至关重要：批量解压里前面某个归档失败后，后面成功的那一个若按「干净成功」
+            // 收尾，就会把这个红色结论覆盖成「解压完成」—— 而退出码仍是 1。
+            // 界面说成功、脚本收到失败，同一次运行给出两个互相矛盾的结论。
+            // 压缩侧早就是这样处理的（FinishCompress 里 `bool partial = LastTaskFailed;`），
+            // 解压侧漏了这一句。
+            bool partialResult = partial || LastTaskFailed;
+
+            if (partialResult)
+            {
+                // 归档解开了但有条目被跳过：结果行按未完全成功着色，退出码给 1。
+                // 文案复用压缩侧的「部分文件被跳过」，三语词典里已有这个键。
+                string partialText = EnumText.GetResourceText("Result_PartialWarning", "压缩已完成，但部分文件被跳过，详情见日志。");
+                SetResult(partialText, failed: true);
+                ReportTaskResult(true, partialText, partial: true);
+                return;
+            }
+
             string doneText = EnumText.GetResourceText("Result_ExtractDone", "解压完成");
             SetResult(doneText, failed: false);
             ReportTaskResult(true, doneText);
@@ -1909,15 +2055,43 @@ namespace Auto7z_WPF
             PasswordWindow window = null;
             var completed = new ManualResetEventSlim(false);
 
+            // 弹窗动作在界面线程上执行，而本方法跑在任务线程上并阻塞等待它关闭。
+            // 这里**必须**保证无论弹窗成功与否，completed 最终一定会被置位 ——
+            // 否则任务线程会永久停在下面的 Wait() 上。
+            //
+            // 早先只在外层包了 try/catch，而 BeginInvoke 的委托是在界面线程上执行的：
+            // 委托内抛出的异常不会回到这里的 catch，而是交给 Dispatcher 的未处理异常路径
+            // （表现为整个进程崩溃），同时 completed.Set() 永远不执行。结果是
+            // 「用户看到一个报错，程序随后卡死」或者「进程直接没了，任务线程无从收尾」。
+            // 现在把 try/catch 放进委托内部：失败时置位事件，由下面的返回 null 走取消路径。
+            Action showDialog = () =>
+            {
+                try
+                {
+                    window = CreatePasswordWindow(completed, prompt);
+                }
+                catch (Exception ex)
+                {
+                    _logService.WriteLog(
+                        EnumText.GetErrorText("Log_PasswordDialogFailed", "弹出密码输入框失败：{0}", ex.Message),
+                        LogService.ErrorLevel.Error);
+                }
+                finally
+                {
+                    // 窗口没建起来 = 用户不可能给出密码。窗口不会关闭，所以建失败时由这里补一次置位。
+                    if (window == null) completed.Set();
+                }
+            };
+
             try
             {
                 if (app.Dispatcher.CheckAccess())
                 {
-                    window = CreatePasswordWindow(completed, prompt);
+                    showDialog();
                 }
                 else
                 {
-                    app.Dispatcher.BeginInvoke(new Action(() => window = CreatePasswordWindow(completed, prompt)));
+                    app.Dispatcher.BeginInvoke(showDialog);
                 }
             }
             catch (Exception ex)
@@ -1927,7 +2101,15 @@ namespace Auto7z_WPF
                 return null;
             }
 
-            completed.Wait();
+            try
+            {
+                completed.Wait();
+            }
+            catch (ObjectDisposedException)
+            {
+                // 事件已被释放（极少见：与上面的失败路径竞争），按「没拿到密码」处理。
+                return null;
+            }
 
             string password = window != null && window.Confirmed ? window.Password : null;
             completed.Dispose();

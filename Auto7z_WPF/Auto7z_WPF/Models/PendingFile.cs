@@ -46,6 +46,22 @@ namespace Auto7z_WPF.Models
         public string Name => System.IO.Path.GetFileName(Path);
     }
 
+    /// <summary>
+    /// 一次体积统计的结果：字节数 + 因打不开/枚举中断而整棵跳过的子树数量。
+    ///
+    /// 用结构体而不是 `out` 参数，是因为 C# 7.0 的 lambda 不能声明 `out` 参数
+    /// （`Func&lt;string, out int, long&gt;` 无法写成 lambda），而调用方恰恰需要
+    /// 把一个「带 skipped 明细」的统计函数当参数传进来。
+    /// </summary>
+    public struct SizeProbeResult
+    {
+        /// <summary>统计到的字节数；-1 表示整条路径都读不出来。</summary>
+        public long Bytes;
+
+        /// <summary>读到了、但这几棵子树被跳过；&gt; 0 即「没读全」。</summary>
+        public int SkippedDirectories;
+    }
+
     public sealed class PendingFileBatch
     {
         public PendingFileBatch(IEnumerable<PendingFile> files)
@@ -62,11 +78,55 @@ namespace Auto7z_WPF.Models
         // 这个大小只用于分卷判断，晚一点算没有副作用，所以整批一次补齐即可。
         public void EnsureSizes(Func<string, long> compute)
         {
+            EnsureSizes(compute, out _);
+        }
+
+        /// <summary>
+        /// 补齐体积，并回报有多少条目的体积没读全。
+        ///
+        /// 这个数字只用于留痕，不影响压缩本身：体积算少一点只会让分卷判断偏保守，
+        /// 而读失败不该让一次压缩中断。但「算少了」必须能被看见，
+        /// 否则用户遇到「该分卷却没分」时日志里一个字都没有。
+        /// </summary>
+        public void EnsureSizes(Func<string, long> compute, out int incompleteCount)
+        {
+            incompleteCount = 0;
             if (compute == null) return;
 
             foreach (var file in Files)
             {
-                if (!file.SizeKnown) file.SetSize(compute(file.Path));
+                if (file.SizeKnown) continue;
+
+                long size = compute(file.Path);
+                file.SetSize(size);
+
+                // SetSize 会把负数夹成 0，所以必须在这里判断原始返回值。
+                if (size < 0) incompleteCount++;
+            }
+        }
+
+        /// <summary>
+        /// 带明细的版本：统计函数同时回报该路径下被跳过的子树数量。
+        ///
+        /// 两种不完整都计入 incompleteCount：
+        /// - 整条路径读不出来（<see cref="SizeProbeResult.Bytes"/> 为 -1）；
+        /// - 路径本身统计到了，但其中若干棵子树被跳过（SkippedDirectories &gt; 0）。
+        /// 后者尤其容易漏掉 —— 早先连计数都没有，`GetSizeInBytes` 只回一个数字，
+        /// 调用方分不清「确实只有这么大」与「少读了几棵子树」。
+        /// </summary>
+        public void EnsureSizes(Func<string, SizeProbeResult> compute, out int incompleteCount)
+        {
+            incompleteCount = 0;
+            if (compute == null) return;
+
+            foreach (var file in Files)
+            {
+                if (file.SizeKnown) continue;
+
+                SizeProbeResult probe = compute(file.Path);
+                file.SetSize(probe.Bytes);
+
+                if (probe.Bytes < 0 || probe.SkippedDirectories > 0) incompleteCount++;
             }
         }
     }

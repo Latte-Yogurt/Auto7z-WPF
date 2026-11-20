@@ -109,6 +109,10 @@
     <sys:String x:Key="Log_DialogConfirmed">询问框：用户选择“是”</sys:String>
     <sys:String x:Key="Log_DialogCancelled">询问框：用户选择“否”</sys:String>
     <sys:String x:Key="Log_SHA256Failed">生成 SHA256 失败：{0}</sys:String>
+    <sys:String x:Key="Log_ChecksumIncomplete">校验清单不完整：{0} 个文件中有 {1} 个无法读取，清单只包含其余的 {2} 项。缺失：{3}</sys:String>
+    <sys:String x:Key="Log_ChecksumManifestCleared">本次没有任何文件能算出校验值，未生成新的校验清单；上一轮遗留的同名校验文件已清除：{0}</sys:String>
+    <sys:String x:Key="Log_ChecksumManifestStaleKept">本次没有任何文件能算出校验值，且上一轮的校验文件未能确认已清除（可能仍存在），它可能与本次产物无关，请手动检查：{0}</sys:String>
+    <sys:String x:Key="Log_ChecksumChangedDuringRead">校验清单中 {0} 个文件在计算期间被修改，对应的摘要可能已与磁盘内容不一致：{1}</sys:String>
     <sys:String x:Key="Err_NoCompressInput">没有可压缩的输入</sys:String>
     <sys:String x:Key="Err_UnknownOutputDir">无法确定输出目录</sys:String>
     <sys:String x:Key="Err_OutputDirNotFound">输出目录不存在：{0}</sys:String>
@@ -123,6 +127,8 @@
     <sys:String x:Key="Err_InnerTarFailed">解压压缩 tar 失败：未能解开内部的 tar</sys:String>
     <sys:String x:Key="Err_ComponentMissing">未找到 7-Zip 组件</sys:String>
     <sys:String x:Key="Err_ResourceMissing">资源未找到：{0}</sys:String>
+    <sys:String x:Key="Err_ComponentReplaceFailed">无法替换组件 {0}：旧文件已保留。请关闭正在使用它的程序后重试。</sys:String>
+    <sys:String x:Key="Err_ComponentPathOccupied">组件位置被同名目录占用，无法写入 {0}。请移走该目录后重试。</sys:String>
     <sys:String x:Key="Err_EmptyCommand">命令行为空</sys:String>
     <sys:String x:Key="Err_SevenZipExeMissing">未找到 7z.exe：{0}</sys:String>
 
@@ -130,6 +136,8 @@
     <sys:String x:Key="Log_AutoExtractEach">自动模式：逐个解压 {0} 个压缩包</sys:String>
     <sys:String x:Key="Log_AutoMixed">自动模式：混合输入，压缩包 {0} 个逐个解压，其余 {1} 个压缩</sys:String>
     <sys:String x:Key="Log_InputRejected">{0} 个输入路径不存在或不可访问，已跳过</sys:String>
+    <sys:String x:Key="Log_SizeEstimateIncomplete">体积统计未能读全：{0} 个输入路径读取失败，分卷判断可能偏保守（压缩本身不受影响）</sys:String>
+    <sys:String x:Key="Log_ArchivesMissing">{0} 个归档不存在，已跳过：{1}</sys:String>
     <sys:String x:Key="Log_TaskException">任务执行异常：{0}</sys:String>
     <sys:String x:Key="Log_ChoseMerge">用户选择合并为单个压缩包，共 {0} 个文件</sys:String>
     <sys:String x:Key="Log_ChoseSeparate">用户选择不合并，{0} 个文件分别压缩</sys:String>

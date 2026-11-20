@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Threading;
 using Auto7z_WPF.Models;
 
 namespace Auto7z_WPF.Services
@@ -12,6 +14,9 @@ namespace Auto7z_WPF.Services
     /// </summary>
     public class ConfigService
     {
+        // 临时文件名里的进程内自增序号：同一进程连续写配置时不会再撞到上一次的临时文件。
+        private static long _tempSequence;
+
         public string ConfigPath => AppPaths.ConfigFilePath;
 
         #region 键表
@@ -207,22 +212,42 @@ namespace Auto7z_WPF.Services
         }
 
         // 先写临时文件再原子替换：写到一半崩溃不会留下半截 JSON。
+        //
+        // 临时名必须唯一（PID + 序号）：早先固定用 ConfigPath + ".tmp"，进程内唯一没有问题，
+        // 但它同时踩到两个坑 —— 两个实例（单实例互斥体失效、或将来把保存移到后台线程）
+        // 会互相覆盖对方的临时文件，其中一个 File.Replace 过去的就是另一个的半截内容。
+        // 唯一名让「谁写的是谁的」不再需要靠外部保证。
         private bool SaveDocument(string content)
         {
-            string tempPath = ConfigPath + ".tmp";
+            return WriteConfigAtomically(ConfigPath, content);
+        }
+
+        // 配置写盘的唯一出口：边界校验 + 唯一临时名 + 原子替换。
+        private static bool WriteConfigAtomically(string configPath, string content)
+        {
+            // 边界校验：目标必须落在数据目录之内。眼下恒为真（路径由 AppPaths 推导），
+            // 但这是那道「输出目录变成可配置」之前必须先有的闸门。
+            string allowedRoot = AppPaths.DataDirectory;
+            if (!FileSystemHelper.IsUnderDirectory(configPath, allowedRoot))
+            {
+                return false;
+            }
+
+            string tempPath = configPath + ".tmp." + Process.GetCurrentProcess().Id
+                + "." + Interlocked.Increment(ref _tempSequence);
             try
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath));
+                Directory.CreateDirectory(Path.GetDirectoryName(configPath));
 
-                JsonConfig.WriteFile(tempPath, content);
+                JsonConfig.WriteFile(tempPath, content, allowedRoot);
 
-                if (File.Exists(ConfigPath))
+                if (File.Exists(configPath))
                 {
-                    File.Replace(tempPath, ConfigPath, null, true);
+                    File.Replace(tempPath, configPath, null, true);
                 }
                 else
                 {
-                    File.Move(tempPath, ConfigPath);
+                    File.Move(tempPath, configPath);
                 }
 
                 return true;
@@ -436,29 +461,8 @@ namespace Auto7z_WPF.Services
                 values[key.Name] = DefaultValue(key.Name);
             }
 
-            string tempPath = configPath + ".tmp";
-            try
-            {
-                Directory.CreateDirectory(Path.GetDirectoryName(configPath));
-
-                JsonConfig.WriteFile(tempPath, BuildDocument(values));
-
-                if (File.Exists(configPath))
-                {
-                    File.Replace(tempPath, configPath, null, true);
-                }
-                else
-                {
-                    File.Move(tempPath, configPath);
-                }
-
-                return true;
-            }
-            catch
-            {
-                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* 有意忽略：残留的临时文件删不掉不影响配置写入结果 */ }
-                return false;
-            }
+            // 与 SaveDocument 走同一个出口：临时名唯一（PID + 序号），且先过路径边界校验。
+            return WriteConfigAtomically(configPath, BuildDocument(values));
         }
         #endregion
     }

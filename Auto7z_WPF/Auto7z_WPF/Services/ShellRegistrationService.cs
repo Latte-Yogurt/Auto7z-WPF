@@ -14,6 +14,10 @@ namespace Auto7z_WPF.Services
     {
         #region 常量与导出函数签名
         private const string ShellDllName = "Auto7zShell.dll";
+        // 与 ShellExtension.cpp 里的 kClassId / kHandlerKeyName 必须保持一致：
+        // 这里是「只读检查残留」用的，改了 C++ 侧而忘了改这里，判定就会失真。
+        private const string ShellClsid = "{6C3F8A21-4B7D-4E5A-9A2C-3D710E5B8841}";
+        private const string ShellHandlerName = "Auto7z";
 
         private const string SetMainExePathName = "DllSetMainExePath";
         private const string RemoveMainExePathName = "DllRemoveMainExePath";
@@ -79,12 +83,20 @@ namespace Auto7z_WPF.Services
             return registered;
         }
 
-        /// <summary>撤销右键菜单；找不到 Auto7zShell.dll 时按已注销处理。</summary>
+        /// <summary>撤销右键菜单；dll 缺失时按 HKLM 的实际残留如实判定，不谎报成功。</summary>
         /// <returns>注销是否成功。</returns>
         public static bool UnregisterWithElevation()
         {
             string dllPath = GetShellDllPath();
-            if (dllPath == null) return true;
+            if (dllPath == null)
+            {
+                // 没有 dll 就无法调 DllUnregisterServer 逐项清理注册表。
+                // 但不能因此谎报成功：dll 缺失只说明这次没法清理，不代表注册表里没有旧记录。
+                // 用户删了 dll、或从不含 dll 的构建里执行 -ur 时，注册项会继续指向一个
+                // 不存在的文件，资源管理器每次加载右键菜单都要尝试加载它并失败。
+                // 所以按 HKLM 的实际残留如实上报。
+                return !HasRegistryResidue();
+            }
 
             if (IsAdministrator())
             {
@@ -128,6 +140,9 @@ namespace Auto7z_WPF.Services
             }
         }
 
+        #endregion
+
+        #region 提权执行
 
         private static bool RunElevated(string dllPath, bool register)
         {
@@ -137,7 +152,11 @@ namespace Auto7z_WPF.Services
                 string tool = Path.Combine(system, RegSvr32Name);
                 if (!File.Exists(tool)) return false;
 
-                string options = register ? "/s " : "/u /s ";
+                // 不加 /s：静默模式下 regsvr32 只弹一个不落痕迹的结果框、且不回传
+                // DllUnregisterServer 的真实返回值 —— 实测即使一项注册表都没删掉，进程仍以 0 退出。
+                // 于是「注销失败」被当成「已注销」，而注册表实际上原封不动。
+                // 去掉 /s 后 ExitCode 才反映真实结果（失败时非 0），成功与否由调用方据此判断。
+                string options = register ? string.Empty : "/u ";
                 ProcessStartInfo startInfo = new ProcessStartInfo(tool, options + "\"" + dllPath + "\"")
                 {
                     UseShellExecute = true,
@@ -183,7 +202,9 @@ namespace Auto7z_WPF.Services
         }
 
         #endregion
+
         #region 注册动作分解
+
         private static bool RegisterNow(string dllPath)
         {
             // 先注销一遍：旧版本可能残留着指向别处路径的 CLSID 与 Approved 项，
@@ -292,6 +313,7 @@ namespace Auto7z_WPF.Services
         }
 
         #endregion
+
         #region 结果与提示输出
         /// <summary>打印注册或注销的结果，资源缺失时退回内置中文。</summary>
         /// <param name="success">操作是否成功。</param>
@@ -388,6 +410,43 @@ namespace Auto7z_WPF.Services
             {
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 检查 HKLM 里是否还残留 Auto7z 的右键菜单注册项。
+        ///
+        /// 只读检测，不需要管理员权限。用于「dll 缺失、无法自行注销」时如实判断结果，
+        /// 避免把「没清理掉」报成「已注销」。
+        /// </summary>
+        private static bool HasRegistryResidue()
+        {
+            string[] keys =
+            {
+                @"Software\Classes\CLSID\" + ShellClsid,
+                @"Software\Classes\*\shellex\ContextMenuHandlers\" + ShellHandlerName,
+                @"Software\Classes\Directory\shellex\ContextMenuHandlers\" + ShellHandlerName,
+                @"Software\Classes\Folder\shellex\ContextMenuHandlers\" + ShellHandlerName
+            };
+
+            foreach (string key in keys)
+            {
+                try
+                {
+                    using (var baseKey = Microsoft.Win32.RegistryKey.OpenBaseKey(
+                        Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64))
+                    using (var sub = baseKey.OpenSubKey(key))
+                    {
+                        if (sub != null) return true;
+                    }
+                }
+                catch
+                {
+                    // 读取失败当作「无法确认」→ 保守认为有残留，宁可让用户手动确认。
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static string GetShellDllPath()

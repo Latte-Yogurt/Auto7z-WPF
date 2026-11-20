@@ -37,6 +37,9 @@ using System.Windows;
 //
 // 2.3.0 → 2.3.1：修复「强制结束进程留下分卷残片」（崩溃残留清理），
 // 移除无意义的文件夹空白处右键菜单与废弃键清理逻辑，属于功能变化。
-[assembly: AssemblyVersion("2.4.0.0")]
-[assembly: AssemblyFileVersion("2.4.0.0")]
+//
+// 2.3.1 → 2.4.0 / 2.4.0 → 2.5.0：这两版的改动都是「把静默错误变成可见错误」这条主线下的
+// 功能性修复，按惯例各进一次次版本号。2.5.0 的内容见 Auto7z_ReleaseFix.md。
+[assembly: AssemblyVersion("2.5.0.0")]
+[assembly: AssemblyFileVersion("2.5.0.0")]
 [assembly: Guid("F5D3B688-37B2-4259-B9CE-C8B4B0E2E8CD")]

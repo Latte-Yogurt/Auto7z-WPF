@@ -109,6 +109,10 @@
     <sys:String x:Key="Log_DialogConfirmed">詢問框：使用者選擇「是」</sys:String>
     <sys:String x:Key="Log_DialogCancelled">詢問框：使用者選擇「否」</sys:String>
     <sys:String x:Key="Log_SHA256Failed">產生 SHA256 失敗：{0}</sys:String>
+    <sys:String x:Key="Log_ChecksumIncomplete">校驗清單不完整：{0} 個檔案中有 {1} 個無法讀取，清單只包含其餘的 {2} 項。缺少：{3}</sys:String>
+    <sys:String x:Key="Log_ChecksumManifestCleared">本次沒有任何檔案能算出校驗值，未產生新的校驗清單；上一輪留存的同名校驗檔案已清除：{0}</sys:String>
+    <sys:String x:Key="Log_ChecksumManifestStaleKept">本次沒有任何檔案能算出校驗值，且上一輪的校驗檔案未能確認已清除（可能仍存在），它可能與本次產物無關，請手動檢查：{0}</sys:String>
+    <sys:String x:Key="Log_ChecksumChangedDuringRead">校驗清單中 {0} 個檔案在計算期間被修改，對應的摘要可能已與磁碟內容不一致：{1}</sys:String>
     <sys:String x:Key="Err_NoCompressInput">沒有可壓縮的輸入</sys:String>
     <sys:String x:Key="Err_UnknownOutputDir">無法確定輸出目錄</sys:String>
     <sys:String x:Key="Err_OutputDirNotFound">輸出目錄不存在：{0}</sys:String>
@@ -123,6 +127,8 @@
     <sys:String x:Key="Err_InnerTarFailed">解壓壓縮 tar 失敗：未能解開內部的 tar</sys:String>
     <sys:String x:Key="Err_ComponentMissing">找不到 7-Zip 元件</sys:String>
     <sys:String x:Key="Err_ResourceMissing">找不到資源：{0}</sys:String>
+    <sys:String x:Key="Err_ComponentReplaceFailed">無法取代元件 {0}：舊檔案已保留。請關閉正在使用它的程式後重試。</sys:String>
+    <sys:String x:Key="Err_ComponentPathOccupied">元件位置被同名目錄佔用，無法寫入 {0}。請移走該目錄後重試。</sys:String>
     <sys:String x:Key="Err_EmptyCommand">命令行為空</sys:String>
     <sys:String x:Key="Err_SevenZipExeMissing">找不到 7z.exe：{0}</sys:String>
 
@@ -130,6 +136,8 @@
     <sys:String x:Key="Log_AutoExtractEach">自動模式：逐個解壓 {0} 個壓縮檔</sys:String>
     <sys:String x:Key="Log_AutoMixed">自動模式：混合輸入，壓縮檔 {0} 個逐個解壓，其餘 {1} 個壓縮</sys:String>
     <sys:String x:Key="Log_InputRejected">{0} 個輸入路徑不存在或無法存取，已略過</sys:String>
+    <sys:String x:Key="Log_SizeEstimateIncomplete">體積統計未能讀全：{0} 個輸入路徑讀取失敗，分卷判斷可能偏保守（壓縮本身不受影響）</sys:String>
+    <sys:String x:Key="Log_ArchivesMissing">{0} 個封存檔不存在，已略過：{1}</sys:String>
     <sys:String x:Key="Log_TaskException">工作執行異常：{0}</sys:String>
     <sys:String x:Key="Log_ChoseMerge">使用者選擇合併為單個壓縮檔，共 {0} 個檔案</sys:String>
     <sys:String x:Key="Log_ChoseSeparate">使用者選擇不合併，{0} 個檔案分別壓縮</sys:String>

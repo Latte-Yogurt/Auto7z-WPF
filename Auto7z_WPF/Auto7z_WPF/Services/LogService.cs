@@ -24,6 +24,8 @@ namespace Auto7z_WPF.Services
         private const int IssueLogRetentionDays = 7;
 
         // 路径按当天日期生成后缓存；进程跨天运行仍写同一文件，避免一次会话的日志被拆成两份。
+        // 两个字段只在这把锁内改写（ResetLogFiles 与两个 getter），getter 的返回值也在锁内取，
+        // 否则会出现「读到 null」的窗口，见 LogFilePath 的注释。
         private static string _normalLogFile;
 
         private static string _issueLogFile;
@@ -47,18 +49,24 @@ namespace Auto7z_WPF.Services
         {
             get
             {
-                if (_normalLogFile == null)
-                {
-                    lock (_writeLock)
-                    {
-                        if (_normalLogFile == null)
-                        {
-                            _normalLogFile = BuildLogFilePath("Auto7z", DateTime.Now);
-                        }
-                    }
-                }
+                // 锁外快路径先取一次本地副本：直接读字段再在锁内二次判断，
+                // 最后的 return 必须也在锁内返回 —— 否则「刚重建好、还没 return」
+                // 这段时间里被 ResetLogFiles() 置空，getter 就会返回 null。
+                // 那会让调用方把 null 当路径去开文件流，抛异常后被日志层的 catch 吞掉，
+                // 表现为「切换便携模式的那一瞬间有几条日志凭空消失」，且毫无痕迹。
+                string cached = _normalLogFile;
+                if (cached != null) return cached;
 
-                return _normalLogFile;
+                lock (_writeLock)
+                {
+                    if (_normalLogFile == null)
+                    {
+                        _normalLogFile = BuildLogFilePath("Auto7z", DateTime.Now);
+                    }
+
+                    // 在锁内返回，保证拿到的值此刻不为 null。
+                    return _normalLogFile;
+                }
             }
         }
 
@@ -66,18 +74,18 @@ namespace Auto7z_WPF.Services
         {
             get
             {
-                if (_issueLogFile == null)
-                {
-                    lock (_writeLock)
-                    {
-                        if (_issueLogFile == null)
-                        {
-                            _issueLogFile = BuildLogFilePath("Auto7z_Issue", DateTime.Now);
-                        }
-                    }
-                }
+                string cached = _issueLogFile;
+                if (cached != null) return cached;
 
-                return _issueLogFile;
+                lock (_writeLock)
+                {
+                    if (_issueLogFile == null)
+                    {
+                        _issueLogFile = BuildLogFilePath("Auto7z_Issue", DateTime.Now);
+                    }
+
+                    return _issueLogFile;
+                }
             }
         }
 
@@ -149,6 +157,14 @@ namespace Auto7z_WPF.Services
                     }
 
                     if (logDate.Date >= threshold) continue;
+
+                    // 边界校验：只删日志目录之内的文件。
+                    //
+                    // GetFiles 的结果本来就来自 LogDirectory，看起来不需要再校验一遍 ——
+                    // 但它挡住了两类真实风险：数据目录被重定向到带父级跳转的路径时
+                    // （AUTO7Z_DATA_ROOT 或将来可配置的目录），以及日志目录本身是指向别处的重解析点。
+                    // 删除是不可逆操作，宁可在这一层多问一句。
+                    if (!FileSystemHelper.IsUnderDirectory(file, LogDirectory)) continue;
 
                     try
                     {
