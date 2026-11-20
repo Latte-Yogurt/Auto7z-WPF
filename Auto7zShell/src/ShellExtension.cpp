@@ -1043,15 +1043,29 @@ bool DeleteKeyTree(HKEY root, const wchar_t *path)
     {   // 子键名最长 255 字符，缓冲留 256 并每轮复位长度：RegEnumKeyEx 失败时会
         // 把需要的长度写回 subNameChars，不复位会让下一轮带着错误长度继续枚举。
         wchar_t subName[256];
-        DWORD subNameChars = 256;
         while (true)
         {
-            subNameChars = 256;
+            DWORD subNameChars = 256;
             LONG enumerated = RegEnumKeyExW(key, 0, subName, &subNameChars, nullptr, nullptr, nullptr, nullptr);
-            // ERROR_MORE_DATA 表示名字比缓冲长，这种子键本产品不会创建，跳过即可；
-            // 只把 ERROR_SUCCESS 当成「还有一个子键」。
-            if (enumerated != ERROR_SUCCESS) break;
-            DeleteKeyTree(root, (std::wstring(path) + L"\\" + subName).c_str());
+            if (enumerated == ERROR_NO_MORE_ITEMS) break;
+
+            // ERROR_MORE_DATA 表示名字比缓冲长。本产品不会创建这种子键，但也不能就此
+            // 当成「枚举结束」：那样后面的子键全被漏掉，父键必然删不掉，
+            // 注销就退化成一次没人知道的半清理。按失败处理，把问题暴露出去。
+            if (enumerated != ERROR_SUCCESS)
+            {
+                RegCloseKey(key);
+                return false;
+            }
+
+            // 递归失败必须立刻停下：删不掉的子键仍然是索引 0 的那个子键，
+            // 继续下一轮会取到同一个名字、再递归一次 —— 在权限不足或键被占用时
+            // 这就是一个不会结束的循环，最终只能靠调用方的超时把整个进程杀掉。
+            if (!DeleteKeyTree(root, (std::wstring(path) + L"\\" + subName).c_str()))
+            {
+                RegCloseKey(key);
+                return false;
+            }
         }
     }
 
@@ -1060,14 +1074,48 @@ bool DeleteKeyTree(HKEY root, const wchar_t *path)
     return deleteResult == ERROR_SUCCESS || deleteResult == ERROR_FILE_NOT_FOUND;
 }
 
+bool DeleteRegValueWithoutWriteAccess(HKEY root, const wchar_t *subKeyPath, const wchar_t *valueName);
+
 // 只删值不删键：值可能被别的组件共用，键本身留给后续注册继续使用。
-void DeleteRegValue(HKEY root, const wchar_t *subKeyPath, const wchar_t *valueName)
+// 返回值要能区分「本来就没有」与「有但删不掉」：前者是正常的注销结果，后者必须上报，
+// 否则会留下一个 Approved 项指向已不存在的组件。
+//
+// 这里**不能**只凭「打不开写权限」就判失败：Approved 键的写权限只给管理员，
+// 普通账户注销时连打开都会拿到 ERROR_ACCESS_DENIED，而那个值其实压根不存在 ——
+// 把这种情况报成失败，会让本来干净的系统被谎报为「注销不干净」。
+bool DeleteRegValue(HKEY root, const wchar_t *subKeyPath, const wchar_t *valueName)
 {
     HKEY key = nullptr;
-    if (RegOpenKeyExW(root, subKeyPath, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS) return;
+    LONG openResult = RegOpenKeyExW(root, subKeyPath, 0, KEY_SET_VALUE, &key);
 
-    RegDeleteValueW(key, valueName);
+    // 键不存在，值自然也不存在，按成功处理。
+    if (openResult == ERROR_FILE_NOT_FOUND) return true;
+
+    if (openResult == ERROR_ACCESS_DENIED) return DeleteRegValueWithoutWriteAccess(root, subKeyPath, valueName);
+
+    if (openResult != ERROR_SUCCESS) return false;
+
+    LONG deleteResult = RegDeleteValueW(key, valueName);
     RegCloseKey(key);
+
+    return deleteResult == ERROR_SUCCESS || deleteResult == ERROR_FILE_NOT_FOUND;
+}
+
+// 没有写权限时的退路：只确认「这个值到底在不在」。
+// 键本身在 HKLM 下，读权限是敞开的；读得到就足以判断，读不到就如实报失败。
+bool DeleteRegValueWithoutWriteAccess(HKEY root, const wchar_t *subKeyPath, const wchar_t *valueName)
+{
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(root, subKeyPath, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS) return false;
+
+    LONG queryResult = RegQueryValueExW(key, valueName, nullptr, nullptr, nullptr, nullptr);
+    RegCloseKey(key);
+
+    // 读得到「没有这个值」：本来就不存在，无需删除，这算成功。
+    if (queryResult == ERROR_FILE_NOT_FOUND) return true;
+
+    // 值确实在，却没有写权限删它 —— 这才是真正的失败。
+    return false;
 }
 
 // 挂载点是产品的注册契约：文件、文件夹、Folder 三类，缺一个都算失败。
@@ -1199,22 +1247,34 @@ extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
 
 // 注销的顺序与注册相反：先摘挂载点再删 CLSID，避免中途失败留下指向不存在组件的菜单。
 // 返回值如实反映处理结果，不再恒为 S_OK —— 删不掉却报成功，调用方会以为系统已经干净。
+//
+// 这里**每一**步的返回值都参与最终判定。早先只检查了挂载点：挂载点删干净、
+// 但 CLSID 或 Approved 项删不掉时依旧返回 S_OK，调用方拿到 0 就报告「已注销」，
+// 而注册表里还留着指向本组件的残留 —— 这正是本轮要消灭的「虚假成功」。
 extern "C" HRESULT STDAPICALLTYPE DllUnregisterServer()
 {
+    // 三项都跑完再下结论，不短路：注销是「尽量清干净」的操作，
+    // 因为前一项失败就跳过后面几项，会让残留比实际需要的更多。
     bool mountsCleared = RegisterHandlers(false);
 
     wchar_t clsid[64];
     FormatClassId(clsid, 64);
 
     std::wstring classPath = std::wstring(kClassesPrefix) + L"CLSID\\" + clsid;
-    DeleteKeyTree(kClassesRoot, (classPath + L"\\InprocServer32").c_str());
-    DeleteKeyTree(kClassesRoot, classPath.c_str());
+    bool inprocCleared = DeleteKeyTree(kClassesRoot, (classPath + L"\\InprocServer32").c_str());
+    bool classCleared = DeleteKeyTree(kClassesRoot, classPath.c_str());
+    bool approvedCleared = DeleteRegValue(HKEY_LOCAL_MACHINE,
+                                          L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
+                                          clsid);
 
-    DeleteRegValue(HKEY_LOCAL_MACHINE,
-                   L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Approved",
-                   clsid);
+    if (!mountsCleared || !inprocCleared || !classCleared || !approvedCleared)
+    {
+        // 留下可追踪的记录：调用方只能看到 SELFREG_E_CLASS，分不清是哪一项卡住的。
+        OutputDebugStringW(L"Auto7z: 注销未完全成功（挂载点/CLSID/InprocServer32/Approved 至少一项清理失败）\r\n");
+        return SELFREG_E_CLASS;
+    }
 
-    return mountsCleared ? S_OK : SELFREG_E_CLASS;
+    return S_OK;
 }
 
 // 主程序把自身路径写进登记项，外壳扩展启动子进程时优先用它，便携拷贝也能跟着走。
