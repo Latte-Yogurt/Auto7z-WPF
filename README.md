@@ -14,7 +14,7 @@
 
 ### What it is
 
-A Windows GUI archiver built on 7-Zip ZS (7-Zip 22.01 ZS v1.5.5 R3, x64).
+A Windows GUI archiver built on 7-Zip ZS (7-Zip 26.05 ZS v1.5.7 R1, x64).
 
 Drag files onto the window, or right-click them in Explorer and pick **Compress with Auto7z** / **Extract with Auto7z**. It can also be driven from the command line.
 
@@ -184,7 +184,7 @@ can tell success from failure:
 | Code | Meaning |
 |---|---|
 | 0 | everything succeeded (or the usage was printed for `-h`) |
-| 1 | the task ran but failed, was cancelled, **or finished with some files skipped** (a missing path inside a mixed batch lands here) |
+| 1 | the task ran but failed, was cancelled, **or finished with some files skipped** (a missing path inside a mixed batch, a warning-level extraction, or a checksum entry that may be stale all land here) |
 | 2 | nothing ran: missing/unknown arguments, or none of the input paths exist |
 
 Relative input paths are accepted (`Auto7z.exe -z file.txt` inside the file's
@@ -220,13 +220,22 @@ No NuGet packages. The only bundled dependency is the 7-Zip ZS build.
 - Source: 7-Zip ZS by mcmilk, a fork of 7-Zip with Zstandard support.
 - License: 7-Zip is LGPL, the ZS fork adds Zstandard bindings under the same terms. Check the license of the exact build you ship.
 
+### Design decisions (not outstanding defects)
+
+These are deliberate. Do not re-list them as follow-up items during review:
+
+- **The password travels on the command line in plaintext.** `7z.exe` receives it as `-p"…"`, so a co-located process could read it from the process list. Moving it to stdin would mean the password can no longer carry characters the console cannot deliver — in particular **a Chinese password could not be entered at all**. Correctness for the user's own password beats hiding it from a process on the same machine, so plaintext-on-the-command-line *is* the design. The password still never reaches the log: only error text is logged.
+- **Directory-size estimation still skips subtrees it cannot read.** The value only decides whether to split; estimating low makes that decision conservative, and a read failure should not abort a compression that would otherwise succeed. This is deliberately *not* the same class as a short checksum manifest, where one missing entry is actively misleading. 2.5.0 only added the count of skipped subtrees to the log; the policy is unchanged.
+- **A file that changes mid-hash still gets its digest written.** The response is a report (`Log_ChecksumChangedDuringRead`), not a failure and not a dropped line — a possibly-stale manifest can still verify everything else.
+- **The write-path boundary check fails closed.** `FileSystemHelper.IsUnderDirectory` returns `false` for any path it cannot normalise (wildcards, over-long paths, a missing drive). A boundary check that opens up when it is confused is not a boundary check.
+
 ---
 
 ## 中文
 
 ### 这是什么
 
-一个基于 7-Zip ZS（7-Zip 22.01 ZS v1.5.5 R3，x64）的 Windows 图形化压缩工具。
+一个基于 7-Zip ZS（7-Zip 26.05 ZS v1.5.7 R1，x64）的 Windows 图形化压缩工具。
 
 把文件拖进窗口，或者在资源管理器里右键选「用 Auto7z 压缩」「用 Auto7z 解压」。也可以从命令行调用。
 
@@ -382,7 +391,7 @@ Auto7z.exe -ur
 | 码 | 含义 |
 |---|---|
 | 0 | 全部成功（`-h` 打印用法也算成功） |
-| 1 | 任务跑了但失败、被取消，**或有文件被跳过**（混合批里缺失的路径属于这一档） |
+| 1 | 任务跑了但失败、被取消，**或有文件被跳过**（混合批里缺失的路径、警告级解压、某条校验摘要可能已过时，都属于这一档） |
 | 2 | 根本没跑：参数缺失/无法识别，或输入路径一个都不存在 |
 
 相对路径可用（在文件所在目录里 `Auto7z.exe -z file.txt` 能正常压缩）——
@@ -417,3 +426,20 @@ Auto7z.exe -ur
 - 分发：`7z.dll` 与 `7z.exe` 作为嵌入资源打包，运行时释放到数据目录。
 - 来源：mcmilk 的 7-Zip ZS，给 7-Zip 加了 Zstandard 支持的分支。
 - 许可：7-Zip 是 LGPL，ZS 分支加的 Zstandard 绑定同属该许可。请自行确认并遵守对应许可。
+
+### 设计取舍（不是待修缺陷）
+
+这几条是**有意如此**，复核时请不要把它们重新列成「顺延事项」：
+
+- **密码以明文走命令行。** `7z.exe` 收到的是 `-p"…"`，同机进程理论上能从进程列表读到。
+  改用 stdin 会让密码无法承载控制台送不进去的字符，其中**中文密码将完全无法输入**。
+  用户自己密码的正确性优先于「挡住在同一台机器上看进程列表的人」，所以明文上命令行就是设计本身。
+  密码不进日志这一点不变：日志只记错误文本。
+- **体积统计读不到的子树照样跳过。** 这个值只用于判断要不要分卷，算少一点只让判断偏保守，
+  而读失败不该让一次本来能成功的压缩中断。它**不是**校验清单那种「少一项就在误导」的性质。
+  2.5.0 的改动只是把「跳过了几棵子树」记进日志，策略本身不变。
+- **算到一半被改动的文件，摘要照样写出去。** 处理方式是上报（`Log_ChecksumChangedDuringRead`），
+  不是失败或丢弃那一行 —— 一份可能过时的清单仍能用来校验其余部分。
+- **写盘边界校验失败即拒绝。** `FileSystemHelper.IsUnderDirectory` 对任何无法规范化的路径返回
+  `false`（通配符、超长路径、盘符不存在）。一个「搞不清楚就放行」的边界校验等于没有边界校验。
+
