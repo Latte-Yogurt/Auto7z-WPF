@@ -73,7 +73,7 @@ of either one hands its file list to the instance that is already running.
 ### Layout
 
 ```
-Auto7z Project/
+Auto7z-WPF/
 ├── Auto7z_WPF/              the WPF application
 │   └── Auto7z_WPF/
 │       ├── Auto7z_WPF.csproj      console build → Auto7z.exe (command line)
@@ -218,13 +218,29 @@ No NuGet packages. The only bundled dependency is the 7-Zip ZS build.
 - Purpose: the actual compression and decompression.
 - Distribution: `7z.dll` and `7z.exe` are embedded as resources and extracted to the data directory at runtime.
 - Source: 7-Zip ZS by mcmilk, a fork of 7-Zip with Zstandard support.
-- License: 7-Zip is LGPL, the ZS fork adds Zstandard bindings under the same terms. Check the license of the exact build you ship.
+- Version: **26.05 ZS v1.5.7 R1 (x64)** — read from the binaries' own version resource, not from prose.
+- License: 7-Zip itself is LGPL-2.1+, some files are BSD 2/3-clause or public domain, and the RAR decoder carries the unRAR restriction.
+
+There is no `THIRD-PARTY/` directory in this repository; the licensing position is
+summarised below. A distribution must ship:
+
+| File | Content |
+| --- | --- |
+| `LICENSE` | Auto7z's own GPL-3.0 text |
+| 7-Zip ZS license texts (`COPYING`, `DOC/lzma-sdk.txt`, `DOC/unRARLicense.txt`) | Per-file license breakdown of 7-Zip ZS |
+| LGPL-2.1 text | The full LGPL-2.1 text |
+
+7-Zip ZS is invoked as a child process using **unmodified upstream binaries** (it is
+not linked into this program), so LGPL-2.1 section 6 applies: corresponding source
+comes from <https://github.com/mcmilk/7-Zip-zstd> (tag `v26.05-v1.5.7-R1`). See
+section 4 of that README for how to verify the tag and what the obligations are.
 
 ### Design decisions (not outstanding defects)
 
 These are deliberate. Do not re-list them as follow-up items during review:
 
 - **The password travels on the command line in plaintext.** `7z.exe` receives it as `-p"…"`, so a co-located process could read it from the process list. Moving it to stdin would mean the password can no longer carry characters the console cannot deliver — in particular **a Chinese password could not be entered at all**. Correctness for the user's own password beats hiding it from a process on the same machine, so plaintext-on-the-command-line *is* the design. The password still never reaches the log: only error text is logged.
+- **The password is stored in plaintext in `Auto7z.json` too, and that is the product decision.** Auto7z is a local archiving tool, not a credential manager and not a network service: it does not hold secrets, transmit them, or claim to protect them. The password here is a parameter handed to 7-Zip so the *archive* can be encrypted; guarding that parameter with DPAPI would bolt on a layer of complexity this tool's purpose does not call for. The confidentiality of the archive is 7-Zip's job, and the password is already visible in the on-screen `TextBox` (deliberately). **If this is ever distributed for shared or enterprise machines, that judgement changes** — DPAPI with a migration path would be the right call then, not a hand-rolled cipher.
 - **Directory-size estimation still skips subtrees it cannot read.** The value only decides whether to split; estimating low makes that decision conservative, and a read failure should not abort a compression that would otherwise succeed. This is deliberately *not* the same class as a short checksum manifest, where one missing entry is actively misleading. 2.5.0 only added the count of skipped subtrees to the log; the policy is unchanged.
 - **A file that changes mid-hash still gets its digest written.** The response is a report (`Log_ChecksumChangedDuringRead`), not a failure and not a dropped line — a possibly-stale manifest can still verify everything else.
 - **The write-path boundary check fails closed.** `FileSystemHelper.IsUnderDirectory` returns `false` for any path it cannot normalise (wildcards, over-long paths, a missing drive). A boundary check that opens up when it is confused is not a boundary check.
@@ -289,7 +305,7 @@ These are deliberate. Do not re-list them as follow-up items during review:
 ### 目录结构
 
 ```
-Auto7z Project/
+Auto7z-WPF/
 ├── Auto7z_WPF/              WPF 主程序
 │   └── Auto7z_WPF/
 │       ├── Auto7z_WPF.csproj      Console 构建 → Auto7z.exe（命令行）
@@ -425,7 +441,20 @@ Auto7z.exe -ur
 - 用途：实际的压缩与解压。
 - 分发：`7z.dll` 与 `7z.exe` 作为嵌入资源打包，运行时释放到数据目录。
 - 来源：mcmilk 的 7-Zip ZS，给 7-Zip 加了 Zstandard 支持的分支。
-- 许可：7-Zip 是 LGPL，ZS 分支加的 Zstandard 绑定同属该许可。请自行确认并遵守对应许可。
+- 版本：**26.05 ZS v1.5.7 R1 (x64)** —— 取自随包二进制自己的版本资源，不是文档转述。
+- 许可：7-Zip 主体为 LGPL-2.1+，部分文件为 BSD 2/3-clause 或 public domain，RAR 解码带 unRAR restriction。
+
+仓库里没有 `THIRD-PARTY/` 目录，许可与合规的完整说明见下面几行。发行包须随附：
+
+| 文件 | 内容 |
+| --- | --- |
+| `LICENSE` | Auto7z 自身的 GPL-3.0 全文 |
+| 7-Zip ZS 的许可原文（`COPYING`、`DOC/lzma-sdk.txt`、`DOC/unRARLicense.txt`） | 7-Zip ZS 各文件的许可分布原文 |
+| LGPL-2.1 全文 | LGPL-2.1 全文 |
+
+7-Zip ZS 以**未修改的上游二进制**通过子进程调用（不是链接进本程序），因此按
+LGPL-2.1 第 6 条处理：对应源码取自 <https://github.com/mcmilk/7-Zip-zstd>
+（tag `v26.05-v1.5.7-R1`）。具体核对方式与合规义务见该 README 第 4 节。
 
 ### 设计取舍（不是待修缺陷）
 
@@ -435,6 +464,13 @@ Auto7z.exe -ur
   改用 stdin 会让密码无法承载控制台送不进去的字符，其中**中文密码将完全无法输入**。
   用户自己密码的正确性优先于「挡住在同一台机器上看进程列表的人」，所以明文上命令行就是设计本身。
   密码不进日志这一点不变：日志只记错误文本。
+- **密码在 `Auto7z.json` 里同样是明文，这是产品的明确决定。** Auto7z 是本机压缩工具，
+  不是凭据管理器，也不是联网服务：它不保管机密、不传输机密，也不宣称要保护机密。
+  这里的密码只是「交给 7-Zip 的一个参数」，目的是让**归档**被加密；用 DPAPI 去保护这个
+  参数，等于给一个不需要这层复杂度的工具硬加一层。归档的机密性由 7-Zip 的加密负责，
+  而界面上那个密码框本来就是明文 TextBox（为支持中文输入）。
+  **如果将来要面向多人共用或企业环境分发，这个判断需要重估**：那时应当用 DPAPI
+  并配套迁移路径，而不是自己造一个加密。
 - **体积统计读不到的子树照样跳过。** 这个值只用于判断要不要分卷，算少一点只让判断偏保守，
   而读失败不该让一次本来能成功的压缩中断。它**不是**校验清单那种「少一项就在误导」的性质。
   2.5.0 的改动只是把「跳过了几棵子树」记进日志，策略本身不变。
