@@ -5,13 +5,14 @@ using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.Text;
+using Auto7z_WPF.Models;
 
 namespace Auto7z_WPF.Services
 {
     /// <summary>
     /// 命令行解析入口，并负责把外壳扩展经共享内存传来的路径读出来。
     /// </summary>
-    public class ShellCommandService
+    public static class ShellCommandService
     {
         #region 开关定义
         /// <summary>共享内存参数的起始标记，只可能由外壳扩展产生，出现即代表本次是右键菜单调用。</summary>
@@ -58,9 +59,73 @@ namespace Auto7z_WPF.Services
             return false;
         }
 
-        private ShellCommandService()
+        /// <summary>
+        /// 把模式开关翻译成「执行哪个任务」。未知开关一律按自动分派处理。
+        ///
+        /// 为什么这个映射放在本类：本类持有开关的定义（<c>SwitchAuto</c> 等常量与白名单），
+        /// 「某个开关该干什么」属于同一份知识。早先 ConsoleTaskRunner 与
+        /// ShellMenuTaskRunner 各写了一遍同样的 switch，两份的分支与默认值必须永远一致 ——
+        /// 将来加一个模式开关（比如 -t 指定 tar），漏改一处就出现
+        /// 「命令行能用、右键菜单不认」这种只在特定入口复现的怪问题。
+        ///
+        /// 参数只有一个：是否带进度回调。命令行路径传 null（进度直接写控制台），
+        /// 外壳菜单路径传真实的回调（进度要刷 ProcessWindow）。
+        /// </summary>
+        /// <param name="viewModel">要驱动任务的 ViewModel。</param>
+        /// <param name="mode">模式开关，可能为 null。</param>
+        /// <param name="report">进度回调，可为 null。</param>
+        public static void RunByMode(Auto7zViewModel viewModel, string mode, System.Action<ProgressInfo> report)
         {
+            if (viewModel == null) return;
+
+            if (string.Equals(mode, SwitchUnZip, StringComparison.OrdinalIgnoreCase))
+            {
+                viewModel.RunExtractAndWait(report);
+                return;
+            }
+
+            if (string.Equals(mode, SwitchZip, StringComparison.OrdinalIgnoreCase))
+            {
+                viewModel.RunCompressAndWait(report);
+                return;
+            }
+
+            // SwitchAuto 与 null（不带开关）都走自动分派，
+            // 与用法说明里的默认行为一致。
+            viewModel.RunAutoDispatchAndWait(report);
         }
+
+        /// <summary>
+        /// 把模式开关翻译成 <see cref="OperationMode"/>。
+        ///
+        /// 早先有两份几乎相同但**兜底方向相反**的实现：
+        ///   App.ParseMode         未知 → Zip    （默认压缩）
+        ///   MainWindow.ParseHanded 未知 → Auto   （默认自动）
+        /// 两条路径的 mode 都只来自白名单，所以眼下不可达；但「同一个问题、
+        /// 两个互相矛盾的默认值」是典型的埋雷 —— 将来某个入口放宽了校验，
+        /// 同一个非法开关就会在命令行压成包、在拖拽入口却能自动识别。
+        ///
+        /// 现在统一：未知 / null 一律按 <see cref="OperationMode.Auto"/> 处理，
+        /// 与「不带开关时的默认行为」保持一致。
+        /// </summary>
+        /// <param name="mode">模式开关，可能为 null。</param>
+        /// <returns>对应的操作模式。</returns>
+        public static OperationMode ParseOperationMode(string mode)
+        {
+            if (string.Equals(mode, SwitchZip, StringComparison.OrdinalIgnoreCase))
+            {
+                return OperationMode.Zip;
+            }
+
+            if (string.Equals(mode, SwitchUnZip, StringComparison.OrdinalIgnoreCase))
+            {
+                return OperationMode.UnZip;
+            }
+
+            // SwitchAuto、null、以及任何无法识别的值：都按自动模式。
+            return OperationMode.Auto;
+        }
+
         #endregion
 
         #region 参数解析
@@ -68,12 +133,29 @@ namespace Auto7z_WPF.Services
             out bool register, out bool unregister, out bool help, out bool fromShell)
         {
             Parse(args, out paths, out mode, out register, out unregister, out help, out fromShell,
-                out _);
+                out _, out _);
         }
 
         public static void Parse(string[] args, out List<string> paths, out string mode,
             out bool register, out bool unregister, out bool help, out bool fromShell,
             out List<string> unknownSwitches)
+        {
+            Parse(args, out paths, out mode, out register, out unregister, out help, out fromShell,
+                out unknownSwitches, out _);
+        }
+
+        /// <summary>
+        /// 完整解析入口。
+        ///
+        /// <paramref name="conflictingSwitches"/> 与 <paramref name="unknownSwitches"/> 分开：
+        /// 两者都是"参数写错了"，但用户要做的事不同 ——
+        /// 前者是「两个互斥开关同时给了，删掉一个」，后者是「这个开关根本不存在」。
+        /// 合并成一句「无法识别的选项」会让用户去查文档找那个"不存在"的开关，
+        /// 而它其实存在、只是不能和另一个同时用。
+        /// </summary>
+        public static void Parse(string[] args, out List<string> paths, out string mode,
+            out bool register, out bool unregister, out bool help, out bool fromShell,
+            out List<string> unknownSwitches, out List<string> conflictingSwitches)
         {
             // 先清零全部输出参数，调用方按 null 与 false 判断「本次没有指定」。
             paths = new List<string>();
@@ -83,6 +165,7 @@ namespace Auto7z_WPF.Services
             help = false;
             fromShell = false;
             unknownSwitches = new List<string>();
+            conflictingSwitches = new List<string>();
 
             if (args == null) return;
 
@@ -103,21 +186,27 @@ namespace Auto7z_WPF.Services
 
                 // 白名单命中才生效。这里逐一比对，未命中的一律不进 paths ——
                 // 是否算「未知开关」由下面的 LooksLikeSwitch 决定，避免把普通相对路径当开关。
-                if (string.Equals(arg, SwitchAuto, StringComparison.OrdinalIgnoreCase))
+                //
+                // 三个模式开关互斥。早先的写法是「后来者覆盖先来者」，于是
+                //     Auto7z.exe -z -uz a.txt
+                // 会静默按 -uz 执行（解压一个文本文件，失败），而用户以为自己同时给了
+                // 两个开关、程序应当报错。命令行的契约是「参数写错必须让调用方知道」。
+                if (string.Equals(arg, SwitchAuto, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(arg, SwitchZip, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(arg, SwitchUnZip, StringComparison.OrdinalIgnoreCase))
                 {
-                    mode = SwitchAuto;
+                    if (mode != null && !string.Equals(mode, arg, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // 两个**不同**的模式开关：冲突。记下两个，让调用方能给出
+                        // 「-z 与 -uz 不能同时使用」这种用户看得懂的提示。
+                        conflictingSwitches.Add(mode);
+                        conflictingSwitches.Add(arg);
+                        continue;
+                    }
+                    mode = arg;
                     continue;
                 }
-                if (string.Equals(arg, SwitchZip, StringComparison.OrdinalIgnoreCase))
-                {
-                    mode = SwitchZip;
-                    continue;
-                }
-                if (string.Equals(arg, SwitchUnZip, StringComparison.OrdinalIgnoreCase))
-                {
-                    mode = SwitchUnZip;
-                    continue;
-                }
+
                 if (string.Equals(arg, SwitchRegister, StringComparison.OrdinalIgnoreCase))
                 {
                     register = true;

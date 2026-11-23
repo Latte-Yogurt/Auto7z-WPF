@@ -351,7 +351,7 @@ namespace Auto7z_WPF.Services
         /// <summary>
         /// 写入文件：UTF-8 无 BOM。
         ///
-        /// <paramref name="allowedRoot"/> 是**必填**的（不是可选参数）：目标必须落在该根目录之内，
+        /// <paramref name="allowedRoot"/> 是**必填**的（不是可选参数）：目标必须实际落在该根目录之内，
         /// 否则抛 <see cref="UnauthorizedAccessException"/>。
         ///
         /// 为什么坚持必填：早先它是可选参数、默认不校验，于是「加了边界校验，但某个调用点漏传」
@@ -362,12 +362,19 @@ namespace Auto7z_WPF.Services
         /// 时**必须先有**的闸门 —— 少了它，一个被改成相对路径或带 ".." 的配置键
         /// 就能把写盘带到数据目录之外。
         ///
+        /// **用的是文件系统边界而不是字符串前缀判断。**
+        /// 纯字符串判断只能证明「路径写法在根下面」，证明不了「字节会落到根下面」：
+        /// 根目录本身若是 Junction，字符串在内部而数据在另一块磁盘上。
+        /// 写入是不可逆的副作用，判据必须看实际位置。
+        /// 待写文件本身通常还不存在 —— 检查会在第一个不存在的层级停下，
+        /// 它已有的祖先目录仍会被逐级验证。
+        ///
         /// 非法路径直接抛出而不是静默改道：改道会让调用方以为写成功了，
         /// 而文件其实在别处（或根本没写）。
         /// </summary>
         public static void WriteFile(string path, string content, string allowedRoot)
         {
-            if (!FileSystemHelper.IsUnderDirectory(path, allowedRoot))
+            if (!FileSystemHelper.IsWithinFilesystemBoundary(path, allowedRoot))
             {
                 throw new UnauthorizedAccessException(
                     "拒绝写入数据目录以外的路径：" + path + "（允许的根：" + (allowedRoot ?? "<null>") + "）");

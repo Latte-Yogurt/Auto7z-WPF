@@ -45,7 +45,7 @@ namespace Auto7z_WPF
 
             ShellCommandService.Parse(e.Args, out List<string> paths, out string mode,
                 out bool register, out bool unregister, out bool help, out bool fromShell,
-                out List<string> unknownSwitches);
+                out List<string> unknownSwitches, out List<string> conflictingSwitches);
 
             // 两个可执行体由同一份源码编译，所以「命令行管道」这段逻辑在两边都存在。
             // 差别只有一个：Auto7z.exe 是 Console 子系统，天然带控制台；
@@ -75,11 +75,12 @@ namespace Auto7z_WPF
 
             bool shellMenuSemantics = fromShell || dragAndDrop;
 
-            bool hasSwitch = unknownSwitches.Count > 0 || help || register || unregister
+            bool hasSwitch = unknownSwitches.Count > 0 || conflictingSwitches.Count > 0
+                             || help || register || unregister
                              || mode != null;
 
-            // 未知开关是例外：无论从哪来都要拒绝，不能让它悄悄变成一种模式。
-            bool mustRejectUnknown = unknownSwitches.Count > 0;
+            // 未知开关与冲突开关都是例外：无论从哪来都要拒绝，不能让它悄悄变成一种模式。
+            bool mustRejectUnknown = unknownSwitches.Count > 0 || conflictingSwitches.Count > 0;
 
 #if GUI_ENTRY
             // 图形入口：
@@ -110,10 +111,16 @@ namespace Auto7z_WPF
             }
 #endif
 
-            // 便携状态必须在任何会碰外壳扩展的分支之前定下来：
-            // -r / -ur 在下面几行就要用到，命令行任务也可能会去写语言键。
-            // 判据只看磁盘（程序目录旁有没有 .config\Auto7z），不读配置，避免自相矛盾。
+            // 便携状态不读配置，只看磁盘（程序目录旁有没有 .config 目录），避免自相矛盾。
+            //
+            // 副作用顺序：AppPaths.IsPortable 现在只改状态、不重置日志（那会造成
+            // AppPaths ↔ LogService 循环依赖）。日志句柄必须在数据目录**定下来之后**
+            // 显式重置 —— 否则后续日志仍写进上一次算出的那棵树。
+            // 这里先设模式、再重置句柄，顺序不能反。
             AppPaths.IsPortable = AppPaths.DetectPortableFromDisk();
+            LogService.ResetLogFiles();
+
+            // 便携模式下外壳扩展不该在系统里留痕迹，这里一并清掉可能存在的旧注册。
             ShellRegistrationService.UnregisterQuietlyIfPortable();
 
             // 崩溃恢复：上次进程若被强杀，会留下 IsRunning=true 的残留状态与半截产物目录，
@@ -126,7 +133,7 @@ namespace Auto7z_WPF
             if (consoleSemantics)
             {
                 RunConsolePipeline(paths.ToArray(), mode, register, unregister, help, fromShell,
-                    unknownSwitches, dragAndDrop);
+                    unknownSwitches, conflictingSwitches, dragAndDrop);
                 return;
             }
 
@@ -198,15 +205,31 @@ namespace Auto7z_WPF
         /// <param name="help">是否要求打印用法。</param>
         /// <param name="fromShell">参数是否来自共享内存（右键菜单）。</param>
         /// <param name="unknownSwitches">无法识别的开关，非空即拒绝。</param>
+        /// <param name="conflictingSwitches">互斥的开关被同时给出，非空即拒绝。</param>
         /// <param name="dragAndDrop">是否由 explorer 拖拽启动。</param>
         private void RunConsolePipeline(string[] paths, string mode, bool register, bool unregister,
-            bool help, bool fromShell, List<string> unknownSwitches, bool dragAndDrop)
+            bool help, bool fromShell, List<string> unknownSwitches, List<string> conflictingSwitches,
+            bool dragAndDrop)
         {
             // 一次把全部未知开关都报出来：只报第一个的话，用户改掉它还会再撞上下一个。
             if (unknownSwitches.Count > 0)
             {
                 Console.WriteLine(EnumText.GetErrorText(
                     "Err_UnknownSwitch", "无法识别的选项：{0}", string.Join(" ", unknownSwitches)));
+                ShellRegistrationService.WriteUsage();
+                Shutdown(2);
+                return;
+            }
+
+            // 互斥开关冲突：与「未知开关」分开报。
+            // 两者都是参数写错，但用户要做的事不同 —— 前者是删掉一个，后者是查文档。
+            // 合成一句「无法识别的选项」会让用户去找那个"不存在"的开关，
+            // 而它其实存在、只是不能和另一个同时用。
+            if (conflictingSwitches.Count > 0)
+            {
+                Console.WriteLine(EnumText.GetErrorText(
+                    "Err_ConflictingSwitch", "选项不能同时使用：{0}",
+                    string.Join(" 与 ", conflictingSwitches)));
                 ShellRegistrationService.WriteUsage();
                 Shutdown(2);
                 return;
@@ -275,7 +298,7 @@ namespace Auto7z_WPF
             viewModel.LoadConfig();
             viewModel.ApplyLanguage();
 
-            if (mode != null) viewModel.CurrentOperationMode = ParseMode(mode);
+            if (mode != null) viewModel.CurrentOperationMode = ShellCommandService.ParseOperationMode(mode);
 
             viewModel.SetPendingFiles(paths);
             if (!viewModel.HasPendingFiles)
@@ -315,7 +338,7 @@ namespace Auto7z_WPF
             viewModel.LoadConfig();
             viewModel.ApplyLanguage();
 
-            if (mode != null) viewModel.CurrentOperationMode = ParseMode(mode);
+            if (mode != null) viewModel.CurrentOperationMode = ShellCommandService.ParseOperationMode(mode);
 
             var runner = new ShellMenuTaskRunner(viewModel);
             runner.Run(paths, mode);
@@ -338,15 +361,6 @@ namespace Auto7z_WPF
             // 否则界面停在压缩模式时，这批路径会被压成包。
             _singleInstance.StartListener(
                 (files, handedMode) => mainWindow.EnqueueFiles(files, handedMode));
-        }
-
-        private static OperationMode ParseMode(string mode)
-        {
-            if (string.Equals(mode, ShellCommandService.SwitchAuto, StringComparison.OrdinalIgnoreCase))
-                return OperationMode.Auto;
-            if (string.Equals(mode, ShellCommandService.SwitchUnZip, StringComparison.OrdinalIgnoreCase))
-                return OperationMode.UnZip;
-            return OperationMode.Zip;
         }
 
         private void CheckInstallDirectory(string currentDir)

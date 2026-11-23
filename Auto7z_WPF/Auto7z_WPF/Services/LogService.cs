@@ -111,6 +111,19 @@ namespace Auto7z_WPF.Services
             // 低于阈值的消息直接丢弃，避免高频 Info 淹没真正需要排查的问题。
             if (string.IsNullOrWhiteSpace(message) || level < MinLogLevel) return;
 
+            // **先取写入闸，再写文件**（BUG-01）。
+            //
+            // 日志文件正是被搬迁的那些文件之一：写进去的行如果落在「已复制、未删除」
+            // 这个窗口里，复制时没读到、删除后也没了 —— 那行日志**永久消失**。
+            //
+            // 早先这里判的是 `MigrationGate.IsClosed` 布尔量，判完到真正打开文件之间
+            // 搬迁可能已经开始 —— 检查再多次也只是把窗口变窄，不是消除。
+            // 现在改成真的持锁：搬迁方必须等这次写入关掉文件才能开始复制。
+            //
+            // 取不到（搬迁正在独占）就放弃本次写入：日志是尽力而为的，
+            // 丢一行远好过留下一份「看起来完整、其实缺了一段」的文件。
+            if (!MigrationGate.TryEnterWrite()) return;
+
             try
             {
                 lock (_writeLock)
@@ -128,6 +141,11 @@ namespace Auto7z_WPF.Services
             catch
             {
                 // 日志失败不应影响主流程，这里不弹窗，避免错误风暴
+            }
+            finally
+            {
+                // 顺序与上面相反：先写完文件、再放开搬迁闸。
+                MigrationGate.ExitWrite();
             }
         }
 
@@ -158,13 +176,17 @@ namespace Auto7z_WPF.Services
 
                     if (logDate.Date >= threshold) continue;
 
-                    // 边界校验：只删日志目录之内的文件。
+                    // 边界校验：只能删「确认在日志目录之内、且路径上没有重解析点」的文件。
                     //
-                    // GetFiles 的结果本来就来自 LogDirectory，看起来不需要再校验一遍 ——
-                    // 但它挡住了两类真实风险：数据目录被重定向到带父级跳转的路径时
-                    // （AUTO7Z_DATA_ROOT 或将来可配置的目录），以及日志目录本身是指向别处的重解析点。
-                    // 删除是不可逆操作，宁可在这一层多问一句。
-                    if (!FileSystemHelper.IsUnderDirectory(file, LogDirectory)) continue;
+                    // 为什么不是普通的字符串包含判断：`GetFullPath` 不会展开联接。
+                    // 日志目录若是指向 D:\ExternalData 的 Junction，一条 Logs\old.log
+                    // 在字符串上确实在日志目录里，但 File.Delete 会穿过联接到外部磁盘。
+                    // 这条检查因此必须是「文件系统边界」而不是「字符串前缀」。
+                    //
+                    // 它同时挡住了另一类风险：数据目录被改道到带父级跳转的路径时
+                    // （AUTO7Z_DATA_ROOT 指到别处），前缀判断也可能被绕过。
+                    // 删除不可逆，宁可在这一层多问一句（代价是几次 GetFileAttributes）。
+                    if (!FileSystemHelper.IsWithinFilesystemBoundary(file, LogDirectory)) continue;
 
                     try
                     {

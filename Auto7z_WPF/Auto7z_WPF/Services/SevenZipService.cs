@@ -14,11 +14,61 @@ namespace Auto7z_WPF.Services
 {
     #region 命令结果模型
     /// <summary>
+    /// 单次 7z.exe 调用的结局。**五态**，而不是一个 bool。
+    ///
+    /// 为什么需要这个枚举（2026-11-23 加）：
+    /// 早先只有一个 <c>Succeeded</c>，它同时回答了两个不同的问题 ——
+    /// 「7-Zip 跑完了吗」和「是不是完全成功」。退出码 1（有警告但产物已出）
+    /// 让这两个答案分道扬镳：任务**完成**了，但不是**完全成功**。
+    /// 一个 bool 装不下，于是靠调用方各自去看 <c>HasWarning</c> 补偿 ——
+    /// 这种「字段 + 约定」的写法，漏看一处就会把部分成功报成完全成功。
+    ///
+    /// 现在把结论显式化。调用方读 <see cref="CommandResult.Outcome"/> 即可，
+    /// 不需要自己去拼 <c>Succeeded</c> / <c>HasWarning</c> / <c>Cancelled</c> / <c>TimedOut</c>。
+    /// </summary>
+    public enum CommandOutcome
+    {
+        /// <summary>还没跑（初始值）。</summary>
+        Unknown = 0,
+
+        /// <summary>完全成功：退出码 0，无警告。</summary>
+        Success = 1,
+
+        /// <summary>
+        /// 部分成功：退出码 1，7-Zip 报有警告但产物已经产出
+        /// （典型情形是部分文件被跳过）。
+        ///
+        /// **这一态必须与 Success 分开**：界面上它应当着黄色、命令行退出码应当是 1。
+        /// 把它并进 Success 就是「部分文件被跳过却看起来一切正常」。
+        /// </summary>
+        Partial = 2,
+
+        /// <summary>完全失败：严重错误、命令行错误、内存不足等。</summary>
+        Failed = 3,
+
+        /// <summary>用户取消。</summary>
+        Cancelled = 4,
+
+        /// <summary>超时（进程未在预算内退出）。</summary>
+        TimedOut = 5,
+    }
+
+    /// <summary>
     /// 单次 7z.exe 调用的结果快照，调用方据此区分成功、取消、超时与密码错误。
     /// </summary>
     public sealed class CommandResult
     {
+        /// <summary>
+        /// 7-Zip 进程**跑完了**且产物已产出（含退出码 1 的警告情形）。
+        ///
+        /// **注意语义**：它回答的是「有没有正常结束」，不是「是不是完全成功」。
+        /// 判「完全成功」请用 <see cref="Outcome"/> == <see cref="CommandOutcome.Success"/>，
+        /// 或 <see cref="HasWarning"/>。这个区分是刻意的：
+        /// 退出码 1 时归档确实产出了，后续的校验文件生成等步骤应当继续执行，
+        /// 只是最终结论要标成「部分成功」。
+        /// </summary>
         public bool Succeeded { get; set; }
+
         public bool Cancelled { get; set; }
         public bool TimedOut { get; set; }
 
@@ -27,6 +77,39 @@ namespace Auto7z_WPF.Services
         public string StandardOutput { get; set; } = string.Empty;
         public string StandardError { get; set; } = string.Empty;
         public Exception Error { get; set; }
+
+        /// <summary>
+        /// 输出是否**完整**收完。false 表示排空超时，`StandardOutput` / `StandardError`
+        /// 可能是截断的。
+        ///
+        /// 为什么不能只看退出码：进程已经退出、退出码也拿到了，
+        /// 但异步读取回调可能还没把管道里的数据全部交出来。
+        /// 此时如果照常返回，调用方会拿一份**看起来正常但内容缺失**的输出，
+        /// 而 `FindErrorLine` 之类的解析正是在这份输出上做的 —— 会得到错误结论。
+        ///
+        /// 2026-11-23 新增。原先 `outputDrained.Wait(...)` 的返回值被直接丢弃。
+        /// </summary>
+        public bool OutputTruncated { get; set; }
+
+        /// <summary>
+        /// 本次调用的结局。**这是调用方唯一需要读的字段。**
+        ///
+        /// 判据顺序有讲究：取消 → 超时 → 失败 → 部分 → 成功。
+        /// 取消与超时优先于退出码，因为这两种情况下退出码没有意义
+        /// （进程可能是被我们杀掉的，退出码取决于杀法）。
+        /// </summary>
+        public CommandOutcome Outcome
+        {
+            get
+            {
+                if (Cancelled) return CommandOutcome.Cancelled;
+                if (TimedOut) return CommandOutcome.TimedOut;
+                if (!Succeeded) return CommandOutcome.Failed;
+
+                // 走到这里说明进程正常结束且产物已出，只剩「干净」与「带警告」之分。
+                return ExitCode == 1 ? CommandOutcome.Partial : CommandOutcome.Success;
+            }
+        }
 
         // 退出码 1 是完成但带警告，归档已经产出，因此仍按成功处理。
         public bool HasWarning => ExitCode == 1;
@@ -91,9 +174,8 @@ namespace Auto7z_WPF.Services
         #region 常量与进程跟踪
         private static readonly string _assemblyName = Assembly.GetExecutingAssembly().GetName().Name;
 
-        private static string ComponentsPath => AppPaths.ComponentsDirectory;
-
-        private static string SevenZipDllPath => Path.Combine(ComponentsPath, "7z.dll");
+        // 组件路径（ComponentsDirectory / SevenZipExePath / SevenZipDllPath）统一定义在
+        // 「组件部署与资源提取」region 里，此处不再重复计算 —— 见那里的说明。
 
         // 资源名必须与 csproj 里的逻辑路径一致，改名后提取只会静默失败。
         private const string ExeResourcePath = "Resources/Modules/7z.exe";
@@ -103,6 +185,15 @@ namespace Auto7z_WPF.Services
         private const int PollIntervalMs = 100;
 
         private const int KillGraceIterations = 50;
+
+        // 关闭程序时等待 7z 真正退出的总预算。取 3 秒：正常被 Kill 的进程
+        // 通常几十毫秒内就没了，3 秒足够覆盖杀毒/句柄回收造成的迟滞；
+        // 再长就会让「关窗口」这个动作明显卡顿，那是更严重的体验问题。
+        private const int KillWaitBudgetMs = 3000;
+
+        // 单次命令收尾时等待 7z 退出的上限。比关闭路径短：
+        // 这条路径每个命令都会走一遍，等太久会拖慢正常任务。
+        private const int ExitWaitBudgetMs = 1500;
 
         private const int OutputDrainTimeoutMs = 2000;
 
@@ -121,6 +212,8 @@ namespace Auto7z_WPF.Services
         private static readonly Regex _percentRegex =
             new Regex(@"^\s*(\d{1,3})\s*%(?:\s+\d+)?\s*[+\-]\s", RegexOptions.Compiled);
 
+        #endregion
+        #region 进程与资源跟踪
         // 跟踪表让应用能在退出时清理子进程，否则 7z 会变成孤儿进程继续写归档。
         private static readonly List<Process> _runningProcesses = new List<Process>();
         private static readonly object _runningProcessesLock = new object();
@@ -135,25 +228,92 @@ namespace Auto7z_WPF.Services
         }
 
         /// <summary>
-        /// 终止所有仍在运行的 7z 进程，只清空跟踪表，不等待进程真正退出。
+        /// 终止所有仍在运行的 7z 进程，并**等待**它们真正退出。
+        ///
+        /// 审查报告 P1-3：原先这里只发 Kill 请求就立刻清空跟踪表。Kill() 是
+        /// 「请求终止」，不等于进程已经没了 —— 程序随后退出时，短时间窗口内
+        /// 仍可能有 7z.exe 在写盘。那种孤儿进程会占到文件句柄，让半成品目录
+        /// 删不掉，用户看到的是「关掉了程序但文件被占用」。
+        ///
+        /// 现在的做法：
+        ///   1. 对每个跟踪的进程发 Kill；
+        ///   2. 逐个 WaitForExit，总等待时间受 <see cref="KillWaitBudgetMs"/> 限制；
+        ///   3. 仍未确认退出的记一条警告日志（含 PID），但不阻塞退出流程；
+        ///   4. 无论是否确认退出都 Dispose，释放句柄。
+        ///
+        /// 不无限等待是有意的：这是程序关闭路径，卡死比留一个孤儿更糟。
         /// </summary>
         public static void KillAllRunningProcesses()
         {
+            List<Process> snapshot;
             lock (_runningProcessesLock)
             {
-                foreach (var p in _runningProcesses)
+                snapshot = new List<Process>(_runningProcesses);
+                _runningProcesses.Clear();
+            }
+
+            if (snapshot.Count == 0) return;
+
+            // 先全部发 Kill，再统一等：串行「杀一个等一个」会让总时间随进程数累加。
+            foreach (var p in snapshot)
+            {
+                try
                 {
-                    try
+                    if (p != null && !p.HasExited) p.Kill();
+                }
+                catch
+                {
+                    // 进程可能已退出，或已被系统回收。
+                }
+            }
+
+            var deadline = Environment.TickCount + KillWaitBudgetMs;
+            var survivors = new List<int>();
+
+            foreach (var p in snapshot)
+            {
+                if (p == null) continue;
+                try
+                {
+                    int remaining = deadline - Environment.TickCount;
+                    if (remaining < 0) remaining = 0;
+
+                    // HasExited 为 true 时不进 WaitForExit，避免无谓等待。
+                    if (!p.HasExited && !p.WaitForExit(remaining))
                     {
-                        if (p != null && !p.HasExited) p.Kill();
-                    }
-                    catch
-                    {
-                        // 进程可能已退出
+                        survivors.Add(p.Id);
                     }
                 }
+                catch
+                {
+                    // 拿不到 Id 或等待失败都按「无法确认」处理，但不加入 survivors，
+                    // 因为这类异常通常意味着进程对象已经失效（进程确实没了）。
+                }
+            }
 
-                _runningProcesses.Clear();
+            if (survivors.Count > 0)
+            {
+                // 这里在静态上下文里跑，拿不到 LogService 实例，所以走 Trace ——
+                // 与文件末尾 PeriodicTrace 的既有做法一致，LogService 挂的监听器
+                // 若在就会接住，没挂也不会抛。
+                try
+                {
+                    Trace.WriteLine(string.Format(
+                        "[Auto7z] 退出时仍有 {0} 个 7z 进程未在 {1} 毫秒内确认退出：PID {2}",
+                        survivors.Count, KillWaitBudgetMs,
+                        string.Join(", ", survivors)));
+                }
+                catch
+                {
+                    // 日志不可用不能影响退出流程。
+                }
+            }
+
+            // 释放句柄：不 Dispose 会让 Process 对象持有已退出进程的内核句柄，
+            // 关闭路径上泄漏句柄没有意义。
+            foreach (var p in snapshot)
+            {
+                try { p?.Dispose(); } catch { /* 释放失败无碍，进程即将随程序结束 */ }
             }
         }
 
@@ -176,9 +336,20 @@ namespace Auto7z_WPF.Services
         #endregion
 
         #region 组件部署与资源提取
-        public static string SevenZipExePath => Path.Combine(AppPaths.ComponentsDirectory, "7z.exe");
-
+        // 组件目录的唯一出处：其余路径全部从它派生。
+        //
+        // 早先有三处各自计算同一个值（私有 ComponentsPath、公开 ComponentsDirectory、
+        // 以及 SevenZipExePath 里又写一遍 Path.Combine(AppPaths.ComponentsDirectory, ...)）。
+        // 那些写法当时算出来一样，但「同一个事实写三遍」意味着将来认定「组件该放别处」时
+        // 要改三处，漏一处就出现「检查的路径」与「启动的路径」不是同一个 ——
+        // 表现是明明文件在、程序却说找不到组件，或反过来。
         public static string ComponentsDirectory => AppPaths.ComponentsDirectory;
+
+        /// <summary>7z.exe 的绝对路径。</summary>
+        public static string SevenZipExePath => Path.Combine(ComponentsDirectory, "7z.exe");
+
+        /// <summary>7z.dll 的绝对路径。</summary>
+        public static string SevenZipDllPath => Path.Combine(ComponentsDirectory, "7z.dll");
 
 
         /// <summary>
@@ -205,7 +376,7 @@ namespace Auto7z_WPF.Services
             try
             {
                 Directory.CreateDirectory(AppPaths.DataDirectory);
-                Directory.CreateDirectory(ComponentsPath);
+                Directory.CreateDirectory(ComponentsDirectory);
 
                 ExtractResourceIfMissing(ExeResourcePath, SevenZipExePath);
                 ExtractResourceIfMissing(DllResourcePath, SevenZipDllPath);
@@ -363,6 +534,17 @@ namespace Auto7z_WPF.Services
                             if (!(entry.Key is string name)) continue;
                             if (!string.Equals(name, resourcePath, StringComparison.OrdinalIgnoreCase)) continue;
 
+                            // 在 using 之内 return 一个 Stream 看起来可疑：外层两个 using 会在
+                            // 本方法返回时 Dispose，那个 Stream 是否还能读取决于 ResourceReader 的实现。
+                            //
+                            // 实测确认可用（tools/streamlife.cs 探针）：ResourceReader 对
+                            // .g.resources 里的 Stream 条目返回的是**内存流**，生命周期不依赖
+                            // 外层 listStream / reader。实测在 using 之外仍能读到完整的
+                            // 557568 字节且首两字节是 PE 的 MZ 头。
+                            //
+                            // 这条依赖是 .NET Framework 的实现细节，没有文档承诺。所以调用方
+                            // ExtractResourceIfMissing 必须**在 using(stream) 内**用完整份数据
+                            // （它确实这么做了），不能把 Stream 存起来稍后再读。
                             return entry.Value as Stream;
                         }
                     }
@@ -501,7 +683,9 @@ namespace Auto7z_WPF.Services
             return Path.ChangeExtension(outputArchivePath, ".tar");
         }
 
-        private string BuildSingleCompressCommand(string formatValue, List<string> quotedSources, string outputArchivePath, AppConfig config, bool applyGenericSwitches)
+        private string BuildSingleCompressCommand(string formatValue,
+            List<string> quotedSources, string outputArchivePath, AppConfig config,
+            bool applyGenericSwitches)
         {
             var sb = new StringBuilder();
             sb.AppendFormat("a -aoa -y {0} -t{1} {2}", CommonSwitches, formatValue, Quote(outputArchivePath));
@@ -517,6 +701,17 @@ namespace Auto7z_WPF.Services
             bool hasPassword = !string.IsNullOrEmpty(config.Password);
             if (hasPassword && SupportsEncryption(config.Format))
             {
+                // 已知取舍：密码以 `-p<明文>` 形式出现在 7z.exe 的命令行里，
+                // 同机器上的其他进程（任务管理器、WMI、Process Explorer）能看到它。
+                //
+                // 这不是"忘了做安全"，而是 7-Zip 命令行接口的现实：它支持从 stdin
+                // 读密码（收到 "Enter password:" 提示时写入），但那条路径要求边读输出
+                // 边喂输入、且不同版本提示时机不一致，实测在批量任务里很脆弱 ——
+                // 失败时会变成"密码没传进去，压缩不带加密地完成了"，那是更坏的结果
+                // （用户以为加了密，实际没有）。宁可接受"本机可见"，也不要冒"静默未加密"。
+                //
+                // 若将来要改：正确的方向是用 7-Zip 的 -p 配合进程创建时清空命令行，
+                // 或改用 7z.dll 的 COM/原生接口（本项目已随包 7z.dll）。
                 sb.AppendFormat(" -p{0}", Quote(config.Password));
             }
 
@@ -691,16 +886,6 @@ namespace Auto7z_WPF.Services
             if (config.TotalSize <= volumeBytes) return;
 
             sb.AppendFormat(" -v{0}m", volumeBytes / (1024L * 1024L));
-        }
-
-        /// <summary>
-        /// 判断给定格式与配置是否允许分卷，供界面与体积预估共享同一套判定。
-        /// 纯函数：只要不是 Valid 就返回 false，且**不**在这里记日志
-        /// （它被界面反复调用，写日志会把问题日志刷满）。
-        /// </summary>
-        public static bool CanSplitVolume(ArchiveFormat format, string volume)
-        {
-            return ResolveVolumeSpec(format, volume, out _) == VolumeSpecState.Valid;
         }
         #endregion
 
@@ -942,9 +1127,23 @@ namespace Auto7z_WPF.Services
             var outputDrained = new ManualResetEventSlim(false);
             int drainedStreams = 0;
 
+            // 回调是否**全部退出**的标志。与「是否收到两路结束信号」是两件事：
+            //
+            //   · `drainedStreams` 在回调**收到 null** 时递增；
+            //   · `callbackExited` 在回调**即将返回**时递减（从 2 开始）。
+            //
+            // 排空超时时 `drainedStreams` 可能没到 2，说明还有回调没收到结束信号；
+            // 此时那个回调可能正卡在 `outputDrained.Set()` 前面 —— 主线程若已 Dispose，
+            // 它就会抛 ObjectDisposedException。
+            //
+            // 早先的代码在注释里承认了这个竞态，然后依赖「它发生在后台线程、可以忽略」。
+            // 那不是解决，是赌。现在显式同步（BUG-06 的修复）：
+            // **只有两个回调都确认退出，才 Dispose 事件。** 否则留给 GC。
+            int callbackExited = 2;
+
             // e.Data == null 是异步读取端唯一可靠的流已读完信号。只 WaitForExit 不够：
             // 带超时的 WaitForExit 不保证回调已经跑完，缺了这个标记，输出会被截断。
-            Action onStreamEnd = () =>
+            Action markStreamEnd = () =>
             {
                 if (Interlocked.Increment(ref drainedStreams) >= 2) outputDrained.Set();
             };
@@ -973,40 +1172,62 @@ namespace Auto7z_WPF.Services
 
                 process.OutputDataReceived += (sender, e) =>
                 {
-                    if (e.Data == null)
+                    // 无论走哪条 return，回调退出时都要记账（见 callbackExited 的说明）。
+                    try
                     {
-                        onStreamEnd();
-                        return;
-                    }
-
-                    lock (stdoutLock) { stdout.AppendLine(e.Data); }
-
-                    if (progress == null) return;
-
-                    // 一行里可能塞了多个用回车分隔的进度片段，先拆开再逐段匹配。
-                    foreach (string chunk in e.Data.Split('\r'))
-                    {
-                        // 只在百分比真正变化时上报，避免同一个数字反复刷新界面。
-                        var match = _percentRegex.Match(chunk);
-                        if (!match.Success) continue;
-
-                        if (int.TryParse(match.Groups[1].Value, out int percent) && percent != lastPercent)
+                        if (e.Data == null)
                         {
-                            lastPercent = percent;
-                            progress(percent);
+                            markStreamEnd();
+                            return;
                         }
+
+                        lock (stdoutLock)
+                        {
+                            stdout.AppendLine(e.Data);
+                        }
+
+                        if (progress == null) return;
+
+                        // 一行里可能塞了多个用回车分隔的进度片段，先拆开再逐段匹配。
+                        foreach (string chunk in e.Data.Split('\r'))
+                        {
+                            // 只在百分比真正变化时上报，避免同一个数字反复刷新界面。
+                            var match = _percentRegex.Match(chunk);
+                            if (!match.Success) continue;
+
+                            if (int.TryParse(match.Groups[1].Value, out int percent) && percent != lastPercent)
+                            {
+                                lastPercent = percent;
+                                progress(percent);
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref callbackExited);
                     }
                 };
 
                 process.ErrorDataReceived += (sender, e) =>
                 {
-                    if (e.Data == null)
+                    // 同上：回调退出时记账。
+                    try
                     {
-                        onStreamEnd();
-                        return;
-                    }
+                        if (e.Data == null)
+                        {
+                            markStreamEnd();
+                            return;
+                        }
 
-                    lock (stderrLock) { stderr.AppendLine(e.Data); }
+                        lock (stderrLock)
+                        {
+                            stderr.AppendLine(e.Data);
+                        }
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref callbackExited);
+                    }
                 };
 
                 process.BeginOutputReadLine();
@@ -1023,21 +1244,82 @@ namespace Auto7z_WPF.Services
             // 无论成败都要取输出、注销跟踪并释放句柄，否则句柄会随每次调用累积。
             finally
             {
-                lock (stdoutLock) { result.StandardOutput = stdout.ToString().Trim(); }
-                lock (stderrLock) { result.StandardError = stderr.ToString().Trim(); }
+                lock (stdoutLock)
+                {
+                    result.StandardOutput = stdout.ToString().Trim();
+                }
+                lock (stderrLock)
+                {
+                    result.StandardError = stderr.ToString().Trim();
+                }
 
                 UntrackProcess(process);
 
+                // 收尾时必须先确认进程真的退出了，再释放句柄。
+                //
+                // 早先这里只发 Kill 就 Dispose。Kill 是「请求终止」，进程可能
+                // 还在退出过程中；Dispose 之后我们就再也没法观察它，调用方
+                // 会看到「任务结束了但 7z.exe 还在」。审查报告 P1-3 说的正是
+                // 这个 ——— 关闭路径上等待，取消路径上同样要等待。
+                //
+                // 注意：KillAllRunningProcesses 可能已经在别的线程上等过它，
+                // 此时 HasExited 为真，下面的分支直接跳过，不会重复等待。
                 try
                 {
-                    if (!process.HasExited) process.Kill();
+                    if (!process.HasExited && !process.WaitForExit(ExitWaitBudgetMs))
+                    {
+                        // 仍在退出中：再发一次 Kill（可能上一次被系统拒绝），
+                        // 但不无限等 —— 这是收尾路径，卡住比留残余更糟。
+                        // Kill 抛异常只可能是进程刚好自己退出了（杀不存在的进程会抛），
+                        // 那正是我们想要的结果，因此忽略即可。
+                        try { process.Kill(); } catch { /* 进程已自行退出，无需处理 */ }
+
+                        // **Kill 只是发出终止请求，不等于进程已经退出。**
+                        //
+                        // 早先这里发完 Kill 就往下走，紧接着 Dispose ——
+                        // 之后再也没法观察它，调用方会看到「任务结束了但 7z.exe 还在」。
+                        // 现在补一次有界等待；仍不退出的，把情况记进 result.Error，
+                        // 而不是把 Dispose 当成进程终止的替代。
+                        if (!process.WaitForExit(KillWaitBudgetMs))
+                        {
+                            result.Error = new TimeoutException(EnumText.GetErrorText(
+                                "Err_ProcessStillAlive",
+                                "7-Zip 进程在强制终止后仍未退出（可能残留在系统中）：PID {0}",
+                                SafeGetProcessId(process)));
+                        }
+                    }
                 }
                 catch
                 {
-                    // 有意忽略：进程可能在这两句之间自己退出了，杀不掉不影响下面的结果收集
+                    // 进程对象可能已失效（进程确实没了），无需处理。
                 }
 
                 try { process.Dispose(); } catch { /* 有意忽略：句柄可能已被回收，重复释放失败可忽略 */ }
+
+                // ManualResetEventSlim 在 Wait() 时可能创建底层内核事件句柄。
+                // 频繁压缩/解压时若不释放，这些同步资源会逐渐累积。
+                //
+                // **但不能无条件 Dispose（BUG-06 的修复）。**
+                //
+                // 排空超时时 `drained == false`，意味着至少有一路回调
+                // 还没收到结束信号 —— 它可能正卡在 `outputDrained.Set()` 前面。
+                // 此时若主线程 Dispose，那个回调就会抛 ObjectDisposedException。
+                // 早先的注释承认了这个竞态，然后依赖「它发生在后台线程、可以忽略」——
+                // 那是赌，不是解决。
+                //
+                // 现在用 `callbackExited` 显式同步：只有两个回调都确认退出才 Dispose。
+                // 还有回调在跑时**不释放**，让它随 GC 回收 —— 泄漏一个事件对象
+                // 远好过在别人正在用的对象上拔电源。
+                if (Volatile.Read(ref callbackExited) <= 0)
+                {
+                    try { outputDrained.Dispose(); } catch { /* 已释放或状态异常，忽略 */ }
+                }
+                else
+                {
+                    // 有回调尚未退出：交给 GC。这里刻意不记日志 ——
+                    // 它发生在「输出排空超时」这一条已经上报过的路径上，
+                    // 再记一条只会让日志变吵而不增加信息。
+                }
             }
 
             return result;
@@ -1086,14 +1368,30 @@ namespace Auto7z_WPF.Services
             // 放在 finally 释放进程对象之前，则是为了避免信号量被提前回收。
             if (HasExited(process))
             {
+                bool drained = false;
                 try
                 {
-                    outputDrained.Wait(OutputDrainTimeoutMs);
+                    // **必须检查返回值。** 早先这一行是 `outputDrained.Wait(...)`，
+                    // 丢弃了 bool。超时后仍然继续执行，把可能**被截断**的输出
+                    // 当成完整结果返回 —— 而 FindErrorLine / RequiresPassword /
+                    // IsWrongPassword 全都在这份输出上做判断，截断会让它们得出错误结论。
+                    drained = outputDrained.Wait(OutputDrainTimeoutMs);
                 }
                 // 信号量已被释放时忽略即可，此时输出已经收完，不必把收尾动作变成异常。
                 catch (ObjectDisposedException)
                 {
                     // 事件已被释放（正常收尾），视为排空完成
+                    drained = true;
+                }
+
+                if (!drained)
+                {
+                    // 明确标记为「输出可能不完整」，而不是静默当成功。
+                    // 调用方据此决定是否采信输出里的解析结果。
+                    //
+                    // 本类不持有日志依赖（它是纯执行层），所以把情况记在 result 上，
+                    // 由 ViewModel 决定怎么上报。
+                    result.OutputTruncated = true;
                 }
             }
 
@@ -1123,6 +1421,75 @@ namespace Auto7z_WPF.Services
             try
             {
                 return process.HasExited ? process.ExitCode : -1;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        /// <summary>
+        /// 去掉路径末尾的分隔符，但**保留根目录自身的那个**。
+        ///
+        /// `C:\`        → `C:\`   （盘符根不能变成 `C:`，那是「当前目录在 C 盘」的意思）
+        /// `C:\a\`      → `C:\a`
+        /// `\\srv\share\` → `\\srv\share`
+        /// </summary>
+        /// <param name="path">已规范化的绝对路径。</param>
+        /// <returns>去掉末尾多余分隔符的路径。</returns>
+        private static string TrimTrailingSeparators(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+
+            string trimmed = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (trimmed.Length == 0) return path;
+
+            // `C:` 这种形态要补回分隔符，否则语义从「C 盘根」变成「C 盘当前目录」。
+            if (trimmed.Length == 2 && trimmed[1] == ':') return trimmed + Path.DirectorySeparatorChar;
+
+            return trimmed;
+        }
+
+        /// <summary>
+        /// <paramref name="candidate"/> 是否位于 <paramref name="root"/> **内部**（不含等于）。
+        ///
+        /// 这是全类唯一的路径包含判断，处理了这几类边界：
+        ///   · 磁盘根目录（`C:\`）—— 早先 `root + 分隔符` 会拼出 `C:\\`，判定失效
+        ///   · UNC 共享根（`\\server\share`）
+        ///   · 末尾多余分隔符
+        ///   · 大小写差异
+        ///   · 前缀相同但不同层级（`C:\a` 与 `C:\ab` 不算包含）
+        ///
+        /// 调用方须先各自 `Path.GetFullPath`。
+        /// </summary>
+        /// <param name="candidate">待判断的路径。</param>
+        /// <param name="root">容器路径。</param>
+        /// <returns>candidate 在 root 内部时返回 true。</returns>
+        private static bool IsPathInside(string candidate, string root)
+        {
+            if (string.IsNullOrEmpty(candidate) || string.IsNullOrEmpty(root)) return false;
+
+            string c = TrimTrailingSeparators(candidate);
+            string r = TrimTrailingSeparators(root);
+
+            // 相等不算「在内部」。
+            if (string.Equals(c, r, StringComparison.OrdinalIgnoreCase)) return false;
+
+            // 两边都统一到「无末尾分隔符 + 一个分隔符」的形式再比前缀。
+            // 关键点：先把 r 的末尾分隔符规整成恰好一个，再拼到 c 的比较串里。
+            string prefix = r.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
+                ? r
+                : r + Path.DirectorySeparatorChar;
+
+            return c.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>取进程 PID，失败时返回 -1。只用于日志与错误信息。</summary>
+        private static int SafeGetProcessId(Process process)
+        {
+            try
+            {
+                return process.Id;
             }
             catch
             {
@@ -1187,10 +1554,22 @@ namespace Auto7z_WPF.Services
                 if (string.IsNullOrWhiteSpace(itemParent)) continue;
 
                 string sourceFull = Path.GetFullPath(item.Path);
+
+                // **不能用 `sourceFull + 分隔符` 做前缀判断。**
+                //
+                // 源是磁盘根目录时（`C:\`），`Path.GetFullPath` 返回的字符串**已经**以
+                // 分隔符结尾，再拼一个就变成 `C:\\` —— 而实际候选 `C:\Auto7zOutput`
+                // 并不以 `C:\\` 开头，判定为「不在源内」，自包含检查被整个绕过。
+                // 实测确认：
+                //     源=C:\  候选=C:\Auto7zOutput  prefix=C:\\  StartsWith=False
+                //
+                // 统一走 IsPathInside，它先把两边都规范化去掉末尾分隔符再比。
                 bool candidateInsideSource = candidateFull != null
-                    && candidateFull.StartsWith(sourceFull + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+                    && IsPathInside(candidateFull, sourceFull);
                 bool candidateIsSource = candidateFull != null
-                    && string.Equals(candidateFull, sourceFull, StringComparison.OrdinalIgnoreCase);
+                    && string.Equals(TrimTrailingSeparators(candidateFull),
+                                     TrimTrailingSeparators(sourceFull),
+                                     StringComparison.OrdinalIgnoreCase);
 
                 if (string.IsNullOrWhiteSpace(candidate) || candidateInsideSource || candidateIsSource)
                 {

@@ -222,40 +222,64 @@ namespace Auto7z_WPF.Services
             return WriteConfigAtomically(ConfigPath, content);
         }
 
-        // 配置写盘的唯一出口：边界校验 + 唯一临时名 + 原子替换。
+        // 配置写盘的唯一出口：写入闸 + 边界校验 + 唯一临时名 + 原子替换。
         private static bool WriteConfigAtomically(string configPath, string content)
         {
-            // 边界校验：目标必须落在数据目录之内。眼下恒为真（路径由 AppPaths 推导），
-            // 但这是那道「输出目录变成可配置」之前必须先有的闸门。
-            string allowedRoot = AppPaths.DataDirectory;
-            if (!FileSystemHelper.IsUnderDirectory(configPath, allowedRoot))
-            {
-                return false;
-            }
+            // **先取写入闸，再写配置**（BUG-01）。
+            //
+            // 配置文件是搬迁的对象之一。写进去的内容若落在「已复制、未删除」的窗口里，
+            // 目标文件里就没有它，而源文件随后被删 —— 用户刚改的设置回到旧值。
+            //
+            // 早先这里判的是布尔量，判完到真正写盘之间搬迁可能已经开始；
+            // 现在改成真的持锁，搬迁方必须等这次写入落盘才能开始复制。
+            //
+            // 返回 false 而不是静默成功：调用方（SaveConfig）会把它报成「保存失败」，
+            // 用户能看到，而不是以为已经存好。搬迁完成后 ViewModel 会补一次保存。
+            if (!MigrationGate.TryEnterWrite()) return false;
 
-            string tempPath = configPath + ".tmp." + Process.GetCurrentProcess().Id
-                + "." + Interlocked.Increment(ref _tempSequence);
             try
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(configPath));
-
-                JsonConfig.WriteFile(tempPath, content, allowedRoot);
-
-                if (File.Exists(configPath))
+                // 边界校验：目标必须**实际**落在数据目录之内。
+                //
+                // 用 IsWithinFilesystemBoundary 而不是纯字符串的 IsUnderDirectory：
+                // 数据目录本身可能是指向别处的重解析点（AUTO7Z_DATA_ROOT 指到联接上，
+                // 或用户的 %LOCALAPPDATA%\Auto7z 被搬走并替换成 Junction）。
+                // 那时「字符串在数据目录内」为真，而实际写入落在另一块磁盘上。
+                // 配置写入是本程序最高频的落盘动作之一，值得多花几次属性查询。
+                string allowedRoot = AppPaths.DataDirectory;
+                if (!FileSystemHelper.IsWithinFilesystemBoundary(configPath, allowedRoot))
                 {
-                    File.Replace(tempPath, configPath, null, true);
-                }
-                else
-                {
-                    File.Move(tempPath, configPath);
+                    return false;
                 }
 
-                return true;
+                string tempPath = configPath + ".tmp." + Process.GetCurrentProcess().Id
+                    + "." + Interlocked.Increment(ref _tempSequence);
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(configPath));
+
+                    JsonConfig.WriteFile(tempPath, content, allowedRoot);
+
+                    if (File.Exists(configPath))
+                    {
+                        File.Replace(tempPath, configPath, null, true);
+                    }
+                    else
+                    {
+                        File.Move(tempPath, configPath);
+                    }
+
+                    return true;
+                }
+                catch
+                {
+                    try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* 有意忽略：残留的临时文件删不掉不影响配置写入结果 */ }
+                    return false;
+                }
             }
-            catch
+            finally
             {
-                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* 有意忽略：残留的临时文件删不掉不影响配置写入结果 */ }
-                return false;
+                MigrationGate.ExitWrite();
             }
         }
         #endregion

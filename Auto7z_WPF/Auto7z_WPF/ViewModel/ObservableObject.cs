@@ -37,7 +37,23 @@ namespace Auto7z_WPF
             _canExecute = canExecute;
         }
 
-        public event EventHandler CanExecuteChanged;
+        /// <summary>
+        /// <see cref="ICommand"/> 要求的事件。
+        ///
+        /// 本类**从不主动触发**它（原先有个 RaiseCanExecuteChanged 就要用它，但那个方法
+        /// 全仓零调用，已作为死代码删除）。保留声明是因为接口要求；加 add/remove 空实现
+        /// 而不是 <c>event EventHandler X;</c>，是为了消除编译器 CS0067「事件从不使用」警告 ——
+        /// 那条警告会让「编译零警告」这条基线失效。
+        ///
+        /// 如果将来真的需要「命令可用性变化时刷新按钮」，正确的做法是重新引入一个
+        /// 有调用方的触发点，并且同时调 CommandManager.InvalidateRequerySuggested()，
+        /// 而不是只挂一个没人触发的事件。
+        /// </summary>
+        public event EventHandler CanExecuteChanged
+        {
+            add { }
+            remove { }
+        }
 
         public bool CanExecute(object parameter)
         {
@@ -47,15 +63,6 @@ namespace Auto7z_WPF
         public void Execute(object parameter)
         {
             _execute(Cast(parameter));
-        }
-
-        public void RaiseCanExecuteChanged()
-        {
-            CanExecuteChanged?.Invoke(this, EventArgs.Empty);
-
-            // 只发自己的事件不够：WPF 的按钮还挂在 CommandManager 的全局重查询上，
-            // 不主动失效时，命令可用性变了按钮也不会跟着变灰。
-            CommandManager.InvalidateRequerySuggested();
         }
 
         private static T Cast(object parameter)

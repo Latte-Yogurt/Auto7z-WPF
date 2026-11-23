@@ -10,7 +10,7 @@ namespace Auto7z_WPF.Services
     /// <summary>
     /// 右键菜单的注册与注销入口，实际注册动作由 Auto7zShell.dll 里的 DllRegisterServer 完成。
     /// </summary>
-    public class ShellRegistrationService
+    public static class ShellRegistrationService
     {
         #region 常量与导出函数签名
         private const string ShellDllName = "Auto7zShell.dll";
@@ -35,9 +35,6 @@ namespace Auto7z_WPF.Services
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         private delegate int SetPathDelegate([MarshalAs(UnmanagedType.LPWStr)] string path);
 
-        private ShellRegistrationService()
-        {
-        }
         #endregion
 
         #region 注册与注销入口

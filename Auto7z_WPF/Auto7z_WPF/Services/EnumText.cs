@@ -76,23 +76,23 @@ namespace Auto7z_WPF.Services
             return fallback;
         }
 
-        // 占位符与参数不匹配时退回原文，文案问题不该让界面抛异常。
+        /// <summary>
+        /// 取文案并按 <paramref name="arg"/> 格式化；占位符与参数不匹配时退回原文。
+        ///
+        /// 与 <see cref="GetErrorText"/> 是同一实现，保留两个名字只是为了调用点的语义可读性
+        /// （错误文案用 GetErrorText、普通文案用这个）。实现委托过去，避免两处各改一半。
+        /// </summary>
         public static string GetFormattedText(string key, string fallback, params object[] arg)
         {
-            string text = GetResourceText(key, fallback);
-            if (string.IsNullOrEmpty(text)) return text;
-            if (arg == null || arg.Length == 0) return text;
-
-            try
-            {
-                return string.Format(text, arg);
-            }
-            catch
-            {
-                return text;
-            }
+            return GetErrorText(key, fallback, arg);
         }
 
+        /// <summary>
+        /// 取文案并按 <paramref name="arg"/> 格式化；<paramref name="arg"/> 为空或格式化失败时退回原文。
+        ///
+        /// 这是本类**唯一**的格式化实现，<see cref="GetFormattedText"/> 委托到这里。
+        /// 格式化失败不抛异常：文案问题不该让界面崩掉。
+        /// </summary>
         public static string GetErrorText(string key, string fallback, params object[] arg)
         {
             string text = GetResourceText(key, fallback);

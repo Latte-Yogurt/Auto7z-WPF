@@ -23,8 +23,31 @@ namespace Auto7z_WPF.Services
         /// <summary>新建一个可复用的增量内核。</summary>
         public Func<IHashCore> CreateCore { get; set; }
 
+        // 下面两个集合属性加了一道「永不返回 null」的守门：
+        //
+        // 它们原本是裸的 `{ get; set; }`，而同一个类里 `Extension` 属性已经写了
+        // `if (Extensions == null ...) return ".checksum";` 这样的判空 ——
+        // 同一份数据的两个使用点，一个防了、一个没防，是典型的不一致。
+        //
+        // 具体风险在 BuildCatalog 的静态构造里：
+        //     foreach (string alias in info.Aliases)      // Aliases 为 null → NRE
+        //     foreach (string extension in info.Extensions) // Extensions 为 null → NRE
+        // 静态构造抛异常会变成 TypeInitializationException，之后**每一次**访问
+        // HashAlgorithms 都失败（哪怕改回正确值，进程内已无法恢复）——
+        // 这种失败模式极难排查，代价远高于两行判空。
+        //
+        // 当前 18 个 Simple() 调用点都传了数组，所以不可达；但从「公开可写属性」
+        // 的定义推不出这个保证 —— 谁都能写 info.Aliases = null。
+        // 与其在每个 foreach 里判空（容易漏），不如让读取端永远拿到一个空集合。
+        private List<string> _extensions = new List<string>();
+        private HashSet<string> _aliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         /// <summary>能把这个算法认出来的文件后缀，全部小写且带点，例如 .sha256。</summary>
-        public List<string> Extensions { get; set; }
+        public List<string> Extensions
+        {
+            get { return _extensions ?? (_extensions = new List<string>()); }
+            set { _extensions = value ?? new List<string>(); }
+        }
 
         /// <summary>
         /// 写校验记录时用的首选后缀，取 Extensions 的第一项。
@@ -35,13 +58,18 @@ namespace Auto7z_WPF.Services
         {
             get
             {
-                if (Extensions == null || Extensions.Count == 0) return ".checksum";
-                return Extensions[0];
+                List<string> extensions = Extensions;
+                if (extensions.Count == 0) return ".checksum";
+                return extensions[0];
             }
         }
 
         /// <summary>名字别名，全部小写且已去掉分隔符，sha256 与 sha-256 都能命中。</summary>
-        public HashSet<string> Aliases { get; set; }
+        public HashSet<string> Aliases
+        {
+            get { return _aliases ?? (_aliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase)); }
+            set { _aliases = value ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase); }
+        }
 
         public override string ToString()
         {
@@ -302,13 +330,22 @@ namespace Auto7z_WPF.Services
                 DisplayName = displayName,
                 DigestBytes = digestBytes,
                 CreateCore = core,
-                Extensions = new List<string>(extensions),
+                // `new List<string>(null)` 会抛 ArgumentNullException。
+                // 属性 setter 现在会把 null 变成空集合，但这里是构造实参、走不到 setter，
+                // 所以仍要在这里给出定义：缺后缀/别名只是「少了点信息」，
+                // 不该让整个静态构造崩掉（静态构造一旦失败，进程内再也用不了本类）。
+                Extensions = extensions == null
+                    ? new List<string>()
+                    : new List<string>(extensions),
                 Aliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             };
 
-            foreach (string alias in aliases)
+            if (aliases != null)
             {
-                info.Aliases.Add(alias);
+                foreach (string alias in aliases)
+                {
+                    info.Aliases.Add(alias);
+                }
             }
 
             return info;

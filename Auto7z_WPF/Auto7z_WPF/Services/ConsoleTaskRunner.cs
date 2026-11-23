@@ -27,25 +27,10 @@ namespace Auto7z_WPF.Services
             // 置成 Console 而不是默认值：调用方靠它决定提示信息往控制台写还是往窗口里塞。
             _viewModel.CurrentRunMode = RunMode.Console;
 
-            switch (mode)
-            {
-                case ShellCommandService.SwitchAuto:
-                    _viewModel.RunAutoDispatchAndWait();
-                    break;
-
-                case ShellCommandService.SwitchUnZip:
-                    _viewModel.RunExtractAndWait();
-                    break;
-
-                case ShellCommandService.SwitchZip:
-                    _viewModel.RunCompressAndWait();
-                    break;
-
-                default:
-                    // 不带开关时按自动模式处理，与用法说明里的默认行为一致。
-                    _viewModel.RunAutoDispatchAndWait();
-                    break;
-            }
+            // 开关 → 任务的映射统一由 ShellCommandService 提供，
+            // 本类不再自己维护一份 switch（与 ShellMenuTaskRunner 共用同一份知识）。
+            // 进度回调传 null：命令行模式的进度由 ViewModel 直接写到控制台。
+            ShellCommandService.RunByMode(_viewModel, mode, null);
         }
     }
 }

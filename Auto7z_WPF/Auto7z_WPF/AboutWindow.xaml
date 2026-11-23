@@ -110,8 +110,10 @@
             </Grid>
 
             <Grid Grid.Row="4">
+                <!-- 回车与 Esc 由窗口的 OnKeyDown 统一处理（见 AboutWindow.xaml.cs）：
+                     按钮自带的 InputBindings 只接鼠标左键，键盘再单独接一遍才不会两边行为分叉。 -->
                 <Button x:Name="ConfirmButton" Content="{DynamicResource ConfirmButton}" Width="90" Height="24" Background="Transparent"
-                        TabIndex="0" IsDefault="True">
+                        TabIndex="0" IsDefault="True" Click="ConfirmButton_Click">
                     <Button.InputBindings>
                         <MouseBinding MouseAction="LeftClick" Command="{Binding CloseCommand}" CommandParameter="{Binding RelativeSource={RelativeSource AncestorType=Window}}"/>
                     </Button.InputBindings>

@@ -53,6 +53,7 @@
     <sys:String x:Key="AutoSaveCheckBox">程序关闭时自动保存设置</sys:String>
     <sys:String x:Key="Log_PortableSwitched">已切换到{0}，数据目录：{1}</sys:String>
     <sys:String x:Key="Log_PortableSwitchFailed">切换便携模式失败：{0}</sys:String>
+    <sys:String x:Key="Log_PortableBlockedByTask">有任务正在执行，不能切换便携模式；请等任务结束后再试。</sys:String>
     <sys:String x:Key="Log_PortableRootNotEmpty">已切到普通模式，但 {0} 里还有其它文件，未删除；下次启动仍会被判为便携模式</sys:String>
     <sys:String x:Key="Err_PortableMoveFailed">切换{0}失败：数据目录没能移动</sys:String>
     <sys:String x:Key="Tip_Portable">便携模式：把配置、组件与日志都放在程序目录的 .config\Auto7z 下，整个程序可以随身携带。取消勾选则移回 %LOCALAPPDATA%\Auto7z。</sys:String>
@@ -85,7 +86,10 @@
     <sys:String x:Key="WarningTitle">警告</sys:String>
     <sys:String x:Key="ErrorTitle">错误</sys:String>
     <sys:String x:Key="WarningMessage">警告：</sys:String>
+    <sys:String x:Key="InfoMessage">提示：</sys:String>
     <sys:String x:Key="ErrorMessage">错误：</sys:String>
+    <sys:String x:Key="Err_ConfigSaveFailed">保存配置失败，详情见日志。</sys:String>
+    <sys:String x:Key="ConfigSaved">已保存配置</sys:String>
     <sys:String x:Key="ProgressText">7z 处理：已进行...{0}%</sys:String>
     <sys:String x:Key="SHA256ProgressText">SHA256 计算进度...{0}%</sys:String>
     <sys:String x:Key="MultiFilePackQuery">检测到多个文件传入，是否需要将多个文件打包为单个压缩文件中？</sys:String>
@@ -94,8 +98,12 @@
     <sys:String x:Key="Result_Failed">处理失败</sys:String>
     <sys:String x:Key="Result_Cancelled">任务已取消</sys:String>
     <sys:String x:Key="Result_PartialWarning">压缩已完成，但部分文件被跳过，详情见日志。</sys:String>
+    <sys:String x:Key="Result_ExtractPartialWarning">解压已完成，但部分条目被跳过，详情见日志。</sys:String>
     <sys:String x:Key="Err_UnexpectedExitCode">7-Zip 返回非 0 退出码：{0}</sys:String>
     <sys:String x:Key="Err_ProcessNotExited">7-Zip 进程未能在取消后退出</sys:String>
+    <sys:String x:Key="Err_ProcessStillAlive">7-Zip 进程在强制终止后仍未退出（可能残留在系统中）：PID {0}</sys:String>
+    <sys:String x:Key="Err_OutputTruncated">（输出未读全，原因可能不准确）{0}</sys:String>
+    <sys:String x:Key="Log_OutputTruncated">7-Zip 输出未能完整读取（排空超时），下面的失败原因可能不完整：{0}</sys:String>
     <sys:String x:Key="Archive_MergedNamePattern">{0} 等 {1} 个</sys:String>
     <sys:String x:Key="Log_InstallDirNotWritable">程序所在目录不可写（不影响运行，组件与配置均写入 %LOCALAPPDATA%\Auto7z）：{0}</sys:String>
     <sys:String x:Key="Log_PathsNotFound">传入的路径均不存在或不可访问：{0}</sys:String>
@@ -142,6 +150,7 @@
     <sys:String x:Key="Log_ChoseMerge">用户选择合并为单个压缩包，共 {0} 个文件</sys:String>
     <sys:String x:Key="Log_ChoseSeparate">用户选择不合并，{0} 个文件分别压缩</sys:String>
     <sys:String x:Key="Log_SevenZipWarning">7-Zip 提示（有警告但已完成）：{0}</sys:String>
+    <sys:String x:Key="Log_ExtractPartialReason">解压判为未完全成功：本次 7-Zip 有警告={0}，同批前序失败={1}</sys:String>
     <sys:String x:Key="Log_PasswordDialogFailed">弹出密码输入框失败：{0}</sys:String>
     <sys:String x:Key="Log_PasswordCancelled">用户取消了密码输入</sys:String>
     <sys:String x:Key="Log_PasswordAsked">7-Zip 索要密码，第 {0} 次尝试，弹窗请求输入</sys:String>
@@ -179,4 +188,5 @@
     <sys:String x:Key="Console_ShellDllMissing">找不到 Auto7zShell.dll，无法注册</sys:String>
     <sys:String x:Key="Console_PortableNoShellMenu">便携模式下不注册右键菜单：拷走即可使用，程序不在系统里留痕</sys:String>
     <sys:String x:Key="Err_UnknownSwitch">无法识别的选项：{0}</sys:String>
+    <sys:String x:Key="Err_ConflictingSwitch">选项不能同时使用：{0}</sys:String>
 </ResourceDictionary>

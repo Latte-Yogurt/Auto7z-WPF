@@ -23,6 +23,7 @@
     <sys:String x:Key="AutoSaveCheckBox">關閉程式時自動儲存設定</sys:String>
     <sys:String x:Key="Log_PortableSwitched">已切換到{0}，資料目錄：{1}</sys:String>
     <sys:String x:Key="Log_PortableSwitchFailed">切換可攜模式失敗：{0}</sys:String>
+    <sys:String x:Key="Log_PortableBlockedByTask">有任務正在執行，不能切換可攜模式；請等任務結束後再試。</sys:String>
     <sys:String x:Key="Log_PortableRootNotEmpty">已切到普通模式，但 {0} 裡還有其他檔案，未刪除；下次啟動仍會被判定為可攜模式</sys:String>
     <sys:String x:Key="Err_PortableMoveFailed">切換{0}失敗：資料目錄沒能移動</sys:String>
     <sys:String x:Key="Tip_Portable">便攜模式：把設定、元件與日誌都放在程式目錄的 .config\Auto7z 下，整個程式可以隨身攜帶。取消勾選則移回 %LOCALAPPDATA%\Auto7z。</sys:String>
@@ -85,17 +86,24 @@
     <sys:String x:Key="ErrorTitle">錯誤</sys:String>
 
     <sys:String x:Key="WarningMessage">警告：</sys:String>
+    <sys:String x:Key="InfoMessage">提示：</sys:String>
     <sys:String x:Key="ProgressText">7z 處理：已進行...{0}%</sys:String>
     <sys:String x:Key="SHA256ProgressText">SHA256 計算進度...{0}%</sys:String>
     <sys:String x:Key="ErrorMessage">出現錯誤：</sys:String>
+    <sys:String x:Key="Err_ConfigSaveFailed">儲存設定失敗，詳情見日誌。</sys:String>
+    <sys:String x:Key="ConfigSaved">已儲存設定</sys:String>
     <sys:String x:Key="MultiFilePackQuery">檢測到多個檔案傳入，是否需要將其打包為單個壓縮檔？</sys:String>
     <sys:String x:Key="Result_CompressDone">壓縮完成</sys:String>
     <sys:String x:Key="Result_ExtractDone">解壓完成</sys:String>
     <sys:String x:Key="Result_Failed">處理失敗</sys:String>
     <sys:String x:Key="Result_Cancelled">工作已取消</sys:String>
     <sys:String x:Key="Result_PartialWarning">壓縮已完成，但部分檔案被跳過，詳情見日誌。</sys:String>
+    <sys:String x:Key="Result_ExtractPartialWarning">解壓已完成，但部分項目被跳過，詳情見日誌。</sys:String>
     <sys:String x:Key="Err_UnexpectedExitCode">7-Zip 回傳非 0 結束碼：{0}</sys:String>
     <sys:String x:Key="Err_ProcessNotExited">7-Zip 程序在取消後未能結束</sys:String>
+    <sys:String x:Key="Err_ProcessStillAlive">7-Zip 程序在強制終止後仍未結束（可能殘留在系統中）：PID {0}</sys:String>
+    <sys:String x:Key="Err_OutputTruncated">（輸出未讀全，原因可能不準確）{0}</sys:String>
+    <sys:String x:Key="Log_OutputTruncated">7-Zip 輸出未能完整讀取（排空逾時），下面的失敗原因可能不完整：{0}</sys:String>
     <sys:String x:Key="Archive_MergedNamePattern">{0} 等 {1} 個</sys:String>
     <sys:String x:Key="Log_InstallDirNotWritable">程式所在目錄不可寫（不影響執行，元件與設定均寫入 %LOCALAPPDATA%\Auto7z）：{0}</sys:String>
     <sys:String x:Key="Log_PathsNotFound">傳入的路徑均不存在或無法存取：{0}</sys:String>
@@ -142,6 +150,7 @@
     <sys:String x:Key="Log_ChoseMerge">使用者選擇合併為單個壓縮檔，共 {0} 個檔案</sys:String>
     <sys:String x:Key="Log_ChoseSeparate">使用者選擇不合併，{0} 個檔案分別壓縮</sys:String>
     <sys:String x:Key="Log_SevenZipWarning">7-Zip 提示（有警告但已完成）：{0}</sys:String>
+    <sys:String x:Key="Log_ExtractPartialReason">解壓判為未完全成功：本次 7-Zip 有警告={0}，同批前序失敗={1}</sys:String>
     <sys:String x:Key="Log_PasswordDialogFailed">彈出密碼輸入框失敗：{0}</sys:String>
     <sys:String x:Key="Log_PasswordCancelled">使用者取消了密碼輸入</sys:String>
     <sys:String x:Key="Log_PasswordAsked">7-Zip 索要密碼，第 {0} 次嘗試，彈窗請求輸入</sys:String>
@@ -179,4 +188,5 @@
     <sys:String x:Key="Console_ShellDllMissing">找不到 Auto7zShell.dll，無法註冊</sys:String>
     <sys:String x:Key="Console_PortableNoShellMenu">可攜模式下不註冊右鍵選單：拷走即可使用，程式不在系統裡留痕</sys:String>
     <sys:String x:Key="Err_UnknownSwitch">無法辨識的選項：{0}</sys:String>
+    <sys:String x:Key="Err_ConflictingSwitch">選項不能同時使用：{0}</sys:String>
 </ResourceDictionary>

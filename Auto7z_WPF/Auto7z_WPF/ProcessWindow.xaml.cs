@@ -9,19 +9,39 @@ namespace Auto7z_WPF
     public partial class ProcessWindow : Window
     {
         private bool _cancelled;
-        private readonly Auto7zViewModel _vm;
 
         public ProcessWindow()
         {
             InitializeComponent();
 
-            // 标题栏按钮走 {Binding}，与主窗口/关于窗口一致：用 Auto7zViewModel 当 DataContext。
-            _vm = new Auto7zViewModel();
-            DataContext = _vm;
-            _vm.RequestClose += (s, e) => Close();
-            _vm.RequestMinimize += (s, e) => WindowState = WindowState.Minimized;
-
+            // 这里**不再** new 一个 Auto7zViewModel。
+            //
+            // 早先的写法是 `_vm = new Auto7zViewModel(); DataContext = _vm;`，
+            // 只为让标题栏两个 Grid 的 MouseBinding 有 MinimizeCommand / CloseCommand 可绑。
+            // 代价是两个真实问题：
+            //   ① 每开一次进度窗就多一个完整 ViewModel（含 ConfigService、SevenZipService、
+            //      LanguageService 及其订阅），而它从不 Dispose、也不 LoadConfig ——
+            //      纯属浪费，且会随右键菜单反复调用累积；
+            //   ② 那两条命令转发的是**这个假实例**的 RequestMinimize / RequestClose，
+            //      与真正在跑任务的 ViewModel 毫无关系，语义上就是错的。
+            //
+            // 进度窗只需要「最小化」与「关闭」两个动作，直接在代码里接鼠标事件即可，
+            // 不必为此拉起一整套业务对象。XAML 外观未作任何改动。
             Title = EnumText.GetResourceText("ProcessWindowTitle", "Processing...");
+
+            MinimizeButton.MouseLeftButtonDown += (s, e) =>
+            {
+                WindowState = WindowState.Minimized;
+                e.Handled = true;
+            };
+
+            CloseButton.MouseLeftButtonDown += (s, e) =>
+            {
+                // 点关闭等于请求取消：真正关窗由 ShellMenuTaskRunner 在任务收尾后
+                // （AllowClose=true）执行，这里只置标志，避免任务还在跑就被关掉。
+                _cancelled = true;
+                e.Handled = true;
+            };
         }
 
         public bool Cancelled => _cancelled;

@@ -126,14 +126,26 @@ namespace Auto7z_WPF
                 {
                     // 结果文案可能在任务线程上产生，用 BeginInvoke 转回界面线程再碰控件。
                     string resultText = _vm.ResultText;
-                    bool resultFailed = _vm.IsResultFailed;
-                    Dispatcher.BeginInvoke(new Action(() => ShowResult(resultText, resultFailed)));
+                    // 三态取值必须在任务线程上先取好：BeginInvoke 之后再读可能已被下一条结果改写。
+                    ResultSeverity severity = _vm.IsResultFailed ? ResultSeverity.Failed
+                        : _vm.IsResultWarning ? ResultSeverity.Warning
+                        : ResultSeverity.Success;
+                    Dispatcher.BeginInvoke(new Action(() => ShowResult(resultText, severity)));
                 }
 
                 // 忙闲切换会改变关闭按钮的提示文案，这里同步刷新。
                 if (e.PropertyName == nameof(_vm.IsBusy))
                 {
                     Dispatcher.BeginInvoke(new Action(UpdateCloseButtonToolTip));
+
+                    // **任务运行期间禁用便携模式开关。**（P1-1）
+                    //
+                    // 这是第二道防线（第一道在 SetPortableMode 里的 IsBusy 判断）。
+                    // 只靠代码里 return false 的话，用户会看到复选框弹回来却不知道为什么；
+                    // 禁用它，界面直接表达「现在不能切」，不需要额外解释。
+                    //
+                    // 必须在 Dispatcher 上改：PropertyChanged 来自任务线程。
+                    Dispatcher.BeginInvoke(new Action(UpdatePortableAvailability));
                 }
             };
 
@@ -169,7 +181,7 @@ namespace Auto7z_WPF
         // 结果只停留几秒就自动消失，计时器懒建一次并反复重启，避免叠加多个 Tick。
         private DispatcherTimer _resultTimer;
 
-        private void ShowResult(string text, bool failed)
+        private void ShowResult(string text, ResultSeverity severity)
         {
             // 懒建：构造阶段不碰 DispatcherTimer。
             if (_resultTimer == null)
@@ -190,9 +202,22 @@ namespace Auto7z_WPF
 
             // 直接写 Text 会压过样式里的绑定与悬停触发器，这里正需要结果文字盖住提示。
             MainText.Text = text;
-            MainText.Foreground = failed
-                ? (Brush)new SolidColorBrush(Color.FromRgb(0xC0, 0x39, 0x2B))
-                : (Brush)new SolidColorBrush(Color.FromRgb(0x1E, 0x88, 0x3B));
+
+            // 三态着色：成功绿、失败红、成功但有警告黄。
+            // 只留「失败/成功」两态时，带警告的成功会被涂成红色 —— 那与语义相反：
+            // 归档确实产出了，只是少了几个条目，退出码给 1 已经足够表达「未完全成功」。
+            switch (severity)
+            {
+                case ResultSeverity.Failed:
+                    MainText.Foreground = (Brush)new SolidColorBrush(Color.FromRgb(0xC0, 0x39, 0x2B));
+                    break;
+                case ResultSeverity.Warning:
+                    MainText.Foreground = (Brush)new SolidColorBrush(Color.FromRgb(0xB8, 0x86, 0x0B));
+                    break;
+                default:
+                    MainText.Foreground = (Brush)new SolidColorBrush(Color.FromRgb(0x1E, 0x88, 0x3B));
+                    break;
+            }
 
             // 每条结果重新计时，免得上一条的 Tick 提前清掉这一条。
             _resultTimer.Stop();
@@ -206,11 +231,81 @@ namespace Auto7z_WPF
             MainText.ClearValue(TextBlock.ForegroundProperty);
         }
 
+#if DEBUG
+        /// <summary>
+        /// 测试钩子：驱动结果行走一遍 ShowResult，并回报实际刷到界面上的颜色与文本。
+        ///
+        /// 存在的理由：ShowResult 是私有方法，颜色直接写在 MainText.Foreground 上，
+        /// 既不在 ViewModel 里、也没有 XAML 绑定。ViewModel 层的探针只看得到
+        /// IsResultFailed / IsResultWarning 这两个标志，看不到真正显示出来的颜色 ——
+        /// 而「三态被压成两态、警告被涂成红色」这类回归恰恰只体现在颜色上。
+        ///
+        /// 走这个钩子而不是反射 Application._resourceAssembly：那个私有静态字段
+        /// 是 WPF 内部实现，改版就可能失效；钩子则跟着产品源码一起编译，稳得多。
+        ///
+        /// **整段包在 #if DEBUG 里：Release 交付物中这个方法不存在。**
+        /// </summary>
+        public void ProbeResultAppearance(string text, Models.ResultSeverity severity,
+            out byte r, out byte g, out byte b, out string shownText)
+        {
+            ShowResult(text, severity);
+
+            // 让 DispatcherTimer 与样式回落有机会跑完。
+            Dispatcher.Invoke(new Action(delegate { }), DispatcherPriority.Background);
+
+            SolidColorBrush brush = MainText.Foreground as SolidColorBrush;
+            Color color = brush == null ? Colors.Transparent : brush.Color;
+            r = color.R;
+            g = color.G;
+            b = color.B;
+            shownText = MainText.Text;
+        }
+
+        /// <summary>
+        /// 测试钩子：清空结果行，供下一次断言从干净状态开始。
+        /// 与 <see cref="ProbeResultAppearance"/> 一样只在 Debug 构建里存在。
+        /// </summary>
+        public void ProbeClearResult()
+        {
+            ClearResult();
+            Dispatcher.Invoke(new Action(delegate { }), DispatcherPriority.Background);
+        }
+
+        /// <summary>
+        /// 测试钩子：回报结果行的 Foreground 是否还有本地值。
+        /// 空文本时应当回落到样式（UnsetValue），否则残留色会盖住悬停提示。
+        /// </summary>
+        public bool ProbeResultForegroundIsLocal()
+        {
+            return MainText.ReadLocalValue(TextBlock.ForegroundProperty) != DependencyProperty.UnsetValue;
+        }
+#endif
+
+        #endregion
+        #region 工具提示
         private void UpdateCloseButtonToolTip()
         {
             // 运行中把提示换成「右键可取消」——这个入口没有按钮，只能靠提示告诉用户。
             string key = _vm.IsBusy ? "Tip_CloseButtonCancel" : "Tip_CloseButton";
             SetToolTip(CloseButton, key);
+        }
+
+        /// <summary>
+        /// 任务运行期间禁用便携模式开关（P1-1）。
+        ///
+        /// 搬迁会复制并清理整棵数据目录，而任务产物目录的记录（`job.lock` /
+        /// `TaskState.json`）就在那棵树里。两者同时进行时，若任务恰好在搬迁期间结束，
+        /// 可能留下「active + 有效锁 + PID 已退出」的组合，
+        /// 下次启动会把它当成崩溃现场、递归删除**已经成功生成的产物**。
+        ///
+        /// 代码侧 `SetPortableMode` 已经会拒绝（并返回 false），这一层只负责
+        /// 让界面明确表达「现在不能切」，避免用户点了没反应却不知道原因。
+        /// </summary>
+        private void UpdatePortableAvailability()
+        {
+            if (CheckBox_Portable == null) return;
+
+            CheckBox_Portable.IsEnabled = !_vm.IsBusy;
         }
 
         private static void SetToolTip(DependencyObject target, string resourceKey)
@@ -954,7 +1049,7 @@ namespace Auto7z_WPF
             // RunFromShellMenu）都是先设模式再 SetPendingFiles，这里必须一致。
             if (handedMode != null)
             {
-                _vm.CurrentOperationMode = ParseHandedMode(handedMode);
+                _vm.CurrentOperationMode = ShellCommandService.ParseOperationMode(handedMode);
             }
 
             // 这里只传路径，目录大小由 ViewModel 交给任务线程再统计，界面线程不做递归遍历。
@@ -975,7 +1070,7 @@ namespace Auto7z_WPF
         private void StartModeSpecificTask(string handedMode)
         {
             OperationMode mode = handedMode != null
-                ? ParseHandedMode(handedMode)
+                ? ShellCommandService.ParseOperationMode(handedMode)
                 : _vm.CurrentOperationMode;
 
             switch (mode)
@@ -992,16 +1087,6 @@ namespace Auto7z_WPF
                     _vm.BeginCompressTask();
                     break;
             }
-        }
-
-        /// <summary>把交接来的模式开关换成枚举，无法识别时按自动处理。</summary>
-        private static OperationMode ParseHandedMode(string mode)
-        {
-            if (string.Equals(mode, ShellCommandService.SwitchZip, StringComparison.OrdinalIgnoreCase))
-                return OperationMode.Zip;
-            if (string.Equals(mode, ShellCommandService.SwitchUnZip, StringComparison.OrdinalIgnoreCase))
-                return OperationMode.UnZip;
-            return OperationMode.Auto;
         }
 
         // 关闭时先取消任务再杀 7z 进程：只发取消信号不杀进程，7z 会带着半截文件继续跑。

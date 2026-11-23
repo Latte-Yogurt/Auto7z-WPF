@@ -40,6 +40,10 @@ using System.Windows;
 //
 // 2.3.1 → 2.4.0 / 2.4.0 → 2.5.0：这两版的改动都是「把静默错误变成可见错误」这条主线下的
 // 功能性修复，按惯例各进一次次版本号。2.5.0 的内容见 Auto7z_ReleaseFix.md。
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
+//
+// 2.5.0 → 2.5.1：本轮只修交互缺陷，没有新增功能 —— Ctrl+S 是把「关窗时才保存」这条已有
+// 能力的入口补上（SaveConfig 早就存在、只是按需调不到），回车确认与 Tab 顺序都是修补
+// 既有的键盘行为。因此按修复进位到修订号。内容见 Auto7z_ReleaseFix_2.5.1.md。
+[assembly: AssemblyVersion("2.5.1.0")]
+[assembly: AssemblyFileVersion("2.5.1.0")]
 [assembly: Guid("F5D3B688-37B2-4259-B9CE-C8B4B0E2E8CD")]

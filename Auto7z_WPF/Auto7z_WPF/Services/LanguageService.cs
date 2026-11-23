@@ -91,15 +91,24 @@ namespace Auto7z_WPF.Services
         // 先摘掉旧的语言字典再挂新的，否则同一个资源键会因加载顺序不同而随机生效。
         public void SwitchLanguage(string languageCode)
         {
-            if (!IsSupported(languageCode))
+            // 归一化必须在 IsSupported 之后、拼路径之前。
+            //
+            // 早先的写法只在 IsSupported 内部 Trim 之后比较，而 IsSupported 返回 true 时
+            // 外面的 languageCode **原样未动** —— 于是传 " zh-CN " 会通过校验，
+            // 接着拼出 "Resources/Languages/ zh-CN .xaml" 这个不存在的 URI，
+            // 异常被下面的 catch 吞掉，界面语言静默停在旧值。
+            // 调用方（配置读取）确实会给出带空白或大小写混杂的值，这条路径是可达的。
+            string normalized = Normalize(languageCode);
+
+            if (!IsSupported(normalized))
             {
-                languageCode = FallbackLanguage;
+                normalized = FallbackLanguage;
             }
 
             // 切换失败只记日志，界面保留旧语言继续运行。
             try
             {
-                var newDict = LoadLanguageDictionary(languageCode);
+                var newDict = LoadLanguageDictionary(normalized);
                 var merged = Application.Current.Resources.MergedDictionaries;
 
                 foreach (var dict in merged.Where(IsLanguageDictionary).ToList())
@@ -112,14 +121,38 @@ namespace Auto7z_WPF.Services
                 // 缓存不重建的话，后台线程仍会读到上一个语言的文案。
                 EnumText.RebuildTextCache(newDict);
 
-                AppState.CurrentLanguage = languageCode;
+                AppState.CurrentLanguage = normalized;
             }
             catch (Exception ex)
             {
-                new LogService().WriteLog(EnumText.GetErrorText("Log_LanguageSwitchFailed", "切换语言失败（{0}）：{1}", languageCode, ex.Message), LogService.ErrorLevel.Error);
+                new LogService().WriteLog(
+                    EnumText.GetErrorText("Log_LanguageSwitchFailed",
+                        "切换语言失败（{0}）：{1}", languageCode, ex.Message),
+                    LogService.ErrorLevel.Error);
             }
 
             LanguageChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>
+        /// 把语言代号归一成支持的规范写法（去掉首尾空白、大小写对齐到白名单里的那一份）。
+        ///
+        /// 为什么需要归到白名单的写法而不只是 Trim：资源文件名是
+        /// <c>Resources/Languages/zh-CN.xaml</c>，Windows 上大小写不敏感但
+        /// pack:// URI 解析在部分宿主里区分大小写；统一成白名单里的那份最省心，
+        /// 也让 <see cref="AppState.CurrentLanguage"/> 里存的值始终可比对。
+        /// </summary>
+        private static string Normalize(string languageCode)
+        {
+            if (string.IsNullOrWhiteSpace(languageCode)) return FallbackLanguage;
+
+            string trimmed = languageCode.Trim();
+            foreach (string supported in _supportedLanguages)
+            {
+                if (supported.Equals(trimmed, StringComparison.OrdinalIgnoreCase)) return supported;
+            }
+
+            return trimmed;
         }
 
         #endregion

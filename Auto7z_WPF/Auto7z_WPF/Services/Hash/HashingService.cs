@@ -231,24 +231,6 @@ namespace Auto7z_WPF.Services
         private const int UiRefreshMs = 100;           // 进度回调节流间隔
 
         /// <summary>
-        /// 计算一批文件/文件夹内所有文件的校验值，每行一条「值 *文件名」。
-        /// </summary>
-        /// <param name="paths">要计算的文件或文件夹路径数组。</param>
-        /// <param name="algorithm">要用的算法；为空时退回默认算法。</param>
-        /// <param name="progress">进度回调，参数为当前百分比（0-100），可为 null。</param>
-        /// <param name="cancellationToken">取消标记。</param>
-        /// <returns>每个文件一行的校验文本。</returns>
-        /// <summary>
-        /// 计算一批文件的校验值。失败的文件被跳过，调用方拿不到失败信息 ——
-        /// 需要判断「清单是否覆盖了全部文件」时请改用 <see cref="CalculateDetailed"/>。
-        /// </summary>
-        public string[] Calculate(string[] paths, HashAlgorithmInfo algorithm,
-            Action<int> progress, CancellationToken cancellationToken)
-        {
-            return CalculateDetailed(paths, algorithm, progress, cancellationToken).Lines;
-        }
-
-        /// <summary>
         /// 计算一批文件，并回报哪些文件没能算出值。
         ///
         /// 为什么需要这个重载：原先只有 <see cref="Calculate"/>，单个文件读取失败时被静默跳过，
@@ -341,81 +323,103 @@ namespace Auto7z_WPF.Services
             byte[] buffer = new byte[ChooseBufferSize(fileSizes, totalSize)];
 
             // 内核实例全程复用：构造成本可以忽略，但复用后每个文件都省掉一次提供程序的重新打开。
+            //
+            // 释放用 try/finally + 运行时判断 IDisposable，而不是给 IHashCore 加接口约束：
+            //   ① 现有实现（纯托管算法）都不持有非托管资源，强制实现 IDisposable 是空负担；
+            //   ② 但将来若换成调用系统 CNG 提供程序的实现，它一定会有原生句柄 ——
+            //      那时泄漏只在长时间批量计算时才显形，极难归因。
+            // 这里按「谁实现了就释放谁」处理，两头都不吃亏，且不改变接口契约。
             IHashCore core = target.CreateCore();
-            core.Initialize();
-
-            for (int i = 0; i < files.Count; i++)
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                core.Initialize();
 
-                string filePath = files[i];
-                try
+                for (int i = 0; i < files.Count; i++)
                 {
-                    // 每个文件开始前复位摘要状态，复用实例不会把上一个文件的残余带进来。
-                    core.Initialize();
+                    cancellationToken.ThrowIfCancellationRequested();
 
-                    // 读前/读后各取一次「长度 + 最后写入时间」。FileShare.ReadWrite 允许别的进程
-                    // 同时写这个文件，摘要照样算得出来 —— 但那样算的是「读取过程中的某一瞬间」，
-                    // 清单可能永远校验不过，而清单本身看起来毫无问题。两次指纹一致才算读的是一份不动的文件。
-                    //
-                    // 取不到指纹不算失败（读得到内容就说明能算），只是无法作此判断，按「未变动」处理：
-                    // 这里的目标是把「可判定且确实变了」这种情况暴露出来，不是给每次读取加一道否决权。
-                    bool fingerprintBefore = TryReadFingerprint(filePath, out long lengthBefore, out DateTime writeBefore);
-
-                    using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, FileOptions.SequentialScan))
+                    string filePath = files[i];
+                    try
                     {
-                        int bytesRead;
-                        while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) > 0)
+                        // 每个文件开始前复位摘要状态，复用实例不会把上一个文件的残余带进来。
+                        core.Initialize();
+
+                        // 读前/读后各取一次「长度 + 最后写入时间」。FileShare.ReadWrite 允许别的进程
+                        // 同时写这个文件，摘要照样算得出来 —— 但那样算的是「读取过程中的某一瞬间」，
+                        // 清单可能永远校验不过，而清单本身看起来毫无问题。两次指纹一致才算读的是一份不动的文件。
+                        //
+                        // 取不到指纹不算失败（读得到内容就说明能算），只是无法作此判断，按「未变动」处理：
+                        // 这里的目标是把「可判定且确实变了」这种情况暴露出来，不是给每次读取加一道否决权。
+                        bool fingerprintBefore = TryReadFingerprint(filePath, out long lengthBefore, out DateTime writeBefore);
+
+                        using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, FileOptions.SequentialScan))
                         {
-                            cancellationToken.ThrowIfCancellationRequested();
-
-                            core.Append(buffer, 0, bytesRead);
-                            processedSize += bytesRead;
-
-                            var now = DateTime.UtcNow;
-                            if ((now - lastUi).TotalMilliseconds >= UiRefreshMs)
+                            int bytesRead;
+                            while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) > 0)
                             {
-                                lastUi = now;
-                                int percent = GetPercent(processedSize, totalSize);
-                                if (percent != lastPercent)
+                                cancellationToken.ThrowIfCancellationRequested();
+
+                                core.Append(buffer, 0, bytesRead);
+                                processedSize += bytesRead;
+
+                                var now = DateTime.UtcNow;
+                                if ((now - lastUi).TotalMilliseconds >= UiRefreshMs)
                                 {
-                                    lastPercent = percent;
-                                    progress?.Invoke(percent);
+                                    lastUi = now;
+                                    int percent = GetPercent(processedSize, totalSize);
+                                    if (percent != lastPercent)
+                                    {
+                                        lastPercent = percent;
+                                        progress?.Invoke(percent);
+                                    }
                                 }
                             }
                         }
+
+                        results.Add(ChecksumWriter.FormatLine(
+                            ChecksumWriter.ToHex(core.Finish()), Path.GetFileName(filePath)));
+
+                        if (fingerprintBefore
+                            && TryReadFingerprint(filePath, out long lengthAfter, out DateTime writeAfter)
+                            && (lengthAfter != lengthBefore || writeAfter != writeBefore))
+                        {
+                            // 行照样写出去（一份可能过时的清单也比没有强），但必须登记，
+                            // 让调用方能把「这一行对应的是读取途中那一瞬间」告诉用户。
+                            changed.Add(filePath);
+                        }
                     }
-
-                    results.Add(ChecksumWriter.FormatLine(
-                        ChecksumWriter.ToHex(core.Finish()), Path.GetFileName(filePath)));
-
-                    if (fingerprintBefore
-                        && TryReadFingerprint(filePath, out long lengthAfter, out DateTime writeAfter)
-                        && (lengthAfter != lengthBefore || writeAfter != writeBefore))
+                    catch (OperationCanceledException)
                     {
-                        // 行照样写出去（一份可能过时的清单也比没有强），但必须登记，
-                        // 让调用方能把「这一行对应的是读取途中那一瞬间」告诉用户。
-                        changed.Add(filePath);
+                        throw;
+                    }
+                    catch
+                    {
+                        // 单个文件失败（被占用/无权限）时用已完成的大小补齐进度，不打断整体流程；
+                        // 但必须把它记下来 —— 否则调用方无从知道清单少了哪一项。
+                        //
+                        // 越界防护不是多余的：files 与 fileSizes 目前由三条路径成对填充
+                        // （单文件、目录枚举、以及 catch 里的补 0），理论上等长。
+                        // 但这层不变量没有任何编译期约束，一旦将来新增一条只往 files 里加、
+                        // 忘了配 fileSizes 的路径，这里就会抛 IndexOutOfRangeException ——
+                        // 而它发生在「处理失败文件」的 catch 里，会把一次可恢复的读取失败
+                        // 升级成整批计算崩溃，正是本方法最该避免的事。
+                        if (i < fileSizes.Count) processedSize += fileSizes[i];
+                        failed.Add(filePath);
+                    }
+
+                    int current = GetPercent(processedSize, totalSize);
+                    if (current != lastPercent)
+                    {
+                        lastPercent = current;
+                        progress?.Invoke(current);
                     }
                 }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch
-                {
-                    // 单个文件失败（被占用/无权限）时用已完成的大小补齐进度，不打断整体流程；
-                    // 但必须把它记下来 —— 否则调用方无从知道清单少了哪一项。
-                    processedSize += fileSizes[i];
-                    failed.Add(filePath);
-                }
-
-                int current = GetPercent(processedSize, totalSize);
-                if (current != lastPercent)
-                {
-                    lastPercent = current;
-                    progress?.Invoke(current);
-                }
+            }
+            finally
+            {
+                // 只有实现了 IDisposable 的内核才释放（见上面的说明）。
+                var disposable = core as IDisposable;
+                if (disposable != null) disposable.Dispose();
             }
 
             progress?.Invoke(100);

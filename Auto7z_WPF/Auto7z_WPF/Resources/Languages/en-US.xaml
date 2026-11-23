@@ -24,6 +24,7 @@
     <sys:String x:Key="AutoSaveCheckBox">Save config on Exit</sys:String>
     <sys:String x:Key="Log_PortableSwitched">Switched to {0}, data folder: {1}</sys:String>
     <sys:String x:Key="Log_PortableSwitchFailed">Failed to switch portable mode: {0}</sys:String>
+    <sys:String x:Key="Log_PortableBlockedByTask">A task is running, so portable mode cannot be switched; finish the task first.</sys:String>
     <sys:String x:Key="Log_PortableRootNotEmpty">Switched to normal mode, but {0} still contains other files, so it was not removed; the next start will still be treated as portable</sys:String>
     <sys:String x:Key="Err_PortableMoveFailed">Failed to switch to {0}: the data folder could not be moved</sys:String>
     <sys:String x:Key="Tip_Portable">Portable mode: keeps the config, components and logs in .config\Auto7z next to the program, so it can be carried around. Unchecking moves them back to %LOCALAPPDATA%\Auto7z.</sys:String>
@@ -86,17 +87,24 @@
     <sys:String x:Key="ErrorTitle">Error</sys:String>
 
     <sys:String x:Key="WarningMessage">Warning: </sys:String>
+    <sys:String x:Key="InfoMessage">Info: </sys:String>
     <sys:String x:Key="ProgressText">7z: {0}%</sys:String>
     <sys:String x:Key="SHA256ProgressText">SHA256: {0}%</sys:String>
     <sys:String x:Key="ErrorMessage">An error occurred: </sys:String>
+    <sys:String x:Key="Err_ConfigSaveFailed">Saving the configuration failed; see the log for details.</sys:String>
+    <sys:String x:Key="ConfigSaved">Configuration saved</sys:String>
     <sys:String x:Key="MultiFilePackQuery">Multiple files have been detected. Do you want to package them into a single compressed file?</sys:String>
     <sys:String x:Key="Result_CompressDone">Compression done</sys:String>
     <sys:String x:Key="Result_ExtractDone">Extraction done</sys:String>
     <sys:String x:Key="Result_Failed">Failed</sys:String>
     <sys:String x:Key="Result_Cancelled">Task cancelled</sys:String>
     <sys:String x:Key="Result_PartialWarning">Compression finished, but some files were skipped. See the log for details.</sys:String>
+    <sys:String x:Key="Result_ExtractPartialWarning">Extraction finished, but some entries were skipped. See the log for details.</sys:String>
     <sys:String x:Key="Err_UnexpectedExitCode">7-Zip returned a non-zero exit code: {0}</sys:String>
     <sys:String x:Key="Err_ProcessNotExited">The 7-Zip process did not exit after cancellation</sys:String>
+    <sys:String x:Key="Err_ProcessStillAlive">The 7-Zip process is still running after a forced kill (it may linger): PID {0}</sys:String>
+    <sys:String x:Key="Err_OutputTruncated">(output incomplete, the reason may be inaccurate) {0}</sys:String>
+    <sys:String x:Key="Log_OutputTruncated">The 7-Zip output could not be fully read (drain timed out); the reason below may be incomplete: {0}</sys:String>
     <sys:String x:Key="Archive_MergedNamePattern">{0} and {1} more</sys:String>
     <sys:String x:Key="Log_InstallDirNotWritable">The install directory is not writable (does not affect running; components and config go to %LOCALAPPDATA%\Auto7z): {0}</sys:String>
     <sys:String x:Key="Log_PathsNotFound">None of the given paths exist or are accessible: {0}</sys:String>
@@ -139,6 +147,7 @@
     <sys:String x:Key="Log_ChoseMerge">The user chose to merge, {0} file(s) into one archive</sys:String>
     <sys:String x:Key="Log_ChoseSeparate">The user chose not to merge, {0} file(s) compressed separately</sys:String>
     <sys:String x:Key="Log_SevenZipWarning">7-Zip reported a warning but finished: {0}</sys:String>
+    <sys:String x:Key="Log_ExtractPartialReason">Extraction treated as incomplete: current 7-Zip warning={0}, earlier failure in this batch={1}</sys:String>
     <sys:String x:Key="Log_PasswordDialogFailed">Failed to show the password prompt: {0}</sys:String>
     <sys:String x:Key="Log_PasswordCancelled">The user cancelled the password prompt</sys:String>
     <sys:String x:Key="Log_PasswordAsked">7-Zip asked for a password, attempt {0}</sys:String>
@@ -180,4 +189,5 @@
     <sys:String x:Key="Console_ShellDllMissing">Auto7zShell.dll not found, cannot register</sys:String>
     <sys:String x:Key="Console_PortableNoShellMenu">Portable mode does not register the context menu: copy the folder and it just works, nothing is left behind on the system</sys:String>
     <sys:String x:Key="Err_UnknownSwitch">Unknown option: {0}</sys:String>
+    <sys:String x:Key="Err_ConflictingSwitch">These options cannot be used together: {0}</sys:String>
 </ResourceDictionary>

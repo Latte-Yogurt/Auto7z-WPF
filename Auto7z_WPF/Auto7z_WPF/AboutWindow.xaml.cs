@@ -94,6 +94,40 @@ namespace Auto7z_WPF
 
 
         #endregion
+        #region 键盘处理
+        /// <summary>
+        /// 关于窗口只有「确认」一个动作，回车与 Esc 都该关窗。
+        ///
+        /// 为什么不能只靠 <c>IsDefault="True"</c>：那个属性只负责「回车触发默认按钮」，
+        /// 而按钮原先把唯一的行为挂在 <c>MouseBinding</c>（左键）上 ——
+        /// 键盘路径根本走不到，回车、空格、用键盘模拟点击全都毫无反应，
+        /// 只有真拿鼠标点一下才关得掉。
+        /// </summary>
+        /// <param name="e">按键事件参数。</param>
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+
+            if (e.Handled) return;
+
+            if (e.Key == Key.Enter || e.Key == Key.Escape)
+            {
+                // 标记已处理：不让同一个按键再冒泡去触发一遍默认按钮，否则会关两次。
+                e.Handled = true;
+                Close();
+            }
+        }
+
+        /// <summary>
+        /// 「确认」按钮真正的键盘路径：空格激活、以及任何以 <c>Command</c> 之外方式
+        /// 触发的点击都落在这里。
+        /// </summary>
+        private void ConfirmButton_Click(object sender, RoutedEventArgs e)
+        {
+            Close();
+        }
+
+        #endregion
         #region 链接跳转
         // 两个入口只是地址不同，其余处理共用 OpenLink。
         private void GithubLink_Click(object sender, MouseButtonEventArgs e)

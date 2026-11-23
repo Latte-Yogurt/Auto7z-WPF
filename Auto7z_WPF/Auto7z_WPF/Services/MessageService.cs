@@ -13,8 +13,10 @@ namespace Auto7z_WPF.Services
         #region 资源键与提示框
         private const string ErrorTitleKey = "ErrorTitle";
         private const string WarningTitleKey = "WarningTitle";
+        private const string InfoTitleKey = "InfoTitle";
         private const string ErrorHeadingKey = "ErrorMessage";
         private const string WarningHeadingKey = "WarningMessage";
+        private const string InfoHeadingKey = "InfoMessage";
 
         /// <summary>显示错误提示，并通过 <paramref name="logMessage"/> 交回可写入日志的整段文案。</summary>
         /// <param name="detail">错误详情。</param>
@@ -23,6 +25,21 @@ namespace Auto7z_WPF.Services
         {
             logMessage = Compose(ErrorHeadingKey, "Error: ", detail);
             Show(logMessage, ErrorTitleKey, "Error");
+        }
+
+        /// <summary>
+        /// 显示「做成了」这类中性提示，并通过 <paramref name="logMessage"/> 交回可写入日志的整段文案。
+        ///
+        /// 与 <see cref="ShowError"/> / <see cref="ShowWarning"/> 同构，只是标题与正文用中性的
+        /// 「提示」而不是错误/警告措辞 —— 手工保存成功（Ctrl+S）要的正是这个语义：
+        /// 说「已保存」但不必让用户以为出了什么事。
+        /// </summary>
+        /// <param name="detail">提示详情。</param>
+        /// <param name="logMessage">拼好的日志文案。</param>
+        public void ShowInfo(string detail, out string logMessage)
+        {
+            logMessage = Compose(InfoHeadingKey, "Info: ", detail);
+            Show(logMessage, InfoTitleKey, "Info");
         }
 
         /// <summary>显示警告提示，并通过 <paramref name="logMessage"/> 交回可写入日志的整段文案。</summary>
@@ -128,6 +145,16 @@ namespace Auto7z_WPF.Services
                     };
 
                     window.Show();
+
+#if DEBUG
+                    // 自动驱动：窗口**照常显示**（动画、焦点、布局全都真实发生），
+                    // 由 DebugAutoDriver 在 60ms 后抛按钮自己的 Click 事件，
+                    // 与鼠标点击走同一条路。详见 DebugAutoDriver 的说明。
+                    //
+                    // 这里不关心具体是「是/否/确定」哪一种 —— 驱动器会按窗口里实际的
+                    // 按钮名字去找，找不到就退回关窗，所以同一个入口能覆盖全部窗口类型。
+                    DebugAutoDriver.Attach(window);
+#endif
 
                     // Show 之后立刻返回会让提示框一闪而过，用 DispatcherFrame 把当前调用栈停在这里，
                     // 等到窗口关闭事件把 Continue 置 false 才继续往下走，效果等价于模态对话框。

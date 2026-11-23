@@ -131,10 +131,15 @@ namespace Auto7z_WPF.Services
         /// <summary>
         /// 判断 <paramref name="path"/> 是否落在 <paramref name="directory"/> 之内（含该目录本身）。
         ///
-        /// 这是写盘路径的边界校验：目前所有写盘目标都由程序自己的目录推导，
-        /// 但一旦输出目录变成可配置（或配置键被手工改成 "../.."），
-        /// 一次写盘就可能落到数据目录之外 —— 配置覆盖、日志删除都会变成任意路径写入。
-        /// 这里先把这条边界的判据固定下来，调用方一律先过它再落笔。
+        /// **这是纯字符串判断，不碰文件系统。** 名字与其他语言的 Contains 类函数一致，
+        /// 但语义严格限定为「规范化后的路径字符串是否以该目录为前缀」。
+        ///
+        /// 它<see langword="不"/>解析重解析点 —— `Path.GetFullPath` 只做规范化，
+        /// 不会把 Junction / SymbolicLink 展开成真实目标。因此
+        /// **绝不能拿它当「实际位置」的判据**去做删除或写入的边界检查：
+        /// `Logs` 若是指向 `D:\ExternalData` 的联接，一条位于 `Logs\old.log` 的路径
+        /// 在字符串上确实在日志目录内，但 `File.Delete` 会穿过联接到外部磁盘。
+        /// 这类用途必须走 <see cref="IsWithinFilesystemBoundary"/>。
         ///
         /// 三个必须注意的点：
         /// 1. 双方都要先 GetFullPath，否则 "C:\a\b\..\c" 与 "C:\a\c" 会被当成不同路径；
@@ -170,6 +175,160 @@ namespace Auto7z_WPF.Services
                 // 路径非法（含通配符、超长、盘符不存在）时按「不在其内」处理：
                 // 边界校验只能往保守的方向失败，放行等于让它形同不存在。
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// **写盘 / 删除前的实际文件系统边界校验**：字符串在目录内，且路径上
+        /// 没有任何一个现存层级是重解析点（Junction / SymbolicLink / MountPoint）。
+        ///
+        /// 为什么必须与 <see cref="IsUnderDirectory"/> 分开，而不是直接改那个函数：
+        /// 那个函数是**纯函数** —— 不碰文件系统、不会失败、可任意调用，
+        /// 已经有别的语义依赖它（输出目录自包含判断等）。
+        /// 把 I/O 塞进去会让它在只读介质、网络路径、权限不足时表现变得不可预测，
+        /// 而调用方根本没预期一个「路径字符串比较」会去做 20 次 GetFileAttributes。
+        ///
+        /// **两个函数的关系**：凡是要**穿透路径去删/写**的地方，用这个；
+        /// 只关心「字符串上在不在里面」的地方，用 <see cref="IsUnderDirectory"/>。
+        /// 本程序里前者是日志清理、临时文件清理、配置文件落盘 —— 都已改走这里。
+        ///
+        /// 失败方向：无法确认（路径非法、属性读不出、祖先层级判不清）一律返回 false。
+        /// 删除与写入不可逆，宁可拒绝一次合法操作，也不能放过一次越界。
+        /// </summary>
+        /// <param name="path">待检查的路径（文件或目录）。</param>
+        /// <param name="directory">允许的根目录。</param>
+        /// <returns>确认落在边界内返回 true。</returns>
+        public static bool IsWithinFilesystemBoundary(string path, string directory)
+        {
+            // 第一层：纯字符串包含。不通过就不必碰文件系统。
+            if (!IsUnderDirectory(path, directory)) return false;
+
+            try
+            {
+                // 第二层：**每一个现存祖先**都不能是重解析点。
+                //
+                // 只查路径最后一段是不够的：`.config` 是联接、`Auto7z` 不是链接时，
+                // 最后一段通过、实际位置却在别的磁盘上。必须逐级向上。
+                return !HasReparsePointAncestor(path);
+            }
+            catch
+            {
+                // 探测本身失败（路径半路被删、权限不足）→ 无法确认 → 拒绝。
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 从 <paramref name="path"/> 向上遍历**每一个现存祖先**（含自身），
+        /// 判断其中是否有重解析点。
+        ///
+        /// **不存在的那几层要跳过，不能停。**（2026-11-23 修复）
+        ///
+        /// 早先的写法是「遇到第一个不存在的层级就 return false」，理由写在注释里：
+        /// 「再往上都是本来就不存在的路径段，删除与写入都不会碰到它们」。
+        /// 这个推理是错的，而且错在最要紧的那一类调用上：
+        ///
+        ///     D:\config-holder       ← Junction 指向 E:\real-config
+        ///        \Auto7z
+        ///           \Auto7z.json    ← 尚不存在（正要写入）
+        ///
+        /// 遍历从 `Auto7z.json` 开始：它不存在 → 那一层的存在性检查为假 →
+        /// **立刻 return false**，根本没走到上一层的 `config-holder`。
+        /// 于是「父目录是联接」这个事实被完全漏掉。
+        ///
+        /// 实测确认（2026-11-23）：对上述路径，本方法与搬迁类里的同名方法
+        /// **都返回 False（放行）**，而它们的文档注释都声称会检查每一个现存祖先。
+        ///
+        /// 而「待写目标尚不存在」恰恰是**写入**路径的常态 —— 配置文件第一次落盘时
+        /// 它就是不存在的。所以这个缺陷不是边角，它让写入侧的前置校验整条失效。
+        ///
+        /// 正确做法：不存在的层级**跳过继续向上**。新建一个文件时，数据写在哪里
+        /// 由**最近的现存祖先**决定，那个祖先是不是链接才是关键。
+        ///
+        /// 代价：路径整条都不存在时会一路走到盘符根，多几次属性查询。
+        /// 这条路径只在写盘与删除前调用，不在热路径上。
+        /// </summary>
+        /// <param name="path">完整路径。</param>
+        /// <returns>某个现存祖先（含自身）是重解析点，或无法确认时返回 true。</returns>
+        public static bool HasReparsePointAncestor(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return true;
+
+            string current;
+            try
+            {
+                current = Path.GetFullPath(path);
+            }
+            catch
+            {
+                return true;
+            }
+
+            while (!string.IsNullOrEmpty(current))
+            {
+                // 每一层都问一次。ExistsAsReparsePoint 的三态语义已经覆盖了
+                // 「不存在→false」与「无法确认→true」，这里不需要再判存在性 ——
+                // 早先那句额外的存在性检查正是缺陷的来源。
+                if (ExistsAsReparsePoint(current)) return true;
+
+                string parent;
+                try
+                {
+                    parent = Path.GetDirectoryName(current);
+                }
+                catch
+                {
+                    return true;
+                }
+
+                // 到根了（C:\ 的 GetDirectoryName 返回 null）或不再变化。
+                if (string.IsNullOrEmpty(parent) ||
+                    string.Equals(parent, current, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                current = parent;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// 路径是否「存在且是重解析点」，**无法确认时按不安全处理**。
+        ///
+        /// 三种情况：
+        /// 1. 确认不存在 → false（删除不存在的东西什么都不会发生）
+        /// 2. 存在且是链接 → true
+        /// 3. **无法确认**（无权限、IO 异常）→ true（拒绝）
+        ///
+        /// 参与的是不可逆操作的守卫，fail-open 方向是错的。
+        /// </summary>
+        /// <param name="path">待检查的路径。</param>
+        /// <returns>存在且是重解析点（或无法确认）时返回 true。</returns>
+        public static bool ExistsAsReparsePoint(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return true;
+
+            try
+            {
+                FileAttributes attributes = File.GetAttributes(path);
+                return (attributes & FileAttributes.ReparsePoint) != 0;
+            }
+            catch (FileNotFoundException)
+            {
+                // 确认不存在。
+                return false;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                // 父目录都不存在。
+                return false;
+            }
+            catch
+            {
+                // 无法确认 —— 按不安全处理。
+                return true;
             }
         }
 

@@ -194,6 +194,10 @@
     </Resource>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Services\DataDirectoryMover.cs" />
+    <Compile Include="Services\MigrationGate.cs" />
+    <Compile Include="Services\MigrationDirectoryLock.cs" />
+    <Compile Include="Services\DebugAutoDriver.cs" />
     <Compile Include="Services\MessageService.cs" />
     <Compile Include="Properties\AssemblyInfo.cs">
       <SubType>Code</SubType>

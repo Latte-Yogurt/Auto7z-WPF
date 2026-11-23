@@ -50,23 +50,22 @@ namespace Auto7z_WPF.Services
         // 这是 Keypirinha / Handy / VS Code 一类便携程序的通行做法：
         // 启动时看程序目录旁有没有数据目录（或 portable 标记），有才跑便携。
         //
-        // 切换模式要连带重置日志文件句柄：日志路径跟着数据目录走，
-        // 不重置的话后续日志还会继续写进旧模式那棵树。
+        // **本属性只改状态，不触发任何副作用。**
+        // 早先这里有 `if (changed) LogService.ResetLogFiles();`，而 LogService.LogDirectory
+        // 又读 AppPaths.LogDirectory —— 两个静态类形成 AppPaths → LogService → AppPaths 的
+        // 循环依赖，初始化顺序变得敏感。日志句柄的重置改由调用方在改完模式后显式调用
+        // （见 Auto7zViewModel.SetPortableMode），AppPaths 回到「纯路径计算」这一职责。
         public static bool IsPortable
         {
             get { lock (_syncRoot) { return _portable; } }
             set
             {
-                bool changed;
                 lock (_syncRoot)
                 {
-                    changed = _portable != value;
                     _portable = value;
                     // 模式一变，缓存下来的数据目录就指向了另一棵树，必须作废重算。
                     _dataDirectory = null;
                 }
-
-                if (changed) LogService.ResetLogFiles();
             }
         }
 

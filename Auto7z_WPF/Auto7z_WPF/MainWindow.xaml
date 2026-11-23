@@ -15,7 +15,14 @@
         UseLayoutRounding="True"
         AllowDrop="True"
         Width="520" Height="260"
+        FocusManager.FocusedElement="{Binding ElementName=AboutButton}"
         KeyboardNavigation.TabNavigation="Cycle">
+
+    <Window.InputBindings>
+        <!-- Ctrl+S 手工保存配置。放在窗口级 InputBindings 上而不是某个控件的：
+             按键从焦点控件一路冒泡上来都能命中，用户把光标留在输入框里也照样保存。 -->
+        <KeyBinding Key="S" Modifiers="Ctrl" Command="{Binding SaveConfigCommand}"/>
+    </Window.InputBindings>
 
     <WindowChrome.WindowChrome>
         <!-- CaptionHeight 取整窗高度：无边框窗口靠它把整片标题区交回系统处理拖动，
@@ -83,6 +90,15 @@
                 </StackPanel>
 
                 <StackPanel x:Name="ModePanel" Style="{DynamicResource ModePanelStyle}" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0">
+                    <!-- Tab 顺序按「视觉顺序」整窗统一编号，而且必须「页签 → 该页内容」交替：
+                         焦点落到某个 TabItem 会顺带选中那一页，未选中页的内容根本不在可视化树里，
+                         所以三页的控件不会同时参与排序。编号规则：
+                           0–9    左侧操作区（模式三选一 → 关于 → 设置）
+                           10–19  基础设置页
+                           20–29  压缩页
+                           30–39  解压页
+                         TabItem 的编号取每段的段首（5 / 20 / 40），页内控件接在它后面。
+                         实测（见 testtools）：这样走查是线性一遍过的，没有跳过与重复。 -->
                     <RadioButton x:Name="RadioButton_Auto" TabIndex="0" Content="{DynamicResource AutoModeButton}"
                                  Style="{StaticResource OperationMenuButtonStyle}"
                                  IsChecked="{Binding IsAutoModeSelected, Mode=OneWay}"
@@ -116,8 +132,7 @@
 
                     <Button x:Name="SettingButton" TabIndex="4" Grid.Column="2" Style="{DynamicResource SettingBtnContentStyle}"
                             Height="24" MinWidth="90" Background="Transparent"
-                            Click="SettingBtn_Click"/>
-                </Grid>
+                            Click="SettingBtn_Click"/>                </Grid>
             </Grid>
 
             <Border x:Name="SidePanel" Grid.Column="1" Background="#FDFDFD" BorderBrush="#DDDDDD" BorderThickness="1,0,0,0">
@@ -154,8 +169,7 @@
                             </ItemsPanelTemplate>
                         </TabControl.ItemsPanel>
 
-                        <TabItem x:Name="TabGR_SidePanel" Header="{DynamicResource GeneralTab}">
-                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <TabItem x:Name="TabGR_SidePanel" TabIndex="5" Header="{DynamicResource GeneralTab}">                            <ScrollViewer VerticalScrollBarVisibility="Auto">
                                 <StackPanel Margin="10,5">
 
                                     <CheckBox x:Name="CheckBox_TopMost" TabIndex="10" Content="{DynamicResource TopmostCheckBox}" HorizontalAlignment="Left"/>
@@ -192,13 +206,13 @@
                             </ScrollViewer>
                         </TabItem>
 
-                        <TabItem x:Name="TabZP_SidePanel" Header="{DynamicResource ZipTab}">
+                        <TabItem x:Name="TabZP_SidePanel" TabIndex="20" Header="{DynamicResource ZipTab}">
                             <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                                 <StackPanel Margin="5,5">
 
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
                                         <TextBlock Text="{DynamicResource VolumeSizeLabel}" MinWidth="70"/>
-                                        <TextBox x:Name="TextBox_Volume" TabIndex="20" Width="100"/>
+                                        <TextBox x:Name="TextBox_Volume" TabIndex="21" Width="100"/>
                                         <TextBlock Text="{DynamicResource MBUnit}" Margin="4,0,0,0"/>
                                     </StackPanel>
 
@@ -213,13 +227,15 @@
 
                                     <StackPanel x:Name="StackPanel_Addon" Orientation="Horizontal" Margin="10,10" Style="{DynamicResource StackPanelAddonStyle}">
                                         <TextBlock Text="{DynamicResource AddonOptionsLabel}" MinWidth="70"/>
+                                        <!-- 固实与 zstd 是互斥的两个外观：前者只在 7z 下可见，后者只在 tar 下可见，
+                                             任何时刻最多只有一个参与排序。共用 23 因此不会冲突 —— 它俩在视觉上就是同一行。 -->
                                         <CheckBox x:Name="CheckBox_SolidMode" TabIndex="23" Content="{DynamicResource SolidModeContent}" Style="{DynamicResource SolidModeCheckBoxStyle}"/>
-                                        <CheckBox x:Name="CheckBox_Zstd" TabIndex="24" Content="{DynamicResource ZstdContent}" Style="{DynamicResource ZstdCheckBoxStyle}"/>
+                                        <CheckBox x:Name="CheckBox_Zstd" TabIndex="23" Content="{DynamicResource ZstdContent}" Style="{DynamicResource ZstdCheckBoxStyle}"/>
                                     </StackPanel>
 
                                     <StackPanel x:Name="StackPanel_Addon2" Orientation="Horizontal" Margin="10,10" Style="{DynamicResource StackPanelAddon2Style}">
                                         <TextBlock Text="{DynamicResource AddonOptionsLabel}" MinWidth="70"/>
-                                        <CheckBox x:Name="CheckBox_ENCFileName" TabIndex="25" Content="{DynamicResource EncFileNameContent}" Style="{DynamicResource EncFileNameCheckBoxStyle}"/>
+                                        <CheckBox x:Name="CheckBox_ENCFileName" TabIndex="24" Content="{DynamicResource EncFileNameContent}" Style="{DynamicResource EncFileNameCheckBoxStyle}"/>
                                     </StackPanel>
 
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
@@ -227,12 +243,12 @@
                                         <!-- 密码用 TextBox 而不是 PasswordBox：PasswordBox 不接受 IME
                                              的组合输入，中文密码根本打不进去；能输进去比看不见更要紧。
                                              代价是这个框是明文显示的。 -->
-                                        <TextBox x:Name="ZipPasswordInput" TabIndex="26" Width="100" Text="{Binding ZipPasswordInputText, UpdateSourceTrigger=PropertyChanged}" Style="{DynamicResource PasswordBoxZipStyle}"/>
+                                        <TextBox x:Name="ZipPasswordInput" TabIndex="25" Width="100" Text="{Binding ZipPasswordInputText, UpdateSourceTrigger=PropertyChanged}" Style="{DynamicResource PasswordBoxZipStyle}"/>
                                     </StackPanel>
 
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
                                         <TextBlock Text="{DynamicResource CompressionLevelLabel}" MinWidth="70"/>
-                                        <ComboBox x:Name="ComboBox_ZipLevel" TabIndex="27" Width="100" Style="{DynamicResource ZipLevelComboBoxStyle}">
+                                        <ComboBox x:Name="ComboBox_ZipLevel" TabIndex="26" Width="100" Style="{DynamicResource ZipLevelComboBoxStyle}">
                                             <ComboBoxItem Content="{DynamicResource Level_Store}"/>
                                             <ComboBoxItem Content="{DynamicResource Level_Normal}"/>
                                             <ComboBoxItem Content="{DynamicResource Level_Ultra}"/>
@@ -241,7 +257,10 @@
 
                                     <StackPanel Orientation="Horizontal" Margin="10,10" Style="{DynamicResource StackPanelAddon2Style}">
                                         <TextBlock Text="{DynamicResource ChecksumLabel}" MinWidth="70"/>
-                                        <CheckBox x:Name="CheckBox_GenerateSHA256" TabIndex="21" Content="{DynamicResource GenerateSHA256Content}" Style="{DynamicResource EncFileNameCheckBoxStyle}"/>
+                                        <!-- TabIndex 27 而不是原先的 21：这个复选框在界面上排在压缩等级之后，
+                                             原先编 21 会让 Tab 从分卷直接跳到它、再倒回生成格式 ——
+                                             与眼睛看到的顺序相反。编号按视觉位置走，不按控件出现的先后。 -->
+                                        <CheckBox x:Name="CheckBox_GenerateSHA256" TabIndex="27" Content="{DynamicResource GenerateSHA256Content}" Style="{DynamicResource EncFileNameCheckBoxStyle}"/>
                                     </StackPanel>
 
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
@@ -251,20 +270,22 @@
                                              与下拉框重叠）。同时已把该文案精简为 5 字的「校驗算法：」（65px），
                                              与简中「校验算法：」字数一致、宽度一致，视觉上整列仍是统一的 70px。 -->
                                         <TextBlock Text="{DynamicResource ChecksumAlgorithmLabel}" MinWidth="70"/>
-                                        <ComboBox x:Name="ComboBox_Algorithm" TabIndex="22" Width="100"/>
+                                        <!-- 原先与 ComboBox_Format 同为 22：两个同号控件分散在同一页，
+                                             Tab 会先跳到算法下拉、再倒回生成格式，顺序看着是乱的。 -->
+                                        <ComboBox x:Name="ComboBox_Algorithm" TabIndex="28" Width="100"/>
                                     </StackPanel>
 
                                 </StackPanel>
                             </ScrollViewer>
                         </TabItem>
 
-                        <TabItem x:Name="TabUZ_SidePanel" Header="{DynamicResource UnZipTab}">
+                        <TabItem x:Name="TabUZ_SidePanel" TabIndex="40" Header="{DynamicResource UnZipTab}">
                             <ScrollViewer>
                                 <StackPanel Margin="5,5">
                                     <StackPanel Orientation="Horizontal" Margin="10,10">
                                         <TextBlock Text="{DynamicResource UnzipPasswordLabel}" MinWidth="70"/>
                                         <!-- 与压缩密码框同因：这里的 TextBox 也是为了让中文密码能输入。 -->
-                                        <TextBox x:Name="UnZipPasswordInput" TabIndex="30" Width="100"/>
+                                        <TextBox x:Name="UnZipPasswordInput" TabIndex="41" Width="100"/>
                                     </StackPanel>
                                 </StackPanel>
                             </ScrollViewer>

@@ -69,6 +69,14 @@ namespace Auto7z_WPF
         // 批量解压时外层进度条已到达的百分比：只前进不回退，免得每套归档都从 0% 重来。
         private int _batchReportedPercent;
 
+        // 进入「当前这一项」之前，同一批里是否已经有失败项。
+        //
+        // 为什么不直接用 LastTaskFailed：它是全 ViewModel 共享的标志，压缩部分成功
+        // 也会把它置 true。若解压侧直接读它，就会出现
+        // 「上一轮压缩有警告 → 本轮干净解压被误判成部分失败」这种跨任务污染。
+        // 这个字段由 StartExtractAll 在每项开始前刷新，作用域严格限定在「本次解压批次内」。
+        private bool _batchHadFailureBeforeCurrentItem;
+
         private ICommand _toggleModePanelCommand;
 
         private string _progressTextTemplate;
@@ -84,6 +92,7 @@ namespace Auto7z_WPF
 
         private string _resultText = string.Empty;
         private bool _isResultFailed;
+        private bool _isResultWarning;
 
 
         public Auto7zViewModel()
@@ -104,6 +113,9 @@ namespace Auto7z_WPF
             CloseCommand = new RelayCommand<object>(_ => RequestClose?.Invoke(this, EventArgs.Empty));
             MinimizeCommand = new RelayCommand<object>(_ => RequestMinimize?.Invoke(this, EventArgs.Empty));
             AboutCommand = new RelayCommand<object>(_ => RequestShowAbout?.Invoke(this, EventArgs.Empty));
+            // 手工保存：只有主窗口绑了 Ctrl+S，其余窗口拿到同一个 ViewModel 也能执行，
+            // 但它们不会显示这个快捷键 —— 命令本身不做「当前窗口」判断，判断留给 XAML。
+            SaveConfigCommand = new RelayCommand<object>(_ => SaveConfigWithFeedback());
 
             EggClickCommand = new RelayCommand<object>(_ =>
             {
@@ -184,33 +196,130 @@ namespace Auto7z_WPF
         {
             if (portable == _isPortable) return true;
 
-            // 先搬数据目录，再改状态：搬失败时磁盘与内存都还停在原模式，不会出现
-            // 「两边都有配置、程序却认为自己只在其中一边」的中间态。
-            bool moved = portable ? MoveToPortable() : MoveToLocal();
-
-            if (!moved)
+            // **任务运行期间禁止切换模式。**（P1-1，RC 阻断项）
+            //
+            // 为什么这条必须挡在最前面，而不是「靠闸门兜住」：
+            //
+            //   1. 任务 active 时产物目录里有 `.auto7z-owner`，job.lock 也在
+            //   2. 搬迁先复制数据目录，再删源；复制期间任务可能刚好结束
+            //   3. 任务结束后，产物目录会被用户当作「已经生成好的压缩包」
+            //   4. 若此时状态与锁被搬成一份「active + 有效锁 + PID 已退出」的组合，
+            //      下次启动就会按「上次崩溃」递归删除那个目录 —— 删的是成功产物
+            //
+            // 第 4 步是本轮报告里指出的数据丢失路径。`MarkTaskFinished` 那边
+            // 已经改成「拿不到闸就整体不动」，但两道防线都要有：
+            // 光是让收尾可被安全跳过，仍会留下一个「任务在搬家中结束」的状态，
+            // 而用户在任务跑着的时候本来也不该能切模式。
+            //
+            // 返回 false 让调用方把复选框翻回去，界面不会显示一个没生效的开关。
+            if (IsBusy)
             {
-                ReportError(
-                    EnumText.GetErrorText("Err_PortableMoveFailed", "切换{0}失败：数据目录没能移动", portable ? "便携模式" : "普通模式"));
+                _logService.WriteLog(
+                    EnumText.GetErrorText("Log_PortableBlockedByTask",
+                        "有任务正在执行，不能切换便携模式；请等任务结束后再试。"),
+                    LogService.ErrorLevel.Warning);
                 return false;
             }
 
-            _isPortable = portable;
-            AppPaths.IsPortable = portable;
+            // 这两个值在闸门内产生、在闸门外使用：
+            //   blockedSave        —— 闸门内那次配置保存是否被写入闸挡下（需要在开闸后补写）
+            //   portableRootNotEmpty —— 取消便携后 .config 里仍有别人的文件（需要告警）
+            // 它们都是「闸门内观察到的事实」，必须先在闸门内取出来，
+            // 否则开闸后再去查，看到的是已经被后台线程改动过的状态。
+            bool blockedSave = false;
+            string portableRootNotEmpty = null;
+
+            // **搬迁与模式切换必须是一个事务，闸门要罩住整段**（BUG-03）。
+            //
+            // 早先闸门只包在 DataDirectoryMover 内部：文件搬完、源目录删掉，
+            // 闸门当场就开了，而「改 _isPortable / AppPaths.IsPortable / 重置日志路径」
+            // 还在后面几行。中间这个窗口里，后台线程会按**旧模式**算日志路径：
+            //
+            //   1. 数据迁移成功，原 .config/Auto7z 被删除
+            //   2. 闸门自动打开
+            //   3. AppPaths.IsPortable 仍然是 true
+            //   4. 后台日志线程写日志 → 按旧模式重新创建 .config/Auto7z/Logs
+            //   5. ViewModel 才执行 AppPaths.IsPortable = false
+            //
+            // 而便携判定看的是 `.config` 目录是否存在（AppPaths.DetectPortableFromDisk）。
+            // 第 4 步把旧目录又建出来了，于是**下次启动又被判成便携模式** ——
+            // 用户点了「取消便携」，当前运行期间看着成功，重启却回到便携。
+            //
+            // 现在由调用方在更外层持闸，把「搬文件」与「提交模式」放进同一个隔离区。
+            // MigrationGate 是可重入的：搬迁类内部再持一次只是加深度，
+            // 真正开闸发生在下面这个 using 结束处 —— 即模式已经提交完之后。
+            using (MigrationGate.SuspendWrites())
+            {
+                // 先搬数据目录，再改状态：搬失败时磁盘与内存都还停在原模式，不会出现
+                // 「两边都有配置、程序却认为自己只在其中一边」的中间态。
+                bool moved = portable ? DataDirectoryMover.MoveToPortable()
+                                          : DataDirectoryMover.MoveToLocal();
+
+                if (!moved)
+                {
+                    ReportError(
+                        EnumText.GetErrorText("Err_PortableMoveFailed", "切换{0}失败：数据目录没能移动", portable ? "便携模式" : "普通模式"));
+                    return false;
+                }
+
+                // 搬运已经在闸门内完成，下面几步必须**也在闸门内**做完，
+                // 否则又会打开上面那个「旧模式写回旧目录」的窗口。
+                _isPortable = portable;
+                // 先设模式（它会作废缓存的数据目录），再重置日志句柄 ——
+                // LogService 的日志路径是从 AppPaths.DataDirectory 现算的，顺序反了就会
+                // 把句柄重置到旧目录上。这两个动作以前被塞在 AppPaths.IsPortable 的 setter 里，
+                // 造成 AppPaths ↔ LogService 循环依赖，现在由调用方显式串起来。
+                AppPaths.IsPortable = portable;
+                LogService.ResetLogFiles();
+
+                // **补写搬迁期间被闸门挡下的那一次配置保存**。
+                //
+                // 闸门关闭期间配置写入一律放弃，否则会有内容落在
+                // 「已复制、未删除」的窗口里，搬完后两边都不完整。
+                // 这里要把「切换模式」这个状态本身落盘，免得下次启动读到的是搬迁前的旧配置。
+                //
+                // 注意：本线程正持着搬迁闸，WriteConfigAtomically 里的 TryEnterWrite
+                // 会因「本线程正在搬迁」而返回 false。这是**有意的** ——
+                // 真正的补写发生在闸门打开之后（见下面 blockedSave 的处理），
+                // 这样配置写入仍然走「先取写入闸、再落盘」的统一路径，
+                // 不需要给「搬迁线程自己」开一个特权分支。
+                blockedSave = !SaveConfig();
+
+                // 取消便携之后要确认 .config 真的没了：便携判定看的就是这个目录，
+                // 它还留着的话下次启动会被判回便携、把数据又搬回来，等于取消不掉。
+                // 目录里还有别的文件时不能强删（不是本程序的东西），只能如实告警。
+                //
+                // 这一步放在闸门内是刻意的：它决定「下次启动算不算便携」，
+                // 属于模式提交的一部分，不该在闸门外被别人抢着把目录建回来。
+                if (!portable && Directory.Exists(AppPaths.GetPortableRootDirectory()))
+                {
+                    portableRootNotEmpty = AppPaths.GetPortableRootDirectory();
+                }
+            }
+
+            // 走到这里闸门已经打开：下面的日志与配置写入都是正常写入路径。
+
+            // 把「闸门期间被挡下的那次配置保存」补上。
+            // 失败不阻断切换：搬到新位置这件事已经成功了，
+            // 配置稍后还会被 AutoSave 或用户手动作再写一次。
+            if (blockedSave && !SaveConfig())
+            {
+                _logService.WriteLog(
+                    EnumText.GetErrorText("Err_ConfigSaveFailed", "保存配置失败，详情见日志。"),
+                    LogService.ErrorLevel.Warning);
+            }
+
             _logService.WriteLog(
                 EnumText.GetErrorText("Log_PortableSwitched", "已切换到{0}，数据目录：{1}",
                     portable ? "便携模式" : "普通模式", AppPaths.DataDirectory),
                 LogService.ErrorLevel.Info);
 
-            // 取消便携之后要确认 .config 真的没了：便携判定看的就是这个目录，
-            // 它还留着的话下次启动会被判回便携、把数据又搬回来，等于取消不掉。
-            // 目录里还有别的文件时不能强删（不是本程序的东西），只能如实告警。
-            if (!portable && Directory.Exists(AppPaths.GetPortableRootDirectory()))
+            if (portableRootNotEmpty != null)
             {
                 _logService.WriteLog(
                     EnumText.GetErrorText("Log_PortableRootNotEmpty",
                         "已切到普通模式，但 {0} 里还有其它文件，未删除；下次启动仍会被判为便携模式",
-                        AppPaths.GetPortableRootDirectory()),
+                        portableRootNotEmpty),
                     LogService.ErrorLevel.Warning);
             }
 
@@ -229,150 +338,18 @@ namespace Auto7z_WPF
 
         #endregion
         #region 便携数据目录搬迁
-        private static bool MoveToPortable()
-        {
-            return MoveDataDirectory(
-                Path.Combine(AppPaths.GetLocalRootDirectory(), AppPaths.DataFolderName),
-                Path.Combine(AppPaths.GetPortableRootDirectory(), AppPaths.DataFolderName));
-        }
-
-        private static bool MoveToLocal()
-        {
-            string portableRoot = AppPaths.GetPortableRootDirectory();
-            bool moved = MoveDataDirectory(
-                Path.Combine(portableRoot, AppPaths.DataFolderName),
-                Path.Combine(AppPaths.GetLocalRootDirectory(), AppPaths.DataFolderName));
-
-            if (moved) RemoveEmptyDirectory(portableRoot);
-
-            return moved;
-        }
-
-
-        /// <summary>
-        /// 删掉一个空目录。
-        ///
-        /// 便携判定看的是 .config 目录本身（见 AppPaths.DetectPortableFromDisk），
-        /// 所以「取消便携」必须真的把这个目录删掉，否则下次启动又会被判成便携、把数据搬回来。
-        /// 目录里还有别的东西时不动它 —— 那些不是本程序的，删掉就是越权。
-        /// 这种情况下取消便携不彻底，日志里会留一条警告，见 Log_PortableRootNotEmpty。
-        /// </summary>
-        private static void RemoveEmptyDirectory(string path)
-        {
-            try
-            {
-                if (!Directory.Exists(path)) return;
-                if (Directory.EnumerateFileSystemEntries(path).Any()) return;
-
-                Directory.Delete(path);
-            }
-            catch
-            {
-                // 删不掉就留着，一个空目录不影响后续流程。
-            }
-        }
-
-        private static bool IsSafeToDeleteRecursively(string directoryPath)
-        {
-            if (string.IsNullOrWhiteSpace(directoryPath)) return false;
-
-            try
-            {
-                string full = Path.GetFullPath(directoryPath);
-                string[] roots =
-                {
-                    Path.GetFullPath(AppPaths.GetPortableRootDirectory()),
-                    Path.GetFullPath(AppPaths.GetLocalRootDirectory())
-                };
-
-                foreach (string root in roots)
-                {
-                    string dataDirectory = Path.GetFullPath(Path.Combine(root, AppPaths.DataFolderName));
-
-                    if (string.Equals(full, dataDirectory, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return string.Equals(Path.GetFileName(full), AppPaths.DataFolderName,
-                            StringComparison.Ordinal);
-                    }
-
-                    if (full.StartsWith(dataDirectory + Path.DirectorySeparatorChar,
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static bool MoveDataDirectory(string sourceDirectory, string targetDirectory)
-        {
-            try
-            {
-                if (!Directory.Exists(sourceDirectory))
-                {
-                    Directory.CreateDirectory(targetDirectory);
-                    return true;
-                }
-
-                Directory.CreateDirectory(targetDirectory);
-
-                foreach (string file in Directory.GetFiles(sourceDirectory))
-                {
-                    string target = Path.Combine(targetDirectory, Path.GetFileName(file));
-                    if (File.Exists(target)) File.Delete(target);
-                    File.Move(file, target);
-                }
-
-                foreach (string directory in Directory.GetDirectories(sourceDirectory))
-                {
-                    string target = Path.Combine(targetDirectory, Path.GetFileName(directory));
-                    MergeDirectory(directory, target);
-                }
-
-                string fullSource = Path.GetFullPath(sourceDirectory);
-                if (!IsSafeToDeleteRecursively(fullSource)) return false;
-
-                Directory.Delete(sourceDirectory, true);
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static void MergeDirectory(string sourceDirectory, string targetDirectory)
-        {
-            Directory.CreateDirectory(targetDirectory);
-
-            foreach (string file in Directory.GetFiles(sourceDirectory))
-            {
-                string target = Path.Combine(targetDirectory, Path.GetFileName(file));
-                if (File.Exists(target)) File.Delete(target);
-                File.Move(file, target);
-            }
-
-            foreach (string directory in Directory.GetDirectories(sourceDirectory))
-            {
-                MergeDirectory(directory, Path.Combine(targetDirectory, Path.GetFileName(directory)));
-            }
-
-            string fullSource = Path.GetFullPath(sourceDirectory);
-            if (!IsSafeToDeleteRecursively(fullSource)) return;
-
-            Directory.Delete(sourceDirectory, true);
-        }
-
-
+        // 搬迁的六步实现已提取到 Services.DataDirectoryMover：
+        // 那块逻辑全是 static、不碰实例状态，只依赖 AppPaths 与文件系统，
+        // 属于「文件系统搬迁」这个独立职责（核心风险是删到哪里，而不是界面怎么显示）。
+        // 本类只负责「该不该搬」的判定与副作用（日志、外壳注册）。
         #endregion
         #region 配置保存与关闭收尾
-        public void SaveConfig()
+        /// <summary>
+        /// 把当前设置写进配置文件。返回是否真的写成功 ——
+        /// 手工保存（Ctrl+S）要靠这个结果区分「已保存」与「保存失败」，
+        /// 静默失败会让用户以为配置已经落盘。
+        /// </summary>
+        public bool SaveConfig()
         {
             var config = new AppConfig
             {
@@ -394,12 +371,43 @@ namespace Auto7z_WPF
                 ErrorLevel = ErrorLevel
             };
 
-            _configService.Save(config);
+            return _configService.Save(config);
         }
 
         public void SaveAutoSaveSetting(bool autoSave)
         {
-            _configService.Update("AutoSave", autoSave.ToString());
+            // 返回值必须检查：写不进去时用户下次启动看到的是旧的开关，
+            // 而界面上显示的是他刚选的那个值 —— 不留日志就完全无从追查。
+            if (!_configService.Update("AutoSave", autoSave.ToString()))
+            {
+                _logService.WriteLog(
+                    EnumText.GetErrorText("Err_ConfigSaveFailed", "保存配置失败，详情见日志。"),
+                    LogService.ErrorLevel.Warning);
+            }
+        }
+
+        /// <summary>
+        /// 手工保存（Ctrl+S）。与「关闭时自动保存」的区别只在反馈：
+        /// 这里无论成功与否都要给用户一个结论，自动保存则只有日志。
+        ///
+        /// 成功走单按键提示框（标题「提示」、正文「已保存配置」），
+        /// 失败走错误提示框 —— 「已保存」这句话一旦说错，用户会以为配置已经落盘，
+        /// 下次启动却发现设置回到了旧值。
+        /// </summary>
+        public void SaveConfigWithFeedback()
+        {
+            bool saved = SaveConfig();
+
+            if (saved)
+            {
+                // 正文与日志共用同一句文案：界面说什么，日志里就是什么，事后对照不会对不上。
+                string message = EnumText.GetResourceText("ConfigSaved", "配置已保存");
+                _messageService.ShowInfo(message, out string log);
+                _logService.WriteLog(log, LogService.ErrorLevel.Info);
+                return;
+            }
+
+            ReportError(EnumText.GetErrorText("Err_ConfigSaveFailed", "保存配置失败，详情见日志。"));
         }
 
         public void OnClosing()
@@ -408,9 +416,16 @@ namespace Auto7z_WPF
 
             _sevenZipService.KillRunningProcesses();
 
+            // 关闭路径上不能弹模态框（窗口正在消失，没有宿主），但也绝不能默默吞掉失败：
+            // 用户下次启动看到旧设置、却没有任何痕迹可查，是最难排查的那类问题。
             if (AutoSave)
             {
-                SaveConfig();
+                if (!SaveConfig())
+                {
+                    _logService.WriteLog(
+                        EnumText.GetErrorText("Err_ConfigSaveFailed", "保存配置失败，详情见日志。"),
+                        LogService.ErrorLevel.Error);
+                }
             }
             else
             {
@@ -449,6 +464,16 @@ namespace Auto7z_WPF
         {
             get => _isResultFailed;
             set => SetProperty(ref _isResultFailed, value);
+        }
+
+        /// <summary>
+        /// 结果行是否应显示为「成功但有警告」（黄色）。
+        /// 与 <see cref="IsResultFailed"/> 互斥：警告不算失败（退出码仍是 1，但界面不该涂成红色）。
+        /// </summary>
+        public bool IsResultWarning
+        {
+            get => _isResultWarning;
+            set => SetProperty(ref _isResultWarning, value);
         }
 
         public string GetDefaultModeText()
@@ -819,7 +844,7 @@ namespace Auto7z_WPF
         public ICommand MinimizeCommand { get; }
         public ICommand AboutCommand { get; }
         public ICommand EggClickCommand { get; }
-
+        public ICommand SaveConfigCommand { get; }
 
         public bool LastTaskFailed { get; private set; }
 
@@ -845,63 +870,24 @@ namespace Auto7z_WPF
                 return;
             }
 
+            // 一次算出「本批要不要归一化续卷」，循环里不再反复问。
+            // 判据只看当前操作模式，与路径无关，属于循环不变量。
+            bool adjustForExtract = ShouldNormalizeSplitVolume();
+
             var items = new List<PendingFile>();
             int rejected = 0;
             foreach (var path in files)
             {
                 if (string.IsNullOrWhiteSpace(path)) continue;
 
-                string full = NormalizeInputPath(path);
-
-                try
-                {
-                    if (File.Exists(full))
-                    {
-                        // 分卷归一化**只对「要解压」的场景成立**。
-                        //
-                        // 解压时 7-Zip 只认首卷，传 .021 进来必须换回 .001，
-                        // 否则一定会失败、或者同一套被重复解压。
-                        //
-                        // 但压缩时不能这么做：用户选中 .021 点「压缩」，要压缩的是
-                        // .021 这个文件本身。若在入口就把它改写成 .001，压出来的
-                        // 就成了首卷的内容 —— 表现就是「不管选哪一卷，最后都压了 .001」。
-                        // 压缩流程自己会按分卷归类（见 KeepWholeSplitSets），入口不该替它决定。
-                        bool adjustForExtract = ShouldNormalizeSplitVolume();
-
-                        string entry = (adjustForExtract && SevenZipService.IsSplitArchive(full))
-                            ? SevenZipService.ResolveFirstVolumePath(full)
-                            : full;
-
-                        items.Add(PendingFile.CreateLazy(entry, false));
-                    }
-                    else if (Directory.Exists(full))
-                    {
-                        items.Add(PendingFile.CreateLazy(full, true));
-                    }
-                    else if (SevenZipService.IsSplitArchive(full))
-                    {
-                        // 逻辑名（x.7z）在磁盘上并不存在，只有 x.7z.001 落地。
-                        // 这条只在解压语义下才有意义：压缩一个不存在的路径没有意义。
-                        // 只认 File.Exists 会把「界面上选中逻辑名」的输入整个挡掉，
-                        // 而 SevenZipService 里明明写了配套的 .001 回退。
-                        if (ShouldNormalizeSplitVolume())
-                        {
-                            items.Add(PendingFile.CreateLazy(
-                                SevenZipService.ResolveFirstVolumePath(full), false));
-                        }
-                        else
-                        {
-                            rejected++;
-                        }
-                    }
-                    else
-                    {
-                        rejected++;
-                    }
-                }
-                catch
+                PendingFile entry = ClassifyInputPath(path, adjustForExtract);
+                if (entry == null)
                 {
                     rejected++;
+                }
+                else
+                {
+                    items.Add(entry);
                 }
             }
 
@@ -916,6 +902,64 @@ namespace Auto7z_WPF
             LastRejectedInputCount = rejected;
 
             _pendingBatch = new PendingFileBatch(items);
+        }
+
+        /// <summary>
+        /// 把一条输入路径归类成待处理项；无法接受时返回 null（由调用方计为「被丢弃」）。
+        ///
+        /// 单独提出来（原先是 SetPendingFiles 里 50 行的内联分支）的原因：
+        /// 这段是**纯判定** —— 输入是「一个路径 + 是否解压语义」，输出是「待处理项或不接受」，
+        /// 不碰任何实例状态、不写盘、不记日志。把它与「遍历 + 计数 + 写日志 + 换批次」
+        /// 混在一个方法里，会让那条最容易出错的分卷归一化规则淹没在流程代码中。
+        ///
+        /// 分卷归一化**只对解压语义成立**：
+        ///   - 解压：7-Zip 只认首卷，传 .021 进来必须换回 .001，否则一定失败、
+        ///     或同一套被重复解压。
+        ///   - 压缩：用户选中 .021 点「压缩」，要压的就是 .021 本身。若在入口改写成 .001，
+        ///     压出来的会变成首卷内容 —— 表现是「不管选哪一卷，最后都压了 .001」。
+        ///     压缩流程自己会按分卷归类（见 KeepWholeSplitSets），入口不该替它决定。
+        /// </summary>
+        /// <param name="path">原始输入路径。</param>
+        /// <param name="adjustForExtract">是否处于「续卷应归一化回首卷」的语义下。</param>
+        /// <returns>待处理项；路径不可接受时返回 null。</returns>
+        private static PendingFile ClassifyInputPath(string path, bool adjustForExtract)
+        {
+            string full = NormalizeInputPath(path);
+
+            try
+            {
+                if (File.Exists(full))
+                {
+                    string entry = (adjustForExtract && SevenZipService.IsSplitArchive(full))
+                        ? SevenZipService.ResolveFirstVolumePath(full)
+                        : full;
+
+                    return PendingFile.CreateLazy(entry, false);
+                }
+
+                if (Directory.Exists(full))
+                {
+                    return PendingFile.CreateLazy(full, true);
+                }
+
+                // 逻辑名（x.7z）在磁盘上并不存在，只有 x.7z.001 落地。
+                // 这条只在解压语义下才有意义：压缩一个不存在的路径没有意义。
+                // 只认 File.Exists 会把「界面上选中逻辑名」的输入整个挡掉，
+                // 而 SevenZipService 里明明写了配套的 .001 回退。
+                if (SevenZipService.IsSplitArchive(full))
+                {
+                    return adjustForExtract
+                        ? PendingFile.CreateLazy(SevenZipService.ResolveFirstVolumePath(full), false)
+                        : null;
+                }
+
+                return null;
+            }
+            catch
+            {
+                // 非法路径（含通配符、超长、盘符不存在）一律判为不可接受。
+                return null;
+            }
         }
 
         /// <summary>
@@ -949,11 +993,7 @@ namespace Auto7z_WPF
         {
             if (IsBusy) return;
 
-            IsBusy = true;
-            LastTaskFailed = false;
-            // 新任务从零开始，批量进度条不能继承上一任的百分比。
-            _batchReportedPercent = 0;
-            _cancellation = new CancellationTokenSource();
+            BeginTask();
 
             Action<ProgressInfo> report = info =>
             {
@@ -971,7 +1011,7 @@ namespace Auto7z_WPF
                 // 错误前缀必须走资源键：Console 模式下用户直接看这行，硬编码中文会在英文环境里露馅。
                 WriteConsoleLine(EnumText.GetResourceText("ErrorMessage", "Error: ") + ex.Message);
                 ReportTaskResult(false, ex.Message);
-                SetResult(EnumText.GetResourceText("Result_Failed", "Failed"), failed: true);
+                SetResult(EnumText.GetResourceText("Result_Failed", "Failed"), ResultSeverity.Failed);
             }
             finally
             {
@@ -1030,38 +1070,7 @@ namespace Auto7z_WPF
                 return;
             }
 
-            var archives = new List<PendingFile>();
-            var others = new List<PendingFile>();
-
-            // 一套分卷只在解压分支出现一次：全选 7 卷时，每一卷都满足 IsSplitArchive，
-            // 不去重就会把同一套包解 7 遍。键是逻辑名（x.7z），大小写不敏感。
-            var seenSplitSets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var f in batch.Files)
-            {
-                if (f.IsDirectory)
-                {
-                    others.Add(f);
-                    continue;
-                }
-
-                // 分卷要按「套」判断，不能按单卷看：续卷的魔数是压缩数据流，
-                // DetectByMagic 认不出 7z 头。只看单卷的话，同一套里的 .002…
-                // 会掉进压缩分支被重新压一遍 —— 既解不开原包，又多出一堆垃圾产物。
-                if (SevenZipService.IsSplitArchive(f.Path))
-                {
-                    string logical = SevenZipService.GetLogicalArchiveName(f.Path);
-                    if (!seenSplitSets.Add(logical)) continue;
-
-                    // 统一补成首卷：7-Zip 只认 .001，给它任意一卷都会失败。
-                    archives.Add(new PendingFile(
-                        SevenZipService.ResolveFirstVolumePath(f.Path), 0, false));
-                    continue;
-                }
-
-                if (_sevenZipService.IsArchiveFile(f.Path)) archives.Add(f);
-                else others.Add(f);
-            }
+            SplitArchiveAndOther(batch.Files, out List<PendingFile> archives, out List<PendingFile> others);
 
             if (archives.Count == 0 && others.Count == 0)
             {
@@ -1098,6 +1107,59 @@ namespace Auto7z_WPF
             }
 
             CompressFiles(compressible, report);
+        }
+
+        /// <summary>
+        /// 把一批待处理项分成「要解压的归档」与「要压缩的其余项」。
+        ///
+        /// 单独提出来（原先是 StartAutoDispatch 里 30 行的内联循环）的原因：
+        /// 这是**纯归类** —— 输入一批项，输出两个列表，不写盘、不记日志、不启动任务。
+        /// 它与「按归类结果分派」是两件事，混在一个方法里会让那段最绕的分卷规则
+        /// 淹没在流程控制里。
+        ///
+        /// 三条规则都不直观，各自都来自真实缺陷：
+        ///
+        /// 1. **目录一律算「其余」**：压缩目录有意义，解压一个目录没有。
+        /// 2. **分卷按「套」判断，不能按单卷看**：续卷的魔数是压缩数据流，
+        ///    DetectByMagic 认不出 7z 头。只看单卷的话，同一套里的 .002…
+        ///    会掉进压缩分支被重新压一遍 —— 既解不开原包，又多出一堆垃圾产物。
+        ///    所以先按逻辑名去重，再把整卷补成首卷（7-Zip 只认 .001）。
+        /// 3. **一套分卷只在解压分支出现一次**：全选 7 卷时每一卷都满足
+        ///    IsSplitArchive，不去重就会把同一套包解 7 遍。键用逻辑名、大小写不敏感。
+        /// </summary>
+        /// <param name="files">待分类的项。</param>
+        /// <param name="archives">要解压的归档（已补成首卷、已按套去重）。</param>
+        /// <param name="others">要压缩的其余项。</param>
+        private void SplitArchiveAndOther(IReadOnlyList<PendingFile> files,
+            out List<PendingFile> archives, out List<PendingFile> others)
+        {
+            archives = new List<PendingFile>();
+            others = new List<PendingFile>();
+
+            var seenSplitSets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var f in files)
+            {
+                if (f.IsDirectory)
+                {
+                    others.Add(f);
+                    continue;
+                }
+
+                if (SevenZipService.IsSplitArchive(f.Path))
+                {
+                    string logical = SevenZipService.GetLogicalArchiveName(f.Path);
+                    if (!seenSplitSets.Add(logical)) continue;
+
+                    // 统一补成首卷：7-Zip 只认 .001，给它任意一卷都会失败。
+                    archives.Add(new PendingFile(
+                        SevenZipService.ResolveFirstVolumePath(f.Path), 0, false));
+                    continue;
+                }
+
+                if (_sevenZipService.IsArchiveFile(f.Path)) archives.Add(f);
+                else others.Add(f);
+            }
         }
 
         #endregion
@@ -1207,6 +1269,35 @@ namespace Auto7z_WPF
 
         private void StartTaskInBackground(Action<Action<ProgressInfo>> task) => _ = RunTaskAsync(task);
 
+        /// <summary>
+        /// 任务开始前的统一初始化。**两条任务入口都必须先调它。**
+        ///
+        /// 为什么单独提出来：早先 RunTaskAndWait（命令行）与 RunTaskAsync（GUI）
+        /// 各自写了一遍初始化，而两边的「要重置哪些字段」渐渐分叉了 ——
+        /// RunTaskAsync 漏了 <c>_batchReportedPercent = 0</c>。
+        ///
+        /// 后果是真实的：<see cref="OutputProgress"/> 会把进度钳制在
+        /// <c>_batchReportedPercent</c> 上且只增不减，于是 GUI 里上一批跑到 100%
+        /// 之后，下一批的进度条**一直停在 100% 不动**（命令行路径没这个问题，
+        /// 因为那条路径恰好重置了它）。实测确认：GUI 路径起任务后该字段仍是 100。
+        ///
+        /// 现在两条入口只调这一个方法，将来再加需要重置的状态时
+        /// 不可能只改一边。
+        /// </summary>
+        private void BeginTask()
+        {
+            IsBusy = true;
+
+            // 新任务必须从「上次没失败」起跑。漏掉会让一次失败/部分成功永久污染后续任务
+            // （详见 RunTaskAsync 原有注释里的那个偶发缺陷）。
+            LastTaskFailed = false;
+
+            // 批量进度条不能继承上一任的百分比。
+            _batchReportedPercent = 0;
+
+            _cancellation = new CancellationTokenSource();
+        }
+
         private async Task RunTaskAsync(Action<Action<ProgressInfo>> task)
         {
             if (IsBusy)
@@ -1214,8 +1305,7 @@ namespace Auto7z_WPF
                 return;
             }
 
-            IsBusy = true;
-            _cancellation = new CancellationTokenSource();
+            BeginTask();
 
             Action<ProgressInfo> report = info => UpdateProgress(info);
 
@@ -1228,7 +1318,7 @@ namespace Auto7z_WPF
                 _logService.WriteLog(EnumText.GetErrorText("Log_TaskException", "任务执行异常：{0}", ex.Message), LogService.ErrorLevel.Error);
                 ReportError(ex.Message);
                 MainText = GetDefaultModeText();
-                SetResult(EnumText.GetResourceText("Result_Failed", "Failed"), failed: true);
+                SetResult(EnumText.GetResourceText("Result_Failed", "Failed"), ResultSeverity.Failed);
             }
             finally
             {
@@ -1408,6 +1498,66 @@ namespace Auto7z_WPF
 
         #endregion
         #region 压缩命令执行
+
+        /// <summary>
+        /// 按分卷配置的解析结果决定「要不要扫体积」，并对每种状态留痕。
+        ///
+        /// 单独提出来（原先是 StartCompress 里 35 行的 switch）的原因：
+        /// 这是**一个完整的判定 + 留痕单元**，三种状态各有各的语义，
+        /// 与「拼命令、跑 7z」没有关系。混在压缩主流程里会让这三条语义差别
+        /// 被流程代码包住，而它们恰恰是最容易被误解的部分：
+        ///
+        ///   - Valid          ：要扫体积（分卷判断靠它）。但体积读失败不中断压缩 ——
+        ///                      只是分卷判断会偏保守，必须留痕让用户能从日志看出原因。
+        ///   - ExplicitlyOff  ：填 0 是**用户的明确选择**，不是错误，记 Info 即可。
+        ///                      硬报 Warning 会让用户以为配置写坏了。
+        ///   - Invalid        ：值非法。不阻断任务（按不分卷继续），但必须让用户看到配置错了。
+        ///
+        /// 留痕放在任务入口而不是 CanSplitVolume，是因为后者被界面反复调用，
+        /// 每次判定都写日志会把问题日志刷满，用户真正失败的场景反而找不到。
+        /// </summary>
+        /// <param name="batch">本批待压缩项（Valid 时会就地补齐体积）。</param>
+        /// <param name="volumeState">分卷配置的解析结果。</param>
+        private void ApplyVolumeStateAndMeasure(PendingFileBatch batch, SevenZipService.VolumeSpecState volumeState)
+        {
+            switch (volumeState)
+            {
+                case SevenZipService.VolumeSpecState.Valid:
+                    // 体积只用于判断要不要分卷，读失败不该中断压缩 —— 但「没读全」必须留痕，
+                    // 否则用户遇到「该分卷却没分」时日志里一个字都没有，只能靠猜。
+                    // 两种不完整都计数：整条读不出来，以及读到了但有子树被跳过。
+                    batch.EnsureSizes(path =>
+                    {
+                        long bytes = _sevenZipService.GetSizeInBytesDetailed(path, out int skipped);
+                        return new SizeProbeResult { Bytes = bytes, SkippedDirectories = skipped };
+                    }, out int sizeMisses);
+
+                    if (sizeMisses > 0)
+                    {
+                        _logService.WriteLog(
+                            EnumText.GetErrorText("Log_SizeEstimateIncomplete",
+                                "体积统计未能读全：{0} 个输入路径读取失败，分卷判断可能偏保守（压缩本身不受影响）",
+                                sizeMisses),
+                            LogService.ErrorLevel.Warning);
+                    }
+                    break;
+
+                case SevenZipService.VolumeSpecState.ExplicitlyOff:
+                    // 填 0 是用户的明确选择，不是错误：记一条 Info，让「这次为什么没分卷」在日志里可查。
+                    _logService.WriteLog(
+                        EnumText.GetErrorText("Log_VolumeSplitDisabled", "分卷大小设为 0，本次不进行分卷（该值是合法的禁用开关）"),
+                        LogService.ErrorLevel.Info);
+                    break;
+
+                case SevenZipService.VolumeSpecState.Invalid:
+                    // 非法值不阻断任务：按不分卷继续压缩，但必须让用户从日志里看到配置写错了。
+                    _logService.WriteLog(
+                        EnumText.GetErrorText("Log_VolumeInvalid", "分卷大小无效（{0}），已按不分卷处理", Volume),
+                        LogService.ErrorLevel.Warning);
+                    break;
+            }
+        }
+
         private void StartCompress(Action<ProgressInfo> report)
         {
             var batch = _pendingBatch;
@@ -1438,41 +1588,7 @@ namespace Auto7z_WPF
             SevenZipService.VolumeSpecState volumeState =
                 SevenZipService.ResolveVolumeSpec(Format, Volume, out long volumeBytes);
 
-            switch (volumeState)
-            {
-                case SevenZipService.VolumeSpecState.Valid:
-                    // 体积只用于判断要不要分卷，读失败不该中断压缩 —— 但「没读全」必须留痕，
-                    // 否则用户遇到「该分卷却没分」时日志里一个字都没有，只能靠猜。
-                    // 两种不完整都计数：整条读不出来，以及读到了但有子树被跳过。
-                    batch.EnsureSizes(path =>
-                    {
-                        long bytes = _sevenZipService.GetSizeInBytesDetailed(path, out int skipped);
-                        return new SizeProbeResult { Bytes = bytes, SkippedDirectories = skipped };
-                    }, out int sizeMisses);
-                    if (sizeMisses > 0)
-                    {
-                        _logService.WriteLog(
-                            EnumText.GetErrorText("Log_SizeEstimateIncomplete",
-                                "体积统计未能读全：{0} 个输入路径读取失败，分卷判断可能偏保守（压缩本身不受影响）",
-                                sizeMisses),
-                            LogService.ErrorLevel.Warning);
-                    }
-                    break;
-
-                case SevenZipService.VolumeSpecState.ExplicitlyOff:
-                    // 填 0 是用户的明确选择，不是错误：记一条 Info，让"这次为什么没分卷"在日志里可查。
-                    _logService.WriteLog(
-                        EnumText.GetErrorText("Log_VolumeSplitDisabled", "分卷大小设为 0，本次不进行分卷（该值是合法的禁用开关）"),
-                        LogService.ErrorLevel.Info);
-                    break;
-
-                case SevenZipService.VolumeSpecState.Invalid:
-                    // 非法值不阻断任务：按不分卷继续压缩，但必须让用户从日志里看到配置写错了。
-                    _logService.WriteLog(
-                        EnumText.GetErrorText("Log_VolumeInvalid", "分卷大小无效（{0}），已按不分卷处理", Volume),
-                        LogService.ErrorLevel.Warning);
-                    break;
-            }
+            ApplyVolumeStateAndMeasure(batch, volumeState);
 
             var runtimeConfig = BuildCompressConfig(batch);
             string archivePath = _sevenZipService.BuildArchiveFilePath(outputDirectory, baseName, runtimeConfig);
@@ -1495,9 +1611,10 @@ namespace Auto7z_WPF
             report(new ProgressInfo(100, ProgressStage.Finished));
             string doneText = EnumText.GetResourceText("Result_CompressDone", "压缩完成");
             // 有文件被跳过时不能报「完成」：归档虽然产出，但内容缺了一块，
-            // 结果行按失败着色、退出码给 1，界面与脚本拿到的是同一个结论。
+            // 结果行按「成功但有警告」着黄色、退出码给 1，界面与脚本拿到的是同一个结论。
+            // 这里不能用 ResultSeverity.Failed —— 那会把一次「归档产出且只是少了几个条目」涂成红色失败。
             bool partial = LastTaskFailed;
-            SetResult(doneText, failed: partial);
+            SetResult(doneText, partial ? ResultSeverity.Warning : ResultSeverity.Success);
             ReportTaskResult(!partial, doneText, partial: partial);
         }
 
@@ -1535,10 +1652,12 @@ namespace Auto7z_WPF
 
                 var result = _sevenZipService.ExecuteCommand(commands[i], p => report(new ProgressInfo(p, ProgressStage.Compressing)), CurrentToken);
 
-                if (result.HasWarning)
+                // 读 Outcome 而不是自己去拼 Succeeded + HasWarning：
+                // 「部分成功」是一个独立结局，不该由调用方每次记得额外看一眼 HasWarning。
+                if (result.Outcome == CommandOutcome.Partial)
                 {
                     hasWarning = true;
-                    _logService.WriteLog(EnumText.GetErrorText("Log_SevenZipWarning", "7-Zip 提示（有警告但已完成）：{0}", result.GetFailureDetail()), LogService.ErrorLevel.Warning);
+                    LogSevenZipWarning(result);
                 }
 
                 if (!result.Succeeded)
@@ -1575,8 +1694,19 @@ namespace Auto7z_WPF
                 }
                 else
                 {
-                    _messageService.ShowWarning(warnText, out string warnLog);
-                    _logService.WriteLog(warnLog, LogService.ErrorLevel.Warning);
+                    // GUI 模式：**不再弹模态窗**。
+                    //
+                    // 原先这里是 ShowWarning，会推一个 DispatcherFrame 把任务线程停住等人点。
+                    // 后果有两个，都真实发生过：
+                    //   ① 自动化里没人点，整个任务永久挂起（本轮审查就踩了一整晚）；
+                    //   ② 用户切走窗口去做别的事，压缩早就完成了，程序却还挂着一个等待框，
+                    //      看起来像"卡死"。
+                    //
+                    // 语义上也不该弹：这不是错误，只是"完成但有跳过"。结果行已经会用黄字
+                    // 表达它，日志里也记了明细，再拦一个模态框属于重复打扰。
+                    // 保留写入结果行 + 日志，与解压侧 FinishExtract 的处理方式对齐。
+                    _logService.WriteLog(warnText, LogService.ErrorLevel.Warning);
+                    SetResult(warnText, ResultSeverity.Warning);
                 }
 
                 // 归档已产出但确有文件被跳过：按退出码契约属「任务跑了但未完全成功」，不能报 0。
@@ -1616,35 +1746,7 @@ namespace Auto7z_WPF
                     // 所以必须写进日志（Warning 级，默认阈值就能看到）并计入任务失败。
                     if (batch != null && !batch.IsComplete)
                     {
-                        _logService.WriteLog(
-                            EnumText.GetErrorText("Log_ChecksumIncomplete",
-                                "校验清单不完整：{0} 个文件中有 {1} 个无法读取，清单只包含其余的 {2} 项。缺失：{3}",
-                                batch.TotalFiles, batch.FailedFiles.Count, batch.Lines.Length,
-                                string.Join("; ", batch.FailedFiles)),
-                            LogService.ErrorLevel.Warning);
-
-                        // 一个都没算出来时清单根本没写出去。此时旧清单是否还在，
-                        // 直接决定用户要不要去磁盘上手动处理 —— 两种现场必须分开报。
-                        if (batch.Lines.Length == 0 && batch.StaleManifest != StaleManifestOutcome.NotPresent)
-                        {
-                            bool removed = batch.StaleManifest == StaleManifestOutcome.Removed;
-                            string staleText = EnumText.GetErrorText(
-                                removed ? "Log_ChecksumManifestCleared" : "Log_ChecksumManifestStaleKept",
-                                removed
-                                    ? "本次没有任何文件能算出校验值，未生成新的校验清单；上一轮遗留的同名校验文件已清除：{0}"
-                                    : "本次没有任何文件能算出校验值，且上一轮的校验文件未能确认已清除（可能仍存在），它可能与本次产物无关，请手动检查：{0}",
-                                checksumPath);
-
-                            _logService.WriteLog(staleText, LogService.ErrorLevel.Warning);
-
-                            if (CurrentRunMode == RunMode.Console)
-                            {
-                                WriteConsoleText(staleText, true);
-                            }
-                        }
-
-                        // 清单漏项与压缩时「有文件被跳过」同一性质：产物在，但内容缺了一块。
-                        LastTaskFailed = true;
+                        ReportIncompleteChecksum(batch, checksumPath);
                     }
 
                     // 行都算出来了，但其中某些文件在读取期间被别的进程改动过：
@@ -1677,6 +1779,56 @@ namespace Auto7z_WPF
                     EnumText.GetErrorText("Log_SHA256Failed", "生成校验文件失败：{0}", ex.Message),
                     LogService.ErrorLevel.Warning);
             }
+        }
+
+        /// <summary>
+        /// 校验清单不完整时的收尾：写日志、必要时把「旧清单怎么了」也说清楚、并计入任务失败。
+        ///
+        /// 单独提出来（原先是 WriteChecksumFiles 里 30 行的内联块）的原因：
+        /// 它是一段**完整的现场还原逻辑**，包含三层判断（漏了几个 / 旧清单在不在 / 要不要上控制台），
+        /// 与「算校验值」本身是两件事。混在主流程里会让这段最难懂的判断被流程代码包住。
+        ///
+        /// 为什么必须报：用户拿一份「只有 4 行」的清单去校验一整套 5 个分卷，
+        /// 必然对不上，而界面上完全看不出少了一项。
+        ///
+        /// 为什么「旧清单」要单独说：一个文件都没算出来时，新清单根本没写出去。
+        /// 此时磁盘上若还留着上一轮的同名文件，它会被当成本次产物的校验文件 ——
+        /// 「已清除」与「删不掉、请手动检查」是两种完全不同的现场，合并成一句
+        /// 会让用户按错误的思路排查。
+        /// </summary>
+        /// <param name="batch">本次计算结果（已确认 IsComplete 为 false）。</param>
+        /// <param name="checksumPath">校验清单路径。</param>
+        private void ReportIncompleteChecksum(HashBatchResult batch, string checksumPath)
+        {
+            _logService.WriteLog(
+                EnumText.GetErrorText("Log_ChecksumIncomplete",
+                    "校验清单不完整：{0} 个文件中有 {1} 个无法读取，清单只包含其余的 {2} 项。缺失：{3}",
+                    batch.TotalFiles, batch.FailedFiles.Count, batch.Lines.Length,
+                    string.Join("; ", batch.FailedFiles)),
+                LogService.ErrorLevel.Warning);
+
+            // 一个都没算出来时清单根本没写出去。此时旧清单是否还在，
+            // 直接决定用户要不要去磁盘上手动处理 —— 两种现场必须分开报。
+            if (batch.Lines.Length == 0 && batch.StaleManifest != StaleManifestOutcome.NotPresent)
+            {
+                bool removed = batch.StaleManifest == StaleManifestOutcome.Removed;
+                string staleText = EnumText.GetErrorText(
+                    removed ? "Log_ChecksumManifestCleared" : "Log_ChecksumManifestStaleKept",
+                    removed
+                        ? "本次没有任何文件能算出校验值，未生成新的校验清单；上一轮遗留的同名校验文件已清除：{0}"
+                        : "本次没有任何文件能算出校验值，且上一轮的校验文件未能确认已清除（可能仍存在），它可能与本次产物无关，请手动检查：{0}",
+                    checksumPath);
+
+                _logService.WriteLog(staleText, LogService.ErrorLevel.Warning);
+
+                if (CurrentRunMode == RunMode.Console)
+                {
+                    WriteConsoleText(staleText, true);
+                }
+            }
+
+            // 清单漏项与压缩时「有文件被跳过」同一性质：产物在，但内容缺了一块。
+            LastTaskFailed = true;
         }
 
         /// <summary>
@@ -1792,9 +1944,9 @@ namespace Auto7z_WPF
 
             // 缺失的归档要**先全部收集、再一次性报告**，不能在循环里逐个 FailWithError：
             //
-            // FailWithError 会 SetResult(failed:true) 并报告一次失败，但它并不中断循环。
+            // FailWithError 会 SetResult(..., ResultSeverity.Failed) 并报告一次失败，但它并不中断循环。
             // 早先这里在枚举过程中直接调用它，于是排在缺失项之后的每一个正常归档解压完成时
-            // 都会走 FinishExtract → SetResult(doneText, failed:false)，把红色失败结论覆盖成
+            // 都会走 FinishExtract → SetResult(doneText, ResultSeverity.Success)，把红色失败结论覆盖成
             // 「解压完成」，退出码却仍然是 1（LastTaskFailed 没被重置）——
             // 界面说成功、脚本收到失败，两边对不上。
             //
@@ -1830,6 +1982,11 @@ namespace Auto7z_WPF
             {
                 if (CurrentToken.IsCancellationRequested) return;
 
+                // 记录「进入本项之前，这一批里是否已经有过失败」。
+                // FinishExtract 用它判断要不要把当前项收尾成「未完全成功」，
+                // 而**不再**读全局的 LastTaskFailed —— 后者会被压缩等其它任务置位，
+                // 造成「上一轮压缩有警告 → 本轮干净解压被误判成部分失败」。
+                _batchHadFailureBeforeCurrentItem = LastTaskFailed;
                 ExtractOne(report, archive);
             }
         }
@@ -1894,7 +2051,7 @@ namespace Auto7z_WPF
 
 
         #endregion
-        #region 密码重试与解压收尾
+        #region 密码重试
         private void RunExtractWithPasswordRetry(string sourceArchive, string destinationDirectory, AppConfig runtimeConfig, Action<ProgressInfo> report)
         {
             const int MaxPasswordAttempts = 3;
@@ -1914,15 +2071,27 @@ namespace Auto7z_WPF
                     " Cancelled=" + result.Cancelled + " TimedOut=" + result.TimedOut,
                     LogService.ErrorLevel.Info);
 
-                if (result.HasWarning)
+                // 读 Outcome 而不是自己去拼 Succeeded + HasWarning（见压缩侧同样的说明）。
+                bool partialExtract = result.Outcome == CommandOutcome.Partial;
+
+                if (partialExtract)
                 {
-                    _logService.WriteLog(EnumText.GetErrorText("Log_SevenZipWarning", "7-Zip 提示（有警告但已完成）：{0}", result.GetFailureDetail()), LogService.ErrorLevel.Warning);
+                    LogSevenZipWarning(result);
                 }
 
                 if (result.Succeeded)
                 {
+                    // 解压真的成功了 ⇒ 手里的这个密码已被证明是对的，立刻写回磁盘。
+                    //
+                    // 为什么必须在这里、而不是等 OnClosing 的自动保存：
+                    //   - 右键菜单模式没有主窗口，压根不会走 OnClosing；
+                    //   - 命令行模式跑完就退出，也不会走那条路径；
+                    //   - 即使用户关掉了自动保存（AutoSave=false），一个已被验证通过的
+                    //     密码也没有理由不记住 —— 它下一次还能用。
+                    AdoptVerifiedPassword(runtimeConfig.Password);
+
                     // 退出码 1 = 归档解开了但有条目被跳过，不能报成完全成功。
-                    FinishExtract(report, destinationDirectory, sourceArchive, result.HasWarning);
+                    FinishExtract(report, destinationDirectory, sourceArchive, partialExtract);
                     return;
                 }
 
@@ -1941,6 +2110,17 @@ namespace Auto7z_WPF
                 FailFromCommand(result, report, result.Cancelled);
                 return;
             }
+
+            // 循环跑满仍未收尾：当前不可达（每轮要么 return、要么 continue 到下一轮，
+            // 而最后一轮会在 AskPasswordAndRetry 里因 attempt >= maxAttempts 报错并返回 false），
+            // **但那是隐式契约** —— 它依赖 AskPasswordAndRetry 内部的那个判断。
+            // 将来若把「密码重试次数」改成可配置、或让 AskPasswordAndRetry 在最后一轮
+            // 返回 true（比如改成「再问一次」语义），这里就会静默走完循环：
+            // 既不报失败、也不写结果，界面停在上一轮的状态 —— 那种「什么都没发生」最难查。
+            // 显式兜底的成本是一行日志与一次报错，值得。
+            _sevenZipService.CleanupUnfinished(destinationDirectory);
+            FailWithError(new InvalidOperationException(
+                EnumText.GetErrorText("Err_PasswordRetries", "连续多次密码错误，已放弃解压")), report);
         }
 
         private bool AskPasswordAndRetry(CommandResult result, int attempt, int maxAttempts,
@@ -1988,10 +2168,67 @@ namespace Auto7z_WPF
             }
 
             runtimeConfig.Password = password;
-            UnzipPassword = password;
+            // 只把密码交给本次 7-Zip 命令用，**不要**在这里改 UnzipPassword。
+            //
+            // 早先这里还有一行 UnzipPassword = password; 造成真实缺陷：
+            // UnzipPassword 是纯内存属性（setter 只发通知、不写盘），提前赋值会让
+            // AdoptVerifiedPassword 里「值已一致就跳过写盘」的优化误判为已保存，
+            // 于是配置文件永远不会被更新 —— 内存是新密码、磁盘是旧密码，
+            // 下次启动又拿旧密码去试。实测复现：解压成功 rc=0，
+            // 但配置里仍是 STALE_WRONG_PW。
+            //
+            // 正确顺序：解压成功 → AdoptVerifiedPassword 发现内存与磁盘都还是旧值
+            // → 真正写盘。密码的「记住」只在被证明正确之后发生一次。
             return true;
         }
 
+        /// <summary>
+        /// 把一个**已被验证通过**的解压密码写回配置。
+        ///
+        /// 这是三种入口（GUI 主窗口 / 右键菜单 / 命令行）唯一的密码回写点：
+        /// 三者只在「怎么拿到密码字符串」上有差别，拿到之后全部汇合到
+        /// <see cref="AskPasswordAndRetry"/>，再经这里落盘。
+        ///
+        /// 调用时机必须严格是「解压成功之后」。早期实现是「用户按下回车就写」，
+        /// 结果连续输错几次时反而把**错的**密码存了下来，下次启动还会拿它去试 ——
+        /// 那比不存更糟。现在只放在 <c>result.Succeeded</c> 分支里。
+        ///
+        /// 只写 <c>UnzipPassword</c>，不动压缩侧的 <c>Password</c>：用户证明的是
+        /// 「这个密码能解开这个包」，把它抄到压缩侧等于悄悄换掉上一个包用的密码，
+        /// 那是另一份语义完全不同的状态。
+        /// </summary>
+        /// <param name="password">已验证成功的密码；空值直接忽略。</param>
+        private void AdoptVerifiedPassword(string password)
+        {
+            if (string.IsNullOrEmpty(password)) return;
+
+            // 已经一致就不必再写盘：每次解压都刷一遍配置文件既慢又会推高磁盘写。
+            if (string.Equals(UnzipPassword, password, StringComparison.Ordinal)) return;
+
+            RememberUnzipPassword(password);
+        }
+
+        /// <summary>
+        /// 真正执行写盘的单元（可被测试单独驱动）。
+        /// 写失败只记日志：密码没记住是个可恢复的小问题，不该让本次解压显示为失败。
+        /// </summary>
+        /// <param name="password">已验证成功的密码。</param>
+        private void RememberUnzipPassword(string password)
+        {
+            if (string.IsNullOrEmpty(password)) return;
+
+            UnzipPassword = password;
+
+            if (!_configService.Update("UnzipPassword", password))
+            {
+                _logService.WriteLog(
+                    EnumText.GetErrorText("Err_ConfigSaveFailed", "保存配置失败，详情见日志。"),
+                    LogService.ErrorLevel.Warning);
+            }
+        }
+
+        #endregion
+        #region 解压收尾
 
         /// <summary>
         /// 解压收尾。
@@ -2015,33 +2252,52 @@ namespace Auto7z_WPF
 
             report(new ProgressInfo(100, ProgressStage.Finished));
 
-            // 本次解压自身有警告，**或者**同一批里更早的项已经失败（LastTaskFailed 一旦置位就不再回落）。
+            // 本次解压自身有警告（7z exit=1）**或者**同一批（batch）里更早的项已经失败。
             //
-            // 后一半至关重要：批量解压里前面某个归档失败后，后面成功的那一个若按「干净成功」
-            // 收尾，就会把这个红色结论覆盖成「解压完成」—— 而退出码仍是 1。
-            // 界面说成功、脚本收到失败，同一次运行给出两个互相矛盾的结论。
-            // 压缩侧早就是这样处理的（FinishCompress 里 `bool partial = LastTaskFailed;`），
-            // 解压侧漏了这一句。
-            bool partialResult = partial || LastTaskFailed;
+            // 后一半的初衷是：批量解压里前面某个归档失败后，后面成功的那一个若按「干净成功」
+            // 收尾，会把这个红色结论覆盖成「解压完成」，而退出码仍是 1 —— 界面与脚本对不上。
+            //
+            // **但早期实现写成了 `partial || LastTaskFailed`，语义过宽**：
+            // LastTaskFailed 是全 ViewModel 共享的一个标志，压缩部分成功也会把它置 true。
+            // 于是「先压缩一个被占用的文件（exit=1）→ 再解压一个完全干净的包」时，
+            // 第二次解压会读到上一轮压缩留下的 true，被误判成
+            // 「解压已完成，但部分条目被跳过」—— 明明什么都没跳过，日志里也查不到原因
+            // （这条路径落在成功分支，按设计不写错误日志）。
+            //
+            // 现在改用**批次内**的失败计数：只有「本次任务这一批里，排在我前面的项失败过」
+            // 才继承警告结论。跨任务、跨类型的残留不再影响解压结果。
+            bool partialResult = partial || _batchHadFailureBeforeCurrentItem;
 
             if (partialResult)
             {
-                // 归档解开了但有条目被跳过：结果行按未完全成功着色，退出码给 1。
-                // 文案复用压缩侧的「部分文件被跳过」，三语词典里已有这个键。
-                string partialText = EnumText.GetResourceText("Result_PartialWarning", "压缩已完成，但部分文件被跳过，详情见日志。");
-                SetResult(partialText, failed: true);
+                // 归档解开了但有条目被跳过：结果行按「成功但有警告」着黄色，退出码给 1。
+                //
+                // 文案必须是解压侧的。这里原先复用压缩侧的 Result_PartialWarning，
+                // 于是解压完成的提示会写「**压缩**已完成，但部分文件被跳过」——
+                // 用户看到的是解压却被告知压缩完成，等于自相矛盾的结论。
+                string partialText = EnumText.GetResourceText("Result_ExtractPartialWarning",
+                    "解压已完成，但部分条目被跳过，详情见日志。");
+
+                // 关键：把「为什么判成 partial」写进日志 —— 用户抱怨"原因不明、log 没记录"
+                // 正是因为这里原先什么都不写。
+                _logService.WriteLog(EnumText.GetErrorText("Log_ExtractPartialReason",
+                    "解压判为未完全成功：本次 7z 有警告={0}，同批前序失败={1}",
+                    partial, _batchHadFailureBeforeCurrentItem), LogService.ErrorLevel.Warning);
+
+                SetResult(partialText, ResultSeverity.Warning);
                 ReportTaskResult(true, partialText, partial: true);
                 return;
             }
 
             string doneText = EnumText.GetResourceText("Result_ExtractDone", "解压完成");
-            SetResult(doneText, failed: false);
+            SetResult(doneText, ResultSeverity.Success);
             ReportTaskResult(true, doneText);
         }
 
 
         #endregion
         #region 密码获取
+
         private string RequestPassword(string prompt = null, int attempt = 1)
         {
             if (CurrentRunMode == RunMode.Console)
@@ -2051,6 +2307,13 @@ namespace Auto7z_WPF
 
             var app = Application.Current;
             if (app == null) return null;
+
+#if DEBUG
+            // 自动化：密码框也是模态阻塞，没人点就会一直等下去。
+            // 交给共用驱动器填值并点击 —— 与用户"输入密码然后点确定"走同一条路。
+            // 注意这里**不直接返回密码**：那样会跳过窗口创建与点击，
+            // 就测不到「密码框能不能正确把值交回来」这条真实链路。
+#endif
 
             PasswordWindow window = null;
             var completed = new ManualResetEventSlim(false);
@@ -2114,7 +2377,11 @@ namespace Auto7z_WPF
             string password = window != null && window.Confirmed ? window.Password : null;
             completed.Dispose();
 
-            _logService.WriteLog(password == null ? EnumText.GetErrorText("Log_PasswordCancelled", "用户取消了密码输入") : EnumText.GetErrorText("Log_PasswordGot", "已获取密码"), LogService.ErrorLevel.Info);
+            _logService.WriteLog(
+                password == null
+                    ? EnumText.GetErrorText("Log_PasswordCancelled", "用户取消了密码输入")
+                    : EnumText.GetErrorText("Log_PasswordGot", "已获取密码"),
+                LogService.ErrorLevel.Info);
             return password;
         }
 
@@ -2160,6 +2427,10 @@ namespace Auto7z_WPF
             if (!string.IsNullOrWhiteSpace(prompt)) window.SetPrompt(prompt);
             window.Closed += (s, e) => completed.Set();
             window.Show();
+#if DEBUG
+            // 与 MessageService 走同一个驱动器：填值 + 点确认，路径与真人一致。
+            DebugAutoDriver.Attach(window);
+#endif
             return window;
         }
 
@@ -2215,7 +2486,10 @@ namespace Auto7z_WPF
 
             if (!innerResult.Succeeded)
             {
-                _logService.WriteLog(EnumText.GetErrorText("Log_InnerTarFailed", "解开中间 tar 失败：{0}", innerResult.GetFailureDetail()), LogService.ErrorLevel.Error);
+                _logService.WriteLog(
+                    EnumText.GetErrorText("Log_InnerTarFailed",
+                        "解开中间 tar 失败：{0}", innerResult.GetFailureDetail()),
+                    LogService.ErrorLevel.Error);
                 return false;
             }
 
@@ -2376,6 +2650,23 @@ namespace Auto7z_WPF
         }
 
 
+        /// <summary>
+        /// 记录 7-Zip 的「有警告但已完成」提示。
+        ///
+        /// 压缩与解压两条路径都会遇到这种情况，文案与级别必须一致 ——
+        /// 早先两处各自写了一遍完整的 WriteLog 调用（而且都是 170 字符的超长行），
+        /// 将来改文案时漏改一处，用户会在压缩里看到一套说法、解压里看到另一套。
+        /// 提取之后只有一个出处。
+        /// </summary>
+        /// <param name="result">7-Zip 的执行结果。</param>
+        private void LogSevenZipWarning(CommandResult result)
+        {
+            _logService.WriteLog(
+                EnumText.GetErrorText("Log_SevenZipWarning",
+                    "7-Zip 提示（有警告但已完成）：{0}", result.GetFailureDetail()),
+                LogService.ErrorLevel.Warning);
+        }
+
         private void FailWithError(Exception error, Action<ProgressInfo> report)
         {
             LastTaskFailed = true;
@@ -2385,7 +2676,7 @@ namespace Auto7z_WPF
 
             report(new ProgressInfo(0, ProgressStage.Failed));
             MainText = GetDefaultModeText();
-            SetResult(EnumText.GetResourceText("Result_Failed", "Failed"), failed: true);
+            SetResult(EnumText.GetResourceText("Result_Failed", "Failed"), ResultSeverity.Failed);
             ReportTaskResult(false, detail);
         }
 
@@ -2398,7 +2689,7 @@ namespace Auto7z_WPF
                 _logService.WriteLog(EnumText.GetErrorText("Log_TaskCancelled", "任务已取消"), LogService.ErrorLevel.Warning);
                 report(new ProgressInfo(0, ProgressStage.Failed));
                 MainText = GetDefaultModeText();
-                SetResult(EnumText.GetResourceText("Result_Cancelled", EnumText.GetErrorText("Log_TaskCancelled", "任务已取消")), failed: true);
+                SetResult(EnumText.GetResourceText("Result_Cancelled", EnumText.GetErrorText("Log_TaskCancelled", "任务已取消")), ResultSeverity.Failed);
                 ReportTaskResult(false, null, cancelled: true);
                 return;
             }
@@ -2410,17 +2701,35 @@ namespace Auto7z_WPF
                     result?.ExitCode.ToString(CultureInfo.InvariantCulture) ?? "未知");
             }
 
+            // 输出排空超时时，上面的 detail 是从**可能被截断**的输出里解析出来的 ——
+            // 真正的错误行可能就在丢掉的那部分里。必须让用户知道这一点，
+            // 否则他会拿着一个不知从哪来的原因去排查。
+            if (result != null && result.OutputTruncated)
+            {
+                _logService.WriteLog(
+                    EnumText.GetErrorText("Log_OutputTruncated",
+                        "7-Zip 输出未能完整读取（排空超时），下面的失败原因可能不完整：{0}", detail),
+                    LogService.ErrorLevel.Warning);
+
+                detail = EnumText.GetErrorText("Err_OutputTruncated",
+                    "（输出未读全，原因可能不准确）{0}", detail);
+            }
+
             ReportError(detail);
 
             report(new ProgressInfo(0, ProgressStage.Failed));
             MainText = GetDefaultModeText();
-            SetResult(EnumText.GetResourceText("Result_Failed", "Failed"), failed: true);
+            SetResult(EnumText.GetResourceText("Result_Failed", "Failed"), ResultSeverity.Failed);
             ReportTaskResult(false, detail);
         }
 
-        public void SetResult(string text, bool failed)
+        public void SetResult(string text, ResultSeverity severity)
         {
-            IsResultFailed = failed;
+            // 三态：成功绿、失败红、成功但有警告黄。
+            // IsResultFailed 保留为「是否算失败」（Warning 不算失败），
+            // 颜色由 IsResultWarning 单独承载 —— 只留一个 bool 时黄色永远没机会出现。
+            IsResultWarning = severity == ResultSeverity.Warning;
+            IsResultFailed = severity == ResultSeverity.Failed;
 
             if (!SetProperty(ref _resultText, text ?? string.Empty, nameof(ResultText)))
             {
@@ -2484,14 +2793,40 @@ namespace Auto7z_WPF
 
         public void ApplyLanguage()
         {
-            if (!LanguageService.IsSupported(CurrentLanguage))
+            // 归一化到白名单里的规范写法，再往下传。
+            //
+            // 不能只判 IsSupported 就原样使用：IsSupported 内部会 Trim + 忽略大小写地比较，
+            // 所以 " ZH-cn " 是「支持」的，但它的字面量会被原样写进注册表 ——
+            // ShellRegistrationService.SetLanguage 只挡空串，之后直接把值交给外壳扩展。
+            // 结果是 dll 收到 " ZH-cn "，按语言名找资源失败、菜单退回默认语言，
+            // 而程序这边认为已经设成中文了。
+            //
+            // SwitchLanguage 内部自己会归一（见 LanguageService.Normalize），
+            // 但 SetLanguage 走的是另一条路、拿的是这里的字面量，所以必须在本方法归一。
+            string language = LanguageService.IsSupported(CurrentLanguage)
+                ? CurrentLanguage.Trim()
+                : LanguageService.FallbackLanguage;
+
+            // 大小写也对齐到白名单里的那份：LocalApplicationData 之外，
+            // 资源文件名 zh-CN.xaml 在部分宿主里区分大小写。
+            foreach (string supported in LanguageService.GetSupportedLanguages())
             {
-                CurrentLanguage = LanguageService.FallbackLanguage;
+                if (string.Equals(supported, language, StringComparison.OrdinalIgnoreCase))
+                {
+                    language = supported;
+                    break;
+                }
             }
 
-            _languageService.SwitchLanguage(CurrentLanguage);
+            // 属性本身也要回到规范值：它是公开状态、界面与后续调用都读它。
+            if (!string.Equals(CurrentLanguage, language, StringComparison.Ordinal))
+            {
+                CurrentLanguage = language;
+            }
 
-            ShellRegistrationService.SetLanguage(CurrentLanguage);
+            _languageService.SwitchLanguage(language);
+
+            ShellRegistrationService.SetLanguage(language);
         }
 
 

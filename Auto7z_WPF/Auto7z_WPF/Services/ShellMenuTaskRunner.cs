@@ -155,25 +155,10 @@ namespace Auto7z_WPF.Services
         #region 模式分派
         private void RunTask(string mode, Action<ProgressInfo> report)
         {
-            switch (mode)
-            {
-                case ShellCommandService.SwitchAuto:
-                    _viewModel.RunAutoDispatchAndWait(report);
-                    break;
-
-                case ShellCommandService.SwitchUnZip:
-                    _viewModel.RunExtractAndWait(report);
-                    break;
-
-                case ShellCommandService.SwitchZip:
-                    _viewModel.RunCompressAndWait(report);
-                    break;
-
-                default:
-                    // 菜单没有传开关时按自动模式走，与命令行不带选项时的行为保持一致。
-                    _viewModel.RunAutoDispatchAndWait(report);
-                    break;
-            }
+            // 与 ConsoleTaskRunner 共用同一份「开关 → 任务」映射（见 ShellCommandService.RunByMode）。
+            // 早先两边各写一份 switch，将来加模式开关时漏改一处就会出现
+            // 「命令行能用、右键菜单不认」这类只在特定入口复现的问题。
+            ShellCommandService.RunByMode(_viewModel, mode, report);
         }
         #endregion
     }

@@ -2,6 +2,7 @@ using Auto7z_WPF.Services;
 using System;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 
 namespace Auto7z_WPF
 {
@@ -77,7 +78,8 @@ namespace Auto7z_WPF
             }
 
             // 回车确认，输完密码直接敲回车即可，不用去够确认按钮。
-            if (e.Key == Key.Enter)
+            // 焦点在「取消」上时不再抢：用户 Tab 到取消再敲回车，意思显然是不输入密码。
+            if (e.Key == Key.Enter && !IsFocusOn(CancelButton))
             {
                 ConfirmWithInput();
                 e.Handled = true;
@@ -86,6 +88,24 @@ namespace Auto7z_WPF
 
             // 其余按键照常下传，保证 Tab 与方向键可用。
             base.OnKeyDown(e);
+        }
+
+        /// <summary>焦点是否落在给定控件（或它的内部模板元素）上。</summary>
+        private static bool IsFocusOn(FrameworkElement control)
+        {
+            if (control == null) return false;
+
+            var focused = Keyboard.FocusedElement as DependencyObject;
+            while (focused != null)
+            {
+                if (ReferenceEquals(focused, control)) return true;
+                // 焦点常落在按钮模板里的 ContentPresenter / TextBlock 上，要顺着树往上找。
+                focused = focused is Visual || focused is System.Windows.Media.Media3D.Visual3D
+                    ? VisualTreeHelper.GetParent(focused)
+                    : LogicalTreeHelper.GetParent(focused);
+            }
+
+            return false;
         }
 
         #endregion
