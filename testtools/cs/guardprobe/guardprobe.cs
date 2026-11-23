@@ -85,23 +85,32 @@ class GuardProbe
             return File.Exists(p) ? Assembly.LoadFrom(p) : null;
         };
 
-        var vmType = asm.GetType("Auto7z_WPF.Auto7zViewModel");
-
-        var guard = vmType.GetMethod("IsSafeToDeleteRecursively",
-            BindingFlags.NonPublic | BindingFlags.Static);
-
-        // 写盘路径边界校验：FileSystemHelper.IsUnderDirectory（配置写入与日志清理共用这一条判据）。
+        // FileSystemHelper 的两个辅助方法（下面会用到）
         var fsType = asm.GetType("Auto7z_WPF.Services.FileSystemHelper");
+        if (fsType == null) { Console.WriteLine("!! 找不到 FileSystemHelper"); return 1; }
 
-        Console.WriteLine("=== 递归删除守卫的运行时验证 ===");
-        Console.WriteLine("被测程序: " + asmPath);
+        // 守卫方法在 2.5.1 的 LTS 轮里从 ViewModel 移到了 Services.DataDirectoryMover
+        // （那块逻辑全是 static、不碰实例状态，属于「文件系统搬迁」这个独立职责）。
+        // 这里两个位置都找：只要还在产品的某个类型上、并且行为正确，就算通过 ——
+        // 探针应该盯「守卫存在且有效」，而不是「它必须长在哪个类里」。
+        MethodInfo guard = null;
+        string guardOwner = null;
+        foreach (var typeName in new[] { "Auto7z_WPF.Services.DataDirectoryMover", "Auto7z_WPF.Auto7zViewModel" })
+        {
+            var t = asm.GetType(typeName);
+            if (t == null) continue;
+            var m = t.GetMethod("IsSafeToDeleteRecursively",
+                BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static);
+            if (m != null) { guard = m; guardOwner = typeName; break; }
+        }
 
         if (guard == null)
         {
             Console.WriteLine("!! 找不到 IsSafeToDeleteRecursively —— 守卫方法不存在");
             return 1;
         }
-        Console.WriteLine("  已找到守卫方法: IsSafeToDeleteRecursively");
+
+        Console.WriteLine("  已找到守卫方法: " + guardOwner + ".IsSafeToDeleteRecursively");
         Console.WriteLine("");
 
         string portableRoot = Path.Combine(programDir, ".config");

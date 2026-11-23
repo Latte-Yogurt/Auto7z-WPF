@@ -91,9 +91,22 @@ CHECKS = [
      "ViewModel/Auto7zViewModel.cs",
      'SetProperty(ref _resultText, text ?? string.Empty, nameof(ResultText))'),
 
+    # BC12 守的是「失败路径必须真的把结果行写成失败态」。
+    #
+    # 2.5.1 起颜色契约只认三态枚举，两态 SetResult(string,bool) 重载已删除：
+    # 留着它，调用点就能绕过枚举把「成功但带警告」压成红或绿，
+    # 而 colorprobe 只测得到走过枚举的路径。所以这里的断言串也跟着改成枚举写法 ——
+    # 规则要盯的是「失败路径用了哪一个枚举值」，不是「有没有传一个 true」。
     ("BC12", "D29", "失败路径必须给出失败结果（红字），不能只弹窗不写结果",
      "ViewModel/Auto7zViewModel.cs",
-     'SetResult(EnumText.GetResourceText("Result_Failed", "Failed"), failed: true);'),
+     "ResultSeverity.Failed"),
+
+    # BC16 反向守：两态重载不许回来。它与 BC12 是一对 ——
+    # BC12 保证失败路径走枚举，BC16 保证没有旁路可走。
+    # 前导 "!" 表示该字面必须不存在（见判定循环里的反向断言分支）。
+    ("BC16", "D29", "不许保留 SetResult(string,bool) 两态重载（会绕过三态颜色契约）",
+     "ViewModel/Auto7zViewModel.cs",
+     "!public void SetResult(string text, bool failed)"),
 
     ("BC13", "D30", "右键菜单进度窗口的正文必须带实时百分比",
      "Services/ShellMenuTaskRunner.cs",
@@ -134,6 +147,20 @@ def main():
             failed.append((code, dim, desc, "文件不存在"))
             continue
         text = f.read_text(encoding="utf-8", errors="replace")
+
+        # 以 "!" 开头的 pattern 表示「该字面必须**不存在**」（反向断言）。
+        # BC16 用它守住「两态重载不许回来」：正向断言只能证明某个写法在，
+        # 证明不了另一种写法不在。
+        if pattern is not None and pattern.startswith("!"):
+            needle = pattern[1:]
+            if needle not in text:
+                print("  ✓  %-4s %-5s %s" % (code, dim, desc))
+            else:
+                print("  !! %-4s %-5s %s" % (code, dim, desc))
+                print("        %s 里不应出现：%s" % (rel, needle))
+                failed.append((code, dim, desc, "禁止的字面仍然存在"))
+            continue
+
         if pattern in text:
             print("  ✓  %-4s %-5s %s" % (code, dim, desc))
         else:

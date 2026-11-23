@@ -113,7 +113,13 @@ class UiWidth
                 if (key.StartsWith("Console_"))
                     continue;
 
+                // 这几条是结果行与提示框的正文，本来就允许折行显示：
+                // 它们的宿主控件都设了 TextWrapping，宽度不足时换行而不是截断。
+                // Result_ExtractPartialWarning 是 2.5.1 新增的解压侧文案，
+                // 与压缩侧的 Result_PartialWarning 同一性质，必须一并放行 ——
+                // 否则新键一进来就会被这条宽度规则判成「过长」。
                 if (key == "MultiFilePackQuery" || key == "Result_PartialWarning" ||
+                    key == "Result_ExtractPartialWarning" ||
                     key == "PasswordPrompt" || key == "PasswordWrongAttempt")
                     continue;
 

@@ -20,6 +20,7 @@ r"""一键系统测试。
 """
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -63,6 +64,12 @@ PRODUCT_ENV = _test_env.child_env("systemtest")
 
 
 class Result:
+    # 防「假绿」：汇总时断言实际项数等于预期。
+    # 若某个检查因异常没跑到 res.add，汇总会显示「N-1 项，失败 0」——
+    # 看起来正常，而那一项根本不存在。2026-11-22 实际发生过。
+    # 详见 reports/fake-green-incident.md。
+    EXPECTED = 20
+
     def __init__(self):
         self.items = []      # (名称, 通过?, 说明)
         self.failed = 0
@@ -74,6 +81,13 @@ class Result:
         print("  [%s] %-34s %s" % ("通过" if ok else "失败", name, detail))
 
     def summary(self):
+        missing = self.EXPECTED - len(self.items)
+        if missing != 0:
+            self.failed += 1
+            self.items.append(("检查项数量", False,
+                               "预期 %d 项，实际 %d 项（差 %+d）—— 有检查没跑到或需同步 EXPECTED"
+                               % (self.EXPECTED, len(self.items), -missing)))
+
         print("")
         print("=" * 70)
         print("系统测试汇总: %d 项, 失败 %d 项" % (len(self.items), self.failed))
@@ -478,7 +492,79 @@ def t_shellproto(res, app):
     res.add("shellproto", ok, "退出码=%d" % r.returncode)
 
 
+def t_funcmatrix(res, app):
+    """功能矩阵：三入口 × 核心能力的端到端校验。
+
+    与前面各项的区别：那些测的是「某一条路径对不对」，
+    这一项测的是「每个功能在所有入口下都产出了正确结果」——
+    用「产物 + 退出码 + 结果文案」三重判定，而不是只看退出码。
+
+    覆盖 15 项：
+      命令行：压缩 / 校验文件格式 / 解压 / 自动分派 / 分卷 / 加密 /
+              三个退出码契约
+      外壳菜单：压缩 / 解压
+      GUI 主窗口：多文件合并 / 多文件分别压缩
+    2026-11-23 LTS 轮新增。
+    """
+    print("")
+    print("=== 功能矩阵（三入口） ===")
+    tool = HERE / "funcmatrix_check.py"
+    if not tool.is_file():
+        res.add("功能矩阵", False, "funcmatrix_check.py 缺失")
+        return
+    try:
+        r = run([sys.executable, str(tool), str(WORKSPACE)], timeout=1200)
+    except Exception as ex:
+        res.add("功能矩阵", False, "调用异常: %s" % type(ex).__name__)
+        return
+    out = (r.stdout or "") + (r.stderr or "")
+    m = re.search(r"共 (\d+) 项，通过 (\d+)，失败 (\d+)", out)
+    if m and r.returncode == 0:
+        res.add("功能矩阵", True, "%s/%s 项通过（三入口）" % (m.group(2), m.group(1)))
+    else:
+        bad = re.findall(r"^\s+(A\d|B\d|C\d)\b", out, re.M)
+        res.add("功能矩阵", False,
+                ("%s 项失败: %s" % (m.group(3), ",".join(bad[:4]))) if m
+                else "退出码=%s" % r.returncode)
+
+
+def t_cancel_button(res, app):
+    """UI 取消按钮：点取消后 7z 真的停、不留孤儿、进程正常退出。
+
+    为什么与 cancel_residue_test 互补而不是重复：
+    那个脚本用 **taskkill 强杀**父进程，测的是「父进程意外死亡后子进程是否被收割」；
+    本项点的是产品自己的**取消按钮**，走 CancelCurrentTask → WaitForProcess
+    的取消分支（cancellationToken → TryKill）。
+    外部强杀测不到这条分支 —— 进程一死，取消逻辑根本没机会跑。
+
+    实现走共享内存参数（右键菜单路径），因为只有那条路才出 ProcessWindow；
+    `--feed` 走主窗口，测不到进度窗。
+    2026-11-22 LTS 轮新增。
+    """
+    print("")
+    print("=== UI 取消按钮 ===")
+    tool = HERE / "ui_cancel_check.py"
+    if not tool.is_file():
+        res.add("UI 取消按钮", False, "ui_cancel_check.py 缺失")
+        return
+    try:
+        r = run([sys.executable, str(tool), str(WORKSPACE)], timeout=600)
+    except Exception as ex:
+        res.add("UI 取消按钮", False, "调用异常: %s: %s" % (type(ex).__name__, ex))
+        return
+    out = (r.stdout or "") + (r.stderr or "")
+    if "PASS" in out and r.returncode == 0:
+        m = re.search(r"7z 子进程: 前=(\d+) 中=(\d+) 后=(\d+)", out)
+        detail = "取消生效，无孤儿" + ("（%s→%s→%s）" % m.groups() if m else "")
+        res.add("UI 取消按钮", True, detail)
+    else:
+        bad = re.findall(r"\[FAIL\]\s*(.+)$", out, re.M)
+        res.add("UI 取消按钮", False,
+                bad[0][:60] if bad else "退出码=%s" % r.returncode)
+
+
 def t_ui_checks(res, app):
+
     """界面相关：按钮文字、文本宽度、Tab 顺序、系统语言映射。
 
     这几个工具的报告方式不一样：
@@ -512,8 +598,15 @@ def t_ui_checks(res, app):
             tb.unlink()
         except OSError:
             pass
+    # 第三个参数是 **XAML 目录**，不是某个 .xaml 文件。
+    #
+    # 探针内部是 `Path.Combine(xamlDir, "MainWindow.xaml")` ——
+    # 传文件路径进去会拼出 `MainWindow.xaml\MainWindow.xaml`，那个路径不存在，
+    # 静态 TabIndex 检查就静默失效了。
+    # 早先传的正是 MainWindow.xaml 的完整路径；Debug 下它偶然还能过
+    # （探针在找不到文件时只跳过、不报错），Release 下才暴露成一次失败。
     r = run([str(tool("taborder")), str(TEMP.path), str(app),
-             str(WORKSPACE / "Auto7z_WPF" / "Auto7z_WPF" / "MainWindow.xaml")])
+             str(WORKSPACE / "Auto7z_WPF" / "Auto7z_WPF")])
     text = ""
     if tb.exists():
         try:
@@ -582,6 +675,16 @@ def main():
         t_shell_extension(res, app)
         t_shellproto(res, app)
         t_ui_checks(res, app)
+        t_cancel_button(res, app)
+        t_funcmatrix(res, app)
+    except Exception as ex:
+        # 测试函数抛异常时必须**记成一项失败**，而不是让它静默消失。
+        # 本轮踩过：t_cancel_button 里忘了 import re，NameError 被 finally 吞掉，
+        # 结果是「总数 18 项、失败 0」，而新加的那项根本没跑 ——
+        # 这种「假绿」比失败更危险，因为没人会去查一个不存在的项。
+        import traceback
+        traceback.print_exc()
+        res.add("测试执行异常", False, "%s: %s" % (type(ex).__name__, ex))
     finally:
         res.summary()
         print("")

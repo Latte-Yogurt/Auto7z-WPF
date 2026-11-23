@@ -74,11 +74,24 @@ class ChromeCheck
 
         var win = (Window)Activator.CreateInstance(t);
 
-        // 1) DataContext 必须非空，且是 Auto7zViewModel（与主窗口/关于窗口同模式）
+        // 1) 两种合格实现：命令绑定 或 代码事件。
+        //
+        // 真正的契约是「点标题栏必须有效果」，而不是「必须用 DataContext 绑定」。
+        // 若窗口的 XAML 已不再出现 {Binding ...Command}，那么 DataContext 为 null
+        // 是**正确**的 —— 此时改由代码事件处理，必须另行验证事件真的接线了。
         object dc = win.DataContext;
         if (dc == null)
         {
-            Bad("DataContext 为 null —— {Binding} 命令全部绑空");
+            L("  DataContext: null（该窗口不用命令绑定，改由代码事件处理）");
+
+            bool stillBinds = XamlStillBindsCommands(typeName);
+            if (stillBinds)
+            {
+                Bad("XAML 仍有 {Binding ...Command} 但 DataContext 为 null —— 点击会绑空");
+                return;
+            }
+            L("  XAML 已无 {Binding ...Command} 残留");
+            CheckByEvents(win, typeName, app);
             return;
         }
         L("  DataContext: " + dc.GetType().Name + " (非空)");
@@ -137,5 +150,97 @@ class ChromeCheck
                 new Action(delegate { }));
             System.Threading.Thread.Sleep(20);
         }
+    }
+
+    /// <summary>
+    /// 该窗口的 XAML 里是否仍有 {Binding ...Command}。
+    /// 有绑定却没有 DataContext 就是历史缺陷（点击无反应）的原样复现。
+    /// </summary>
+    static bool XamlStillBindsCommands(string typeName)
+    {
+        try
+        {
+            string dir = Path.GetDirectoryName(typeof(ChromeCheck).Assembly.Location);
+            string p = Path.Combine(dir, typeName + ".xaml");
+            if (!File.Exists(p)) return false;
+            string text = File.ReadAllText(p, Encoding.UTF8);
+            return text.Contains("{Binding MinimizeCommand}") || text.Contains("{Binding CloseCommand}");
+        }
+        catch
+        {
+            // 读不到 XAML 时按"没有绑定"处理：不因此判失败，由事件验证兜底。
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 无 DataContext 的窗口：验证代码事件确实接线（点击标题栏有副作用）。
+    ///
+    /// 判据与命令路径等价：点关闭必须让窗口不可见 / 置取消标志；点最小化必须改变 WindowState。
+    /// </summary>
+    static void CheckByEvents(Window win, string typeName, Application app)
+    {
+        object closeBtn = win.FindName("CloseButton");
+        object minBtn = win.FindName("MinimizeButton");
+
+        if (closeBtn == null && minBtn == null)
+        {
+            Bad("既没有命令绑定，也找不到标题栏按钮 —— 无从验证");
+            return;
+        }
+
+        win.Show();
+        DoEvents(app);
+
+        // 关闭/取消：优先看 Cancelled 属性（ProcessWindow），否则看窗口是否关闭
+        var cancelledProp = win.GetType().GetProperty("Cancelled");
+        bool beforeCancel = cancelledProp != null && (bool)cancelledProp.GetValue(win, null);
+
+        FrameworkElement closeFe = closeBtn as FrameworkElement;
+        if (closeFe != null)
+        {
+            var args = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left);
+            args.RoutedEvent = UIElement.MouseLeftButtonDownEvent;
+            args.Source = closeFe;
+            closeFe.RaiseEvent(args);
+            DoEvents(app);
+        }
+
+        if (cancelledProp != null)
+        {
+            bool afterCancel = (bool)cancelledProp.GetValue(win, null);
+            if (afterCancel && !beforeCancel) L("  点击关闭 → Cancelled=true ✓");
+            else Bad("点击关闭后 Cancelled=" + afterCancel + "（应变为 true）");
+        }
+        else if (win.IsVisible)
+        {
+            Bad("点击关闭后窗口仍可见");
+        }
+        else
+        {
+            L("  点击关闭 → 窗口已关闭 ✓");
+        }
+
+        // 最小化：重新造一个窗口，点最小化
+        var win2 = (Window)Activator.CreateInstance(win.GetType());
+        win2.Show();
+        DoEvents(app);
+        object minBtn2 = win2.FindName("MinimizeButton");
+        FrameworkElement minFe2 = minBtn2 as FrameworkElement;
+        if (minFe2 != null)
+        {
+            var args2 = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left);
+            args2.RoutedEvent = UIElement.MouseLeftButtonDownEvent;
+            args2.Source = minFe2;
+            minFe2.RaiseEvent(args2);
+            DoEvents(app);
+        }
+        if (win2.WindowState != WindowState.Minimized)
+            Bad("点击最小化后 WindowState=" + win2.WindowState + "（应为 Minimized）");
+        else
+            L("  点击最小化 → WindowState=Minimized ✓");
+
+        win2.Close();
+        if (win.IsVisible) win.Close();
     }
 }

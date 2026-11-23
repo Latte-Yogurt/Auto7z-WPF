@@ -15,6 +15,23 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from safe_ops import SafeTemp, safe_rmtree
+from test_env import DATA_ROOT_ENV, child_env, isolate_data_root
+
+# 数据目录隔离：产品启动后会往数据目录写配置、日志、TaskState.json，
+# 第一次压缩还会把 7-Zip 组件释放到那儿。不隔离就会写进用户真实的
+# %LOCALAPPDATA%\Auto7z —— 本文件是 11 个套件里唯一漏掉这一步的。
+# 约定见 testtools\README.md「数据目录隔离：测试一个字节都不许写进 %LOCALAPPDATA%」。
+#
+# **嵌套调用时不能自己改道**：run_system_test.py 会以子进程方式调用本脚本，
+# 并已经在环境里放好 AUTO7Z_DATA_ROOT。那时必须沿用父套件的根 ——
+# 自己再 isolate_data_root("cmdline") 会清空并换到另一个目录，
+# 父套件随后要用的 7-Zip 组件（父套件由本脚本预热出去）就找不到了。
+# 这与 splitvol_test.py 的取值语义一致：有既有值就复用。
+if os.environ.get(DATA_ROOT_ENV):
+    DATA_ROOT = Path(os.environ[DATA_ROOT_ENV])
+else:
+    DATA_ROOT = isolate_data_root("cmdline")
+PRODUCT_ENV = child_env(None)
 
 APP = None
 ISSUES = []
@@ -126,7 +143,7 @@ def run(args, timeout=25, stdin=None, exe=None):
         r = subprocess.run([target] + list(args), stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT,
                            stdin=subprocess.DEVNULL if stdin is None else stdin,
-                           timeout=timeout)
+                           timeout=timeout, env=PRODUCT_ENV)
         return r.returncode, decode_console(r.stdout)
     except subprocess.TimeoutExpired as e:
         raw = e.stdout or b""

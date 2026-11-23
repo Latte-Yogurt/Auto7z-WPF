@@ -144,10 +144,12 @@ class HashProbe
             return 1;
         }
 
-        var calc = svcType.GetMethod("Calculate");
+        // 2.5.1 起 Calculate 已删除（产品内部零调用，只有本探针还在按名反射它）。
+        // 改测它唯一真正的实现 CalculateDetailed —— 顺带能断言 FailedFiles，覆盖面更宽。
+        var calc = svcType.GetMethod("CalculateDetailed");
         if (calc == null)
         {
-            Console.WriteLine("!! HashingService 缺少预期的方法（Calculate）");
+            Console.WriteLine("!! HashingService 缺少预期的方法（CalculateDetailed）");
             return 1;
         }
 
@@ -491,7 +493,7 @@ class HashProbe
         }
     }
 
-    // HashingService.Calculate 的签名是 (string[] paths, HashAlgorithmInfo algorithm,
+    // HashingService.CalculateDetailed 的签名是 (string[] paths, HashAlgorithmInfo algorithm,
     // Action<int> progress, CancellationToken token) —— 算法是必填参数。
     static string[] InvokeCalc(MethodInfo calc, object svc, object algorithm, string[] paths, Action<int> progress, CancellationToken token)
     {
@@ -503,7 +505,10 @@ class HashProbe
         try
         {
             object r = calc.Invoke(svc, new object[] { paths, algorithm, progress, token });
-            return r as string[];
+            // CalculateDetailed 返回 HashBatchResult；取它的 Lines（与已删除的 Calculate 返回值同义）。
+            if (r == null) return null;
+            var linesProp = r.GetType().GetProperty("Lines");
+            return linesProp == null ? null : linesProp.GetValue(r) as string[];
         }
         catch (TargetInvocationException e)
         {

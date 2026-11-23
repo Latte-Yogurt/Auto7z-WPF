@@ -402,8 +402,13 @@ def main():
     # 报告写到工程根的 regress\ 目录（给人看，跑完还留在这儿方便查）。
     # 测试产物写到受控临时目录（给测试用，跑完统一清）。
     # 这样工程里只多一个 report.txt，不会攒下一堆压缩包、临时文件。
+    # 注意：ROOT 是**工程根下的报告目录**（<workspace>\regress），不是受控临时目录，
+    # 所以不能用 safe_rmtree —— 它的白名单只放行 %TEMP% 之下。
+    # 这里用窄校验代替：必须是那个算出来的路径，且目录名必须正好是 "regress"。
     if ROOT.exists():
-        shutil.rmtree(ROOT, ignore_errors=True)
+        if ROOT.name != "regress" or ROOT.parent != WORKSPACE:
+            raise RuntimeError("拒绝删除非预期的报告目录: %s" % ROOT)
+        shutil.rmtree(str(ROOT), ignore_errors=True)
     ROOT.mkdir(parents=True, exist_ok=True)
     TEMP.ensure()
 

@@ -274,6 +274,15 @@ def check_path_guard(sources, findings):
 
     只查递归删除（recursive=true）。单文件删除的输入要么是程序自己拼的临时文件，
     要么紧跟在 File.Exists 判断之后，全查的话误报会淹没真问题。
+
+    **跳过注释行。**（2026-11-23 修复）
+
+    本项目注释的习惯是把「早先的写法」原样引在说明里，例如
+    「第一版对源目录做整体递归删除，那是自锁」。
+
+    早先这里逐行匹配、不看是不是注释，于是**把修复说明本身当成了缺陷**：
+    真正危险的调用已经不存在，报出来的却是解释「它为什么被删掉」的那段话。
+    这类误报最坏的地方是会鼓励人把注释写得更含糊 —— 反而降低可读性。
     """
     for p in sources:
         if p.suffix not in (".cs",):
@@ -281,6 +290,9 @@ def check_path_guard(sources, findings):
         lines = read(p).splitlines()
         for i, l in enumerate(lines):
             s = l.strip()
+            # 整行注释直接跳过：`//` `///` `*` `/*` 开头的都是说明文字。
+            if s.startswith("//") or s.startswith("*") or s.startswith("/*"):
+                continue
             for pat, what in DANGEROUS_CALLS:
                 if not re.search(pat, s):
                     continue

@@ -20,11 +20,14 @@ r"""一键跑完 testtools\cs 下全部 C# 探针，并把结果摊开给人看�
 只读产品、只写 %TEMP%，不碰工程里的任何东西。
 """
 import argparse
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from safe_ops import safe_rmtree
 
 HERE = Path(__file__).resolve().parent
 WORKSPACE = HERE.parent
@@ -77,13 +80,47 @@ def tool(name):
 
 
 class Result:
+    """单个探针的结果。
+
+    **status 的默认值是 "未执行"，不是 "跳过"。** 这一点是本轮最重要的修复。
+
+    上一轮发现四个外壳探针（shellcheck / scopeprobe / iconprobe / dataprobe）
+    从来没被真正执行过：那个循环里漏了 code, text = run(...)，
+    却把**上一个探针遗留的局部变量**拿去判定。而 Result 的默认状态是 "跳过"，
+    汇总时 "跳过" 不算失败 —— 于是「根本没跑」被静默计入，只在总数上少了几项，
+    而汇总行看起来一切正常。
+
+    现在默认值改成 "未执行"，汇总时**一律算失败**。
+    这样任何「加了 add() 却忘了给它赋值」的路径都会立刻暴露，
+    而不是伪装成一次正常的跳过。
+
+    三种状态的区别：
+      - 通过 / 失败：真的跑了，judge 给出结论
+      - 跳过：**主动**跳过，脚本显式写了理由（如 Release 无测试钩子、缺组件）
+      - 未执行：代码路径没走到 —— 这是缺陷，不是跳过
+    """
     def __init__(self, name, purpose):
         self.name = name
         self.purpose = purpose
-        self.status = "跳过"
+        self.status = "未执行"
         self.detail = ""
         self.raw = ""
         self.code = None
+        # 创建时该探针已执行过多少次；汇总时若次数没增加，说明这次根本没跑。
+        self.runs_before = _EXECUTIONS.count(name)
+
+
+# 执行台账：每次 run() 都登记一笔。Result 用它验证「我到底跑没跑」。
+#
+# 为什么需要这个：上一轮发现四个外壳探针从未被执行 —— 循环里漏了 run()，
+# 而 	ext / code 恰好是上一个探针的遗留值（rc=0、输出正常），
+# 于是**没跑的探针被判定为通过**。这是最危险的假绿形态：
+# 「未执行」防护抓不到它，因为状态被赋成了「通过」而不是「未执行」。
+#
+# 光看 status 无法区分「真跑通了」和「拿了别人的结果」，
+# 所以改成对账：Result 记下它创建时的台账序号，汇总时核对
+# 「之后确实有过一次 run()」。
+_EXECUTIONS = []
 
 
 def run(exe, args, timeout=180, cwd=None):
@@ -94,10 +131,13 @@ def run(exe, args, timeout=180, cwd=None):
             cmd, cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             timeout=timeout, env=PRODUCT_ENV)
+        _EXECUTIONS.append(os.path.splitext(os.path.basename(str(exe)))[0])
         return proc.returncode, decode(proc.stdout)
     except subprocess.TimeoutExpired:
+        _EXECUTIONS.append(os.path.splitext(os.path.basename(str(exe)))[0])
         return -1, "<超时 %d 秒>" % timeout
     except OSError as exc:
+        _EXECUTIONS.append(os.path.splitext(os.path.basename(str(exe)))[0])
         return -1, "<无法启动: %s>" % exc
 
 
@@ -164,8 +204,24 @@ def ensure_tool(res):
 
 
 def is_release_skip(code, text):
-    """Release 构建没有测试钩子，探针会用退出码 3 明确跳过。"""
-    return code == 3 or "RELEASE_NO_TEST_HOOK" in text
+    """探针是否因「Release 构建没有测试钩子」而主动跳过。
+
+    **必须只认显式标记，不能只看退出码 3。**
+
+    早先的实现是 code == 3 or "RELEASE_NO_TEST_HOOK" in text，这是个真实的假绿：
+    查过全部探针源码后确认，退出码 3 有两个完全不同的含义 ——
+
+      1. 真跳过：colorprobe / portable 打印 RELEASE_NO_TEST_HOOK 后返回 3；
+      2. **真错误**：dataprobe / menuprobe / scopeprobe / shellcheck / iconprobe
+         在 LoadLibrary 失败 或 DllGetClassObject 返回非 0 HRESULT 时返回 3。
+
+    用 code == 3 一律当跳过，等于把「外壳组件加载失败」这种致命问题
+    伪装成「Release 没有测试钩子，正常跳过」。实测就是这样：Release 下
+    四个外壳探针全部「跳过」，而直接手工跑同一个探针是 rc=0 正常的。
+
+    现在只认标记：没有标记的退出码 3 一律算失败，由 judge 报出来。
+    """
+    return "RELEASE_NO_TEST_HOOK" in text
 
 
 def main():
@@ -248,6 +304,42 @@ def main():
         else:
             r.status, r.detail = judge(text, code)
 
+    r = add("jsonrt", "配置 JSON 往返（写入/解析/类型保持/边界校验）")
+    if ensure_tool(r):
+        code, text = run(tool("jsonrt"), [app, work])
+        r.raw, r.code = text, code
+        if is_release_skip(code, text):
+            r.status, r.detail = "跳过", "Release 构建无测试钩子"
+        else:
+            r.status, r.detail = judge(text, code)
+
+    r = add("crosspollute", "跨任务状态不污染（压缩↔解压的 LastTaskFailed 隔离）")
+    if ensure_tool(r):
+        code, text = run(tool("crosspollute"), [app, work])
+        r.raw, r.code = text, code
+        if is_release_skip(code, text):
+            r.status, r.detail = "跳过", "Release 构建无测试钩子"
+        else:
+            r.status, r.detail = judge(text, code)
+
+    r = add("nullhard", "HashAlgorithmInfo 的 Aliases/Extensions 设 null 后仍可安全遍历")
+    if ensure_tool(r):
+        code, text = run(tool("nullhard"), [app])
+        r.raw, r.code = text, code
+        if is_release_skip(code, text):
+            r.status, r.detail = "跳过", "Release 构建无测试钩子"
+        else:
+            r.status, r.detail = judge(text, code)
+
+    r = add("batchprog", "批量进度不跨任务残留（GUI/命令行两条入口一致）")
+    if ensure_tool(r):
+        code, text = run(tool("batchprog"), [app, work])
+        r.raw, r.code = text, code
+        if is_release_skip(code, text):
+            r.status, r.detail = "跳过", "Release 构建无测试钩子"
+        else:
+            r.status, r.detail = judge(text, code)
+
     r = add("verify", "对话框按钮文字 / 居中 / 提示切换")
     if ensure_tool(r):
         code, text = run(tool("verify"), [work, app])
@@ -310,6 +402,13 @@ def main():
             r.status = "跳过"
             r.detail = "缺少 Auto7zShell.dll（先跑 buildtool）"
             continue
+        # 这里原本直接用了 text / code 两个变量，但**它们从未在本循环里赋值** ——
+        # 那是上一个探针（taborder）遗留的局部变量。于是四个外壳探针：
+        #   · 实际从未被执行；
+        #   · 拿到的是上一个探针的退出码与输出，判成 rc=3 失败；
+        #   · 而 rc=3 又曾被 is_release_skip 当成「Release 跳过」，
+        #     所以这个缺陷长期不可见 —— 两道错误互相掩盖。
+        code, text = run(tool(name), argv)
         r.raw, r.code = text, code
         r.status, r.detail = judge(text, code)
 
@@ -366,11 +465,23 @@ def main():
     print("-" * 74)
     print(" %-13s %-8s %s" % ("工具", "结果", "说明"))
     print("-" * 74)
-    fails = passes = skips = 0
+    fails = passes = skips = unrun = 0
     for r in results:
         if r.status == "失败":
             fails += 1
             mark = "[失败]"
+        elif _EXECUTIONS.count(r.name) <= r.runs_before:
+            # 状态有值，但从创建到现在**一次 run() 都没发生** ——
+            # 说明这个结果是拿别的探针 leftover 变量填的，实际根本没执行。
+            unrun += 1
+            fails += 1
+            mark = "[未执行]"
+        elif r.status == "未执行":
+            # 「加了 add() 却没给它赋值」= 代码路径没走到，这是缺陷，不是跳过。
+            # 单独计数并计入失败，否则它会伪装成一次正常跳过（曾经发生过）。
+            unrun += 1
+            fails += 1
+            mark = "[未执行]"
         elif r.status == "跳过":
             skips += 1
             mark = "[跳过]"
@@ -382,8 +493,12 @@ def main():
             line += "  ← " + r.detail
         print(line)
     print("-" * 74)
-    print(" 合计 %d 项：通过/完成 %d，失败 %d，跳过 %d"
-          % (len(results), passes, fails, skips))
+    if unrun:
+        print(" 合计 %d 项：通过/完成 %d，失败 %d（其中未执行 %d），跳过 %d"
+              % (len(results), passes, fails, unrun, skips))
+    else:
+        print(" 合计 %d 项：通过/完成 %d，失败 %d，跳过 %d"
+              % (len(results), passes, fails, skips))
     print("")
 
     if args.verbose:
@@ -400,8 +515,8 @@ def main():
         print(" 或 Auto7zShell.dll 没构建。补齐后重跑即可。")
         print("")
 
-    shutil.rmtree(work, ignore_errors=True)
-    shutil.rmtree(sample_dir, ignore_errors=True)
+    safe_rmtree(work)
+    safe_rmtree(sample_dir)
     return 0 if fails == 0 else 1
 
 

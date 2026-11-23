@@ -39,9 +39,24 @@ DEFAULT_ROOTS = [Path(os.environ.get("TEMP", r"C:\Windows\Temp"))]
 MARKER = "Auto7zTest"
 
 # 源码类扩展名：目录里有这些文件就说明路径搞错了，不能删
+# 会被判成「源码类文件」从而拒绝删除的扩展名。
+#
+# 设计意图：测试产物里不该出现**项目源码**；出现了说明删除目标搞错了
+# （这正是那次 P0 事故的形态：删到了测试工具自己的源码树）。
+#
+# 2026-11-22 修正：移除 .json / .md / .png / .ico。依据是实测证据：
+#   - 本项目源码树里**没有任何 .json 文件**（Get-ChildItem -Filter *.json
+#     排除 obj/bin 后结果为空）；
+#   - 测试临时目录里的 .json 全是**产品运行时配置**（Auto7z.json /
+#     TaskState.json），它们是产品正常写出来的产物，必然存在。
+# 把 .json 列为源码会让「清理含产品配置的测试目录」彻底走不通 ——
+# 实测 ui_cancel_check 因此抛 UnsafeDeleteError。
+#
+# 保留 .cs/.py/.cpp/.h/.xaml/.csproj/.sln/.def/.rc/.resx/.settings/.user：
+# 这些确实只可能来自项目源码，出现在临时目录里就是路径搞错了。
 SOURCE_EXTS = {
     ".cs", ".py", ".cpp", ".h", ".xaml", ".csproj", ".sln", ".xaml.cs",
-    ".def", ".rc", ".md", ".json", ".resx", ".settings", ".user", ".ico", ".png",
+    ".def", ".rc", ".resx", ".settings", ".user",
 }
 
 

@@ -47,8 +47,31 @@ def load_used_keys(project):
     return used
 
 
+def resolve_source_dir(arg):
+    """把命令行参数解析成「真正含 Resources 语言目录 的源码目录」。
+
+    为什么需要这一步：本脚本原先把 argv[1] 直接当源码目录用，
+    于是传入项目根（`Auto7z-WPF/`）时会在 `Auto7z-WPF/Resources/Languages` 里找，
+    而实际路径是 `Auto7z-WPF/Auto7z_WPF/Auto7z_WPF/Resources/Languages` ——
+    必然报「找不到语言词典」。
+
+    这个 bug 之所以长期没被发现，是因为**本脚本从未被任何套件调用**：
+    它写好了却孤立地放在 testtools 目录里，没人跑过。
+    （2026-11-23 接入回归时发现。）
+
+    兼容三种传法：项目根 / 外层 Auto7z_WPF 目录 / 源码目录本身。
+    """
+    p = Path(arg) if arg else DEFAULT_PROJECT
+    if (p / "Resources" / "Languages").is_dir():
+        return p
+    for candidate in (p / "Auto7z_WPF" / "Auto7z_WPF", p / "Auto7z_WPF"):
+        if (candidate / "Resources" / "Languages").is_dir():
+            return candidate
+    return p
+
+
 def main():
-    project = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PROJECT
+    project = resolve_source_dir(sys.argv[1] if len(sys.argv) > 1 else None)
     lang = load_language_keys(project)
     used = load_used_keys(project)
 

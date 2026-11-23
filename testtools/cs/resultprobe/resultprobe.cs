@@ -97,11 +97,32 @@ class ResultProbe
             return 1;
         }
 
+        // 颜色契约只认三态枚举（Success / Warning / Failed），两态 (string,bool)
+        // 重载已被删除。这里必须按**签名**取方法，不能只按名字 —— 按名字取在有多个
+        // 重载时会抛 AmbiguousMatchException，而重载删掉之后又会取到别的东西。
+        var sevType = asm.GetType("Auto7z_WPF.Models.ResultSeverity");
+        if (sevType == null)
+        {
+            Console.WriteLine("!! 找不到 Auto7z_WPF.Models.ResultSeverity");
+            return 1;
+        }
+
         var setResult = vmType.GetMethod("SetResult",
-            BindingFlags.Public | BindingFlags.Instance);
+            BindingFlags.Public | BindingFlags.Instance,
+            null, new[] { typeof(string), sevType }, null);
         if (setResult == null)
         {
-            Console.WriteLine("!! 找不到 SetResult");
+            Console.WriteLine("!! 找不到 SetResult(string, ResultSeverity) 三态重载");
+            return 1;
+        }
+
+        // 两态重载不该存在：留着它，调用点就能绕过枚举把警告压成红或绿。
+        var twoState = vmType.GetMethod("SetResult",
+            BindingFlags.Public | BindingFlags.Instance,
+            null, new[] { typeof(string), typeof(bool) }, null);
+        if (twoState != null)
+        {
+            Console.WriteLine("!! 仍存在 SetResult(string,bool) 两态重载 —— 会绕过三态颜色契约");
             return 1;
         }
 
@@ -181,9 +202,9 @@ class ResultProbe
 
         try
         {
-            setResult.Invoke(vm, new object[] { "成功文本", false });
-            setResult.Invoke(vm, new object[] { "失败文本", true });
-            setResult.Invoke(vm, new object[] { "成功文本", false });
+            setResult.Invoke(vm, new object[] { "成功文本", Enum.Parse(sevType, "Success") });
+            setResult.Invoke(vm, new object[] { "失败文本", Enum.Parse(sevType, "Failed") });
+            setResult.Invoke(vm, new object[] { "成功文本", Enum.Parse(sevType, "Success") });
         }
         catch (TargetInvocationException ex)
         {

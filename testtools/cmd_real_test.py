@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from safe_ops import safe_rmtree
 
 DEFAULT_APP = Path(__file__).resolve().parent.parent / "Auto7z_WPF" / "Auto7z_WPF" / "bin" / "Debug" / "Auto7z.exe"
 
@@ -45,6 +46,31 @@ class Runner:
         self.work = Path(work)
         self.failures = []
 
+        # 必须显式给一份隔离的数据根 + 配置，否则两件事都会错：
+        #
+        #   1. 不设 AUTO7Z_DATA_ROOT 时产品会写进用户真实的 %LOCALAPPDATA%\Auto7z，
+        #      测试就污染了用户环境（AppPaths 里明确写了这条改道的存在意义）。
+        #   2. 没有配置文件时产品用默认格式。实测默认是 **tar.zst 而不是 7z**，
+        #      于是下面那些 rglob("*.7z") 一条也找不到 —— 表现为
+        #      「退出码 0、末行『完成：压缩完成』、产物=0」，看起来像压缩失败，
+        #      其实是产物后缀和断言对不上。这个测试因此长期失败而原因一直不明。
+        self.data = self.work / "_data"
+        (self.data / "Auto7z").mkdir(parents=True, exist_ok=True)
+        cfg = {
+            "Language": "zh-CN", "Volume": "0", "Format": "7z",
+            "Password": "", "Zstd": True, "GenerateSHA256": True,
+            "ChecksumAlgorithm": "sha256", "AutoSave": False,
+            "IsTopMost": False, "RuntimeMode": "Balanced", "OutputPath": "",
+            "IsSolidMode": False, "IsEncFileName": False,
+            "CompressionLevel": "Normal", "UnzipPassword": "",
+            "ErrorLevel": "Info",
+        }
+        import json
+        (self.data / "Auto7z" / "Auto7z.json").write_text(
+            json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+        self.env = dict(os.environ)
+        self.env["AUTO7Z_DATA_ROOT"] = str(self.data)
+
     def ok(self, msg):
         print("  [通过] " + msg)
 
@@ -64,7 +90,7 @@ class Runner:
             argv,
             input=(stdin_text or "").encode("ascii", "ignore"),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            cwd=str(self.work), timeout=timeout)
+            cwd=str(self.work), timeout=timeout, env=self.env)
         return proc.returncode, decode_console(proc.stdout), time.time() - started
 
     def exe_line(self, args):
@@ -177,8 +203,11 @@ def case_relative_path(r):
     sub = r.work / "rel"
     sub.mkdir(exist_ok=True)
     (sub / "rel.txt").write_text("relative content", encoding="utf-8")
+    # 必须带 env：否则又落到用户真实数据目录、且用默认格式（tar.zst），
+    # 下面的 rglob("*.7z") 自然找不到 —— 这正是一处「假失败」的成因。
     proc = subprocess.run([str(r.app), "-z", "rel.txt"], cwd=str(sub),
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          timeout=180, env=r.env)
     out = decode_console(proc.stdout)
     made = list(sub.rglob("*.7z"))
     print("  退出码=%d 产物=%d 末行=%s" % (proc.returncode, len(made), out.strip().splitlines()[-1] if out.strip() else "(无输出)"))
@@ -231,7 +260,7 @@ def main():
 
     work = Path(tempfile.gettempdir()) / "Auto7zTest_cmdreal"
     if work.exists():
-        shutil.rmtree(work, ignore_errors=True)
+        safe_rmtree(work)
     work.mkdir(parents=True)
 
     print("=" * 70)
@@ -254,7 +283,7 @@ def main():
             resolved = str(work.resolve())
             temp = str(Path(tempfile.gettempdir()).resolve())
             if resolved.lower().startswith(temp.lower()) and "Auto7zTest" in resolved:
-                shutil.rmtree(work, ignore_errors=True)
+                safe_rmtree(work)
 
     print("\n" + "=" * 70)
     if r.failures:

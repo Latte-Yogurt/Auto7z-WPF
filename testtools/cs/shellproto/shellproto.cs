@@ -113,9 +113,45 @@ class ShellProto
         {
             Directory.CreateDirectory(Path.GetDirectoryName(configPath));
             string seed = originalConfig ?? "{}";
-            string patched = ReplaceJsonString(seed, "ErrorLevel", "Info")
-                            ?? seed.Insert(seed.LastIndexOf('}') >= 0 ? seed.LastIndexOf('}') : seed.Length,
-                                 (seed.Trim() == "{}" ? "" : ",") + "\"ErrorLevel\": \"Info\"");
+
+            // **必须同时钉住两个键：ErrorLevel=Info、Language=zh-CN。**
+            //
+            // 这条注释是踩了两次坑才写全的，两个键各自让四条断言集体误报过一次：
+            //
+            // ① ErrorLevel（第一次）：
+            //    早先是 `ReplaceJsonString(seed, "ErrorLevel", "Info") ?? 插入一条`。
+            //    `portable` 探针会清空并重建数据目录，它写下的配置里 ErrorLevel 是
+            //    "Warning"。替换若没命中，兜底分支只会**再插入一条**同名键，
+            //    得到含重复键的 JSON（不同解析器取值不一致）。
+            //    现在：先删掉所有已存在的键，再统一插入一条，结果唯一。
+            //
+            // ② Language（第二次，更隐蔽）：
+            //    即使日志级别对了，`portable` 还会把 Language 落成 "en-US"。
+            //    于是产品用英文写日志（"The user chose to merge, 3 file(s)…"），
+            //    而本探针下面按中文「共 N 个文件」去数 —— 数出来永远是 0。
+            //    两次失败的**表面症状完全一样**（「没有收到文件」），
+            //    但原因一个是级别、一个是语言。只修一个会以为没修好。
+            //    现在一并钉成 zh-CN：断言依赖的是中文日志格式，就得保证产品说中文。
+            //
+            // 这两个键都是「探针自身的前提」，不是产品行为，所以由探针负责设好。
+            string cleaned = RemoveJsonKey(seed, "ErrorLevel");
+            cleaned = RemoveJsonKey(cleaned, "Language");
+
+            int close = cleaned.LastIndexOf('}');
+            if (close < 0)
+            {
+                cleaned = "{}";
+                close = 1;
+            }
+
+            string body = cleaned.Substring(0, close).TrimEnd();
+            bool needsComma = body.Length > 1 && !body.EndsWith("{");
+            string patched = body
+                             + (needsComma ? "," : "")
+                             + "\"ErrorLevel\": \"Info\","
+                             + "\"Language\": \"zh-CN\""
+                             + cleaned.Substring(close);
+
             File.WriteAllText(configPath, patched, new UTF8Encoding(false));
         }
         catch { }
@@ -268,6 +304,65 @@ class ShellProto
         if (end < 0) return null;
 
         return text.Substring(0, start + 1) + value + text.Substring(end);
+    }
+
+    /// <summary>
+    /// 从扁平 JSON 里删掉一个键（含它的值与相邻逗号）。
+    ///
+    /// 只需处理本项目配置这一种形态：顶层扁平对象、值全是字符串/数字/布尔。
+    /// 键不存在时原样返回 —— 调用方可以「先删再插」，无论原来有没有都对。
+    ///
+    /// 为什么需要它：只做「替换」时，若替换没命中就会插入第二条同名键，
+    /// 产出的 JSON 含重复键，不同解析器取值不一致（先到 / 后到）。
+    /// 先删干净再插一条，结果唯一。
+    /// </summary>
+    static string RemoveJsonKey(string text, string key)
+    {
+        string needle = "\"" + key + "\"";
+        int position = text.IndexOf(needle, StringComparison.Ordinal);
+        if (position < 0) return text;
+
+        int colon = text.IndexOf(':', position + needle.Length);
+        if (colon < 0) return text;
+
+        int valueStart = colon + 1;
+        while (valueStart < text.Length && char.IsWhiteSpace(text[valueStart])) valueStart++;
+        if (valueStart >= text.Length) return text;
+
+        int valueEnd;
+        if (text[valueStart] == '"')
+        {
+            valueEnd = text.IndexOf('"', valueStart + 1);
+            if (valueEnd < 0) return text;
+            valueEnd++;                       // 包含收尾引号
+        }
+        else
+        {
+            // 数字 / true / false / null：吃到第一个逗号或右花括号为止。
+            valueEnd = valueStart;
+            while (valueEnd < text.Length && text[valueEnd] != ',' && text[valueEnd] != '}')
+                valueEnd++;
+        }
+
+        int removeStart = position;
+        int removeEnd = valueEnd;
+
+        // 吃掉紧随其后的逗号（如果有），避免留下 ",}" 这种残迹；
+        // 若它是最后一个键，则反过来吃掉它前面的那个逗号。
+        int after = removeEnd;
+        while (after < text.Length && char.IsWhiteSpace(text[after])) after++;
+        if (after < text.Length && text[after] == ',')
+        {
+            removeEnd = after + 1;
+        }
+        else
+        {
+            int before = removeStart - 1;
+            while (before >= 0 && char.IsWhiteSpace(text[before])) before--;
+            if (before >= 0 && text[before] == ',') removeStart = before;
+        }
+
+        return text.Substring(0, removeStart) + text.Substring(removeEnd);
     }
 
     static int RunTask(string exe, string[] args, string workDir, string logDir, string label)
