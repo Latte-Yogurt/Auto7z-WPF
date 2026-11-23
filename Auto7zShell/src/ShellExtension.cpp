@@ -105,18 +105,53 @@ std::wstring GetMainExeValueKey()
 }
 
 // 从组件自身的加载位置推目录，组件被拷到哪里都按同目录找主程序。
-bool GetModuleDirectory(wchar_t *buffer, size_t bufferChars)
+//
+// **改成动态缓冲（BUG-05）。** 早先这里是
+//     bool GetModuleDirectory(wchar_t *buffer, size_t bufferChars)
+// 由调用方传 `wchar_t[MAX_PATH]`。安装目录超过 260 字符时：
+//   · GetModuleFileNameW 返回被截断的长度，
+//   · `length >= bufferChars` 成立 → 本函数返回 false，
+//   · 于是「按同目录找主程序」整条回退路径失效，右键菜单直接不出现。
+// 即便本函数内部改用动态缓冲也没用 —— 截断发生在「写进调用方固定数组」那一步。
+// 现在返回 std::wstring，容量随实际长度扩容，260 字符不再是上限。
+std::wstring GetModuleDirectory()
 {
-    DWORD length = GetModuleFileNameW(g_module, buffer, static_cast<DWORD>(bufferChars));
-    if (length == 0 || length >= bufferChars) return false;
+    // 先按 MAX_PATH 起试，不够就翻倍。
+    // GetModuleFileNameW 的两个返回值含义必须分开看：
+    //   · 返回 0               → 真失败
+    //   · 返回值 == 缓冲容量   → 可能被截断，必须扩容重来（不是「刚好装满」）
+    DWORD capacity = MAX_PATH;
+    for (int attempt = 0; attempt < 8; attempt++)
+    {
+        std::vector<wchar_t> buffer(capacity, L'\0');
+        DWORD length = GetModuleFileNameW(g_module, &buffer[0], capacity);
 
-    wchar_t *separator = wcsrchr(buffer, L'\\');
-    if (separator == nullptr) return false;
-    *separator = L'\0';
-    return true;
+        if (length == 0) return std::wstring();
+
+        if (length < capacity)
+        {
+            std::wstring full(&buffer[0], length);
+            std::wstring::size_type separator = full.find_last_of(L'\\');
+            if (separator == std::wstring::npos) return std::wstring();
+            return full.substr(0, separator);
+        }
+
+        // 被截断：容量翻倍。
+        // 8 次翻倍足以覆盖到 65536 字符，远超 NTFS 的 32767 上限，实际用不尽。
+        if (capacity > 0x10000) break;
+        capacity *= 2;
+    }
+
+    return std::wstring();
 }
 
 // 优先读注册时登记的主程序路径，这样主程序被改名或挪动后仍能用注册表里的真值。
+//
+// **同样改成动态缓冲（BUG-05）。** 早先写死
+//     wchar_t buffer[MAX_PATH];
+//     DWORD size = sizeof(buffer);
+// 值比 MAX_PATH 长时 RegQueryValueExW 返回 ERROR_MORE_DATA，这里直接当失败
+// → 已登记的路径被无视，回退到「dll 同目录」的猜测。现在先问长度再分配。
 //
 // **必须读 HKLM 而不是 HKCR**：HKCR 是 HKLM\Software\Classes 与 HKCU\Software\Classes
 // 的合并视图，且 HKCU 优先。而 HKCU 下的这个键普通用户自己就能写 —— 于是任何低权限
@@ -131,27 +166,41 @@ bool ReadRegisteredExePath(std::wstring &path)
                       KEY_READ | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS)
         return false;
 
-    wchar_t buffer[MAX_PATH] = {};
     DWORD type = 0;
-    DWORD size = sizeof(buffer);
+    DWORD size = 0;
+
+    // 第一步：只问需要多少字节（缓冲区传 nullptr）。
+    LONG probe = RegQueryValueExW(key, L"MainExePath", nullptr, &type, nullptr, &size);
+    if (probe != ERROR_SUCCESS || type != REG_SZ || size < 2 * sizeof(wchar_t))
+    {
+        RegCloseKey(key);
+        return false;
+    }
+
+    // size 是字节数。REG_SZ 必然按 wchar_t 对齐，奇数说明数据本身不可信。
+    if ((size % sizeof(wchar_t)) != 0)
+    {
+        RegCloseKey(key);
+        return false;
+    }
+
+    // 多分配一个字符做保险：注册表里的字符串理论上可能不带 NUL 终止符，
+    // 显式多留一格并补 NUL，避免 assign 时越界读。
+    std::vector<wchar_t> buffer(size / sizeof(wchar_t) + 1, L'\0');
+    DWORD bufferBytes = static_cast<DWORD>(buffer.size() * sizeof(wchar_t));
+
     LONG result = RegQueryValueExW(key, L"MainExePath", nullptr, &type,
-                                   reinterpret_cast<BYTE *>(buffer), &size);
+                                   reinterpret_cast<BYTE *>(&buffer[0]), &bufferBytes);
     RegCloseKey(key);
 
     if (result != ERROR_SUCCESS || type != REG_SZ) return false;
 
-    // size 是字节数。必须至少容得下一个 wchar_t 再加终止符，否则下面的
-    // buffer[(size / sizeof(wchar_t)) - 1] 在 size == 1 时会下溢成 SIZE_MAX，
-    // 变成一个完全落在数组之外的写。奇数 size 说明数据本身不可信（REG_SZ 必然是
-    // 偶数字节），同样拒绝。
-    if (size < 2 * sizeof(wchar_t) || size > sizeof(buffer)) return false;
-    if ((size % sizeof(wchar_t)) != 0) return false;
-
-    buffer[(size / sizeof(wchar_t)) - 1] = L'\0';
+    // 无论注册表里带不带终止符，都按缓冲区末位收尾，再按 C 串语义取。
+    buffer.back() = L'\0';
     if (buffer[0] == L'\0') return false;
 
-    path.assign(buffer);
-    return true;
+    path.assign(&buffer[0]);
+    return !path.empty();
 }
 
 // 语言写在 HKCU 而不是 HKLM：普通用户自己就有写权限，切换语言不必提权。
@@ -185,17 +234,42 @@ std::wstring ReadConfiguredLanguage()
 
     std::vector<std::wstring> candidates;
 
-    wchar_t localAppData[MAX_PATH] = {};
-    if (SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, localAppData) == S_OK)
+    // **动态缓冲（BUG-05）。** SHGetFolderPathW 只接受固定长度缓冲，
+    // 但这里可以先用 MAX_PATH 试，被截断（返回 S_FALSE 或字符串恰好填满）再扩容。
+    // 早先写死 MAX_PATH 且不检查返回值：用户名很长时 %LOCALAPPDATA% 被截断，
+    // 拼出来的配置文件路径就是错的，语言永远回落到英文。
+    std::wstring localAppData;
     {
-        std::wstring localConfig = std::wstring(localAppData) + L"\\Auto7z\\Auto7z.json";
+        DWORD capacity = MAX_PATH;
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            std::vector<wchar_t> buffer(capacity, L'\0');
+            HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, &buffer[0]);
+            if (hr != S_OK) break;
+
+            size_t length = wcslen(&buffer[0]);
+            // 恰好填满缓冲说明可能被截断（SHGetFolderPathW 不带长度返回）。
+            if (length + 1 < capacity)
+            {
+                localAppData.assign(&buffer[0], length);
+                break;
+            }
+
+            if (capacity > 0x10000) break;
+            capacity *= 2;
+        }
+    }
+
+    if (!localAppData.empty())
+    {
+        std::wstring localConfig = localAppData + L"\\Auto7z\\Auto7z.json";
         candidates.push_back(localConfig);
     }
 
-    wchar_t directory[MAX_PATH] = {};
-    if (GetModuleDirectory(directory, MAX_PATH))
+    std::wstring directory = GetModuleDirectory();
+    if (!directory.empty())
     {
-        std::wstring portableConfig = std::wstring(directory) + L"\\.config\\Auto7z\\Auto7z.json";
+        std::wstring portableConfig = directory + L"\\.config\\Auto7z\\Auto7z.json";
         candidates.push_back(portableConfig);
     }
 
@@ -285,36 +359,57 @@ std::wstring ReadLanguageFromConfig(const std::wstring &path)
 }
 
 // 注册表里的路径要先用 GetFileAttributes 验活，登记项可能是从旧机器搬过来的死路径。
-bool GetMainExePath(wchar_t *buffer, size_t bufferChars)
+//
+// **返回 std::wstring（BUG-05）。** 早先是 `bool GetMainExePath(wchar_t*, size_t)`，
+// 调用方一律传 `wchar_t[MAX_PATH]`：安装路径超过 260 字符时 `wcscpy_s` 返回截断错误，
+// 本函数返回 false，右键菜单整条路径失效。改成返回 std::wstring 后，
+// 「路径有多长」不再由调用方预先猜。
+bool GetMainExePath(std::wstring &result)
 {
+    result.clear();
+
     std::wstring registered;
     if (ReadRegisteredExePath(registered))
     {
         if (GetFileAttributesW(registered.c_str()) != INVALID_FILE_ATTRIBUTES)
-            return wcscpy_s(buffer, bufferChars, registered.c_str()) == 0;
+        {
+            result = registered;
+            return true;
+        }
     }
 
-    wchar_t directory[MAX_PATH];
-    if (!GetModuleDirectory(directory, MAX_PATH)) return false;
+    std::wstring directory = GetModuleDirectory();
+    if (directory.empty()) return false;
 
-    wchar_t path[MAX_PATH];
-    if (!PathCombineW(path, directory, kMainExeName)) return false;
-    if (GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES) return false;
+    // 用 std::wstring 拼接而不是 PathCombineW + 固定数组：
+    // PATHCCH_* 系列虽好，但引入它要额外的链接设置；
+    // 这里只有「目录 + 反斜杠 + 文件名」一种形态，手动拼接更直白。
+    std::wstring path = directory;
+    if (!path.empty() && path.back() != L'\\') path += L'\\';
+    path += kMainExeName;
 
-    return wcscpy_s(buffer, bufferChars, path) == 0;
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+
+    result = path;
+    return true;
 }
 
-bool BuildGuiExePath(const wchar_t *consoleExe, wchar_t *buffer, size_t bufferChars)
+// 把控制台版路径换成同目录的 GUI 版路径。
+//
+// **返回 std::wstring（BUG-05）**：同样是为了不再依赖调用方的固定缓冲。
+// 早先的实现有 `directoryChars + 名称长度 > bufferChars` 的显式长度检查，
+// 表面上是安全的，但那个检查在路径接近 260 字符时会直接返回 false，
+// 于是「有 GUI 版」这件事被静默忽略 —— 用户看到的是黑窗口。
+bool BuildGuiExePath(const std::wstring &consoleExe, std::wstring &result)
 {
-    const wchar_t *slash = wcsrchr(consoleExe, L'\\');
-    if (slash == nullptr) return false;
+    result.clear();
 
-    size_t directoryChars = static_cast<size_t>(slash - consoleExe) + 1;
-    if (directoryChars + (sizeof(kGuiExeName) / sizeof(wchar_t)) > bufferChars) return false;
+    std::wstring::size_type slash = consoleExe.find_last_of(L'\\');
+    if (slash == std::wstring::npos) return false;
 
-    wmemcpy(buffer, consoleExe, directoryChars);
-    buffer[directoryChars] = L'\0';
-    return wcscat_s(buffer, bufferChars, kGuiExeName) == 0;
+    result = consoleExe.substr(0, slash + 1);
+    result += kGuiExeName;
+    return true;
 }
 
 
@@ -324,15 +419,15 @@ const int kMenuIconSize = 16;
 // 图标只抽取一次并缓存：每次弹出右键菜单都调 ExtractIconEx 会明显拖慢菜单出现。
 HICON LoadMainIconOnce()
 {
-    wchar_t exePath[MAX_PATH] = {};
-    if (!GetMainExePath(exePath, MAX_PATH)) return nullptr;
+    std::wstring exePath;
+    if (!GetMainExePath(exePath)) return nullptr;
 
     HICON iconSmall = nullptr;
-    if (ExtractIconExW(exePath, 0, nullptr, &iconSmall, 1) > 0 && iconSmall != nullptr)
+    if (ExtractIconExW(exePath.c_str(), 0, nullptr, &iconSmall, 1) > 0 && iconSmall != nullptr)
         return iconSmall;
 
     HICON iconLarge = nullptr;
-    if (ExtractIconExW(exePath, 0, &iconLarge, nullptr, 1) > 0 && iconLarge != nullptr)
+    if (ExtractIconExW(exePath.c_str(), 0, &iconLarge, nullptr, 1) > 0 && iconLarge != nullptr)
         return iconLarge;
 
     return nullptr;
@@ -400,18 +495,42 @@ bool IsRealFileOrFolder(const wchar_t *path)
 
     if (attributes & FILE_ATTRIBUTE_DIRECTORY)
     {
-        wchar_t volumeRoot[MAX_PATH];
-        if (GetVolumePathNameW(path, volumeRoot, MAX_PATH) != 0)
+        // **动态缓冲（BUG-05）。** GetVolumePathNameW 只接受固定长度缓冲。
+        // 路径接近 260 字符时它会返回 FALSE（缓冲不够），
+        // 于是「这个目录是不是盘符根本身」这条判断被跳过，
+        // 盘符根就被当成可压缩的对象放进了菜单。
+        std::wstring volumeRoot;
         {
-            size_t length = wcslen(volumeRoot);
+            DWORD capacity = MAX_PATH;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                std::vector<wchar_t> buffer(capacity, L'\0');
+                if (GetVolumePathNameW(path, &buffer[0], capacity) != 0)
+                {
+                    size_t length = wcslen(&buffer[0]);
+                    if (length + 1 < capacity)
+                    {
+                        volumeRoot.assign(&buffer[0], length);
+                        break;
+                    }
+                }
+
+                if (capacity > 0x10000) break;
+                capacity *= 2;
+            }
+        }
+
+        if (!volumeRoot.empty())
+        {
+            size_t length = volumeRoot.size();
             while (length > 0 && (volumeRoot[length - 1] == L'\\' || volumeRoot[length - 1] == L'/'))
-                volumeRoot[--length] = 0;
+                length--;
 
             size_t pathLength = wcslen(path);
             while (pathLength > 0 && (path[pathLength - 1] == L'\\' || path[pathLength - 1] == L'/'))
                 pathLength--;
 
-            if (length == pathLength && _wcsnicmp(volumeRoot, path, length) == 0)
+            if (length == pathLength && _wcsnicmp(volumeRoot.c_str(), path, length) == 0)
                 return false;
         }
         return true;
@@ -498,9 +617,33 @@ bool ReadSelectedPaths(IDataObject *dataObject, std::vector<std::wstring> &paths
                         PIDLIST_ABSOLUTE full = ILCombine(parent, child);
                         if (full == nullptr) continue;
 
-                        wchar_t path[MAX_PATH] = {};
-                        if (SHGetPathFromIDListW(full, path) && path[0] != L'\0')
-                            paths.push_back(path);
+                        // **动态缓冲（BUG-05）。** SHGetPathFromIDListW 只接受
+                        // MAX_PATH 长度的缓冲，且**路径超长时直接返回 FALSE**
+                        // —— 深目录里的条目会静默消失，用户选中了却什么都没发生。
+                        // 这里先按 MAX_PATH 试，失败就翻倍重试；真正超长时
+                        // 再考虑 SHGetPathFromIDListLongPath（Win8+ 才有，
+                        // 本组件要保持对旧系统的兼容，因此用重试而不是换 API）。
+                        {
+                            DWORD capacity = MAX_PATH;
+                            bool got = false;
+                            for (int attempt = 0; attempt < 4 && !got; attempt++)
+                            {
+                                std::vector<wchar_t> buffer(capacity, L'\0');
+                                if (SHGetPathFromIDListW(full, &buffer[0]))
+                                {
+                                    size_t length = wcslen(&buffer[0]);
+                                    if (length > 0)
+                                    {
+                                        paths.push_back(std::wstring(&buffer[0], length));
+                                        got = true;
+                                    }
+                                }
+
+                                if (capacity > 0x10000) break;
+                                capacity *= 2;
+                            }
+                        }
+
                         ILFree(full);
                     }
                 }
@@ -628,14 +771,14 @@ bool LaunchAuto7z(const std::vector<std::wstring> &paths, const wchar_t *modeSwi
 {
     if (paths.empty()) return false;
 
-    wchar_t exePath[MAX_PATH];
-    if (!GetMainExePath(exePath, MAX_PATH)) return false;
+    std::wstring exePath;
+    if (!GetMainExePath(exePath)) return false;
 
-    wchar_t guiPath[MAX_PATH];
-    if (BuildGuiExePath(exePath, guiPath, MAX_PATH) &&
-        GetFileAttributesW(guiPath) != INVALID_FILE_ATTRIBUTES)
+    std::wstring guiPath;
+    if (BuildGuiExePath(exePath, guiPath) &&
+        GetFileAttributesW(guiPath.c_str()) != INVALID_FILE_ATTRIBUTES)
     {
-        wcscpy_s(exePath, MAX_PATH, guiPath);
+        exePath = guiPath;
     }
 
     std::wstring mapName;
@@ -675,7 +818,7 @@ bool LaunchAuto7z(const std::vector<std::wstring> &paths, const wchar_t *modeSwi
     startup.wShowWindow = SW_SHOWNORMAL;
 
     PROCESS_INFORMATION process = {};
-    BOOL created = CreateProcessW(exePath, &mutableCommand[0], nullptr, nullptr, FALSE,
+    BOOL created = CreateProcessW(exePath.c_str(), &mutableCommand[0], nullptr, nullptr, FALSE,
                                   0, nullptr, nullptr, &startup, &process);
     if (!created)
     {
@@ -1204,9 +1347,36 @@ extern "C" HRESULT STDAPICALLTYPE DllCanUnloadNow()
 // 全部落在 HKLM\Software\Classes 之下（见 kClassesRoot 的说明），不用 HKCR。
 extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
 {
-    wchar_t dllPath[MAX_PATH];
-    DWORD dllPathChars = GetModuleFileNameW(g_module, dllPath, MAX_PATH);
-    if (dllPathChars == 0 || dllPathChars >= MAX_PATH) return SELFREG_E_CLASS;
+    // **动态缓冲（BUG-05）。** 早先是
+    //     wchar_t dllPath[MAX_PATH];
+    //     DWORD n = GetModuleFileNameW(g_module, dllPath, MAX_PATH);
+    //     if (n == 0 || n >= MAX_PATH) return SELFREG_E_CLASS;
+    // 组件被装到超过 260 字符的路径时，注册**整体失败**，
+    // 而且失败原因（路径太长）完全不可见 —— 用户只看到「注册没成功」。
+    std::wstring dllPath;
+    {
+        DWORD capacity = MAX_PATH;
+        bool ok = false;
+        for (int attempt = 0; attempt < 8 && !ok; attempt++)
+        {
+            std::vector<wchar_t> buffer(capacity, L'\0');
+            DWORD length = GetModuleFileNameW(g_module, &buffer[0], capacity);
+
+            if (length == 0) break;
+
+            if (length < capacity)
+            {
+                dllPath.assign(&buffer[0], length);
+                ok = true;
+                break;
+            }
+
+            if (capacity > 0x10000) break;
+            capacity *= 2;
+        }
+
+        if (!ok || dllPath.empty()) return SELFREG_E_CLASS;
+    }
 
     wchar_t clsid[64];
     FormatClassId(clsid, 64);
@@ -1216,7 +1386,7 @@ extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
         return SELFREG_E_CLASS;
 
     std::wstring inprocPath = classPath + L"\\InprocServer32";
-    if (!WriteStringValue(kClassesRoot, inprocPath.c_str(), nullptr, dllPath))
+    if (!WriteStringValue(kClassesRoot, inprocPath.c_str(), nullptr, dllPath.c_str()))
         return SELFREG_E_CLASS;
 
     // ThreadingModel 写失败同样是注册失败：缺了它 COM 会假设 Single，
@@ -1233,12 +1403,12 @@ extern "C" HRESULT STDAPICALLTYPE DllRegisterServer()
 
     if (!RegisterHandlers(true)) return SELFREG_E_CLASS;
 
-    wchar_t exePath[MAX_PATH] = {};
-    if (GetMainExePath(exePath, MAX_PATH))
+    std::wstring exePath;
+    if (GetMainExePath(exePath))
     {
         // 登记主程序路径失败不影响「菜单能不能用」——LaunchAuto7z 会用 dll 同目录回退，
         // 所以这里只记调试输出，不把整次注册判死。
-        if (!WriteStringValue(kClassesRoot, GetMainExeValueKey().c_str(), L"MainExePath", exePath))
+        if (!WriteStringValue(kClassesRoot, GetMainExeValueKey().c_str(), L"MainExePath", exePath.c_str()))
             OutputDebugStringW(L"Auto7z: 主程序路径登记失败，将回退到 dll 同目录查找\r\n");
     }
 
@@ -1299,10 +1469,30 @@ extern "C" HRESULT STDAPICALLTYPE DllSetLanguage(LPCWSTR language)
 }
 
 // 清掉登记项与它所在的键：留着空键会让后续查询读到空路径。
+//
+// 返回值必须如实反映：「删不掉却报 S_OK」正是 DllUnregisterServer 上方注释
+// 批评的那种虚假成功 —— 调用方拿到 0 就报告「已清理」，而注册表里还留着
+// 一个指向旧主程序的 MainExePath，下次右键仍会去启动那个已经不存在的 exe。
+//
+// 两步分开判：值的删除走 DeleteRegValue（它区分「本来就没有」与「删不掉」），
+// 键的删除单独判 —— 键里可能还有别的值，删不掉不算致命，但同样要如实报出来。
 extern "C" HRESULT STDAPICALLTYPE DllRemoveMainExePath()
 {
     std::wstring valuePath = GetMainExeValueKey();
-    DeleteRegValue(kClassesRoot, valuePath.c_str(), L"MainExePath");
-    RegDeleteKeyW(kClassesRoot, valuePath.c_str());
+
+    bool valueGone = DeleteRegValue(kClassesRoot, valuePath.c_str(), L"MainExePath");
+
+    // 键删不掉可能是「里面还有别的值」或「根本没权限」，两种都不该报成功：
+    // 前者说明我们留下了残骸，后者说明我们连状态都清不干净。
+    // ERROR_FILE_NOT_FOUND 视为成功（键本来就不存在）。
+    LONG keyResult = RegDeleteKeyW(kClassesRoot, valuePath.c_str());
+    bool keyGone = (keyResult == ERROR_SUCCESS || keyResult == ERROR_FILE_NOT_FOUND);
+
+    if (!valueGone || !keyGone)
+    {
+        OutputDebugStringW(L"Auto7z: 清理主程序路径登记未完全成功（值或键删除失败）\r\n");
+        return SELFREG_E_CLASS;
+    }
+
     return S_OK;
 }
